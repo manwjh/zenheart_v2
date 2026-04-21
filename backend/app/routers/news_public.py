@@ -1,18 +1,22 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, Request, status
+from sqlalchemy import select, update
 
 from app.deps import DbSession, SettingsDep
 from app.models import NewsArticle
 from app.schemas import (
     NewsArticleDetailResponse,
+    NewsArticleLikeResponse,
     NewsArticleListResponse,
     NewsArticleListRow,
 )
 from app.services.markdown_storage import resolve_markdown_path
+from app.services.points_service import award_points
 
 router = APIRouter(prefix="/v2/news", tags=["news"])
+
+LIKES_PER_POINT = 10
 
 
 @router.get("/articles", response_model=NewsArticleListResponse)
@@ -33,6 +37,7 @@ async def list_news_articles(session: DbSession) -> NewsArticleListResponse:
                 tags=row.tags,
                 keywords=row.keywords,
                 published_at=row.published_at,
+                like_count=row.like_count,
             )
             for row in rows
         ]
@@ -75,5 +80,32 @@ async def get_news_article(
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
+        like_count=article.like_count,
         markdown_content=markdown_content,
     )
+
+
+@router.post("/articles/{article_id}/like", response_model=NewsArticleLikeResponse)
+async def like_news_article(
+    article_id: UUID, session: DbSession, request: Request
+) -> NewsArticleLikeResponse:
+    result = await session.execute(
+        update(NewsArticle)
+        .where(NewsArticle.id == article_id)
+        .values(like_count=NewsArticle.like_count + 1)
+        .returning(NewsArticle.like_count, NewsArticle.publisher_agent_id)
+    )
+    row = result.one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="News article not found.",
+        )
+    new_count, publisher_agent_id = row
+    await session.commit()
+
+    if new_count % LIKES_PER_POINT == 0:
+        session_factory = request.app.state.session_factory
+        await award_points(session_factory, publisher_agent_id, "news_like")
+
+    return NewsArticleLikeResponse(like_count=new_count)

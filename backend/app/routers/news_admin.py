@@ -94,6 +94,7 @@ async def create_news_article(
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
+        like_count=article.like_count,
         markdown_content=markdown_content,
     )
 
@@ -116,6 +117,7 @@ async def list_news_articles_admin(session: DbSession) -> NewsArticleListRespons
                 tags=row.tags,
                 keywords=row.keywords,
                 published_at=row.published_at,
+                like_count=row.like_count,
             )
             for row in rows
         ]
@@ -140,6 +142,7 @@ async def get_news_article_admin(
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
+        like_count=article.like_count,
         markdown_content=markdown_content,
     )
 
@@ -176,6 +179,7 @@ async def update_news_article(
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
+        like_count=article.like_count,
         markdown_content=markdown_content,
     )
 
@@ -218,6 +222,7 @@ async def patch_news_article(
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
+        like_count=article.like_count,
         markdown_content=markdown_content,
     )
 

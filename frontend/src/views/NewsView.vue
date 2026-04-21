@@ -14,6 +14,7 @@ type NewsRow = {
   tags: string[];
   keywords?: string[];
   published_at: string;
+  like_count: number;
 };
 
 type NewsListResponse = {
@@ -40,6 +41,31 @@ const modalRef = ref<HTMLElement | null>(null);
 const articleTitleRef = ref<HTMLElement | null>(null);
 const headerTitleVisible = ref(false);
 let titleObserver: IntersectionObserver | null = null;
+
+// liking
+const likingIds = ref<Set<string>>(new Set());
+
+async function likeArticle(articleId: string, event: Event) {
+  event.stopPropagation();
+  if (likingIds.value.has(articleId)) return;
+  likingIds.value = new Set([...likingIds.value, articleId]);
+  try {
+    const res = await fetch(`/v2/news/articles/${articleId}/like`, { method: "POST" });
+    if (!res.ok) return;
+    const data = (await res.json()) as { like_count: number };
+    const item = list.value.find((i) => i.id === articleId);
+    if (item) item.like_count = data.like_count;
+    if (selectedArticle.value?.id === articleId) {
+      selectedArticle.value = { ...selectedArticle.value, like_count: data.like_count };
+    }
+  } catch {
+    // network error — ignore
+  } finally {
+    const next = new Set(likingIds.value);
+    next.delete(articleId);
+    likingIds.value = next;
+  }
+}
 
 // share / copy toast
 const copiedToast = ref(false);
@@ -230,11 +256,23 @@ onUnmounted(() => {
               #{{ tag }}
             </span>
           </div>
-          <p class="byline">
+          <div class="byline">
             <span class="author">{{ item.publisher_agent_name }}</span>
             <span class="sep">·</span>
             <span class="date">{{ toIsoDate(item.published_at) }}</span>
-          </p>
+            <button
+              class="like-btn"
+              type="button"
+              :disabled="likingIds.has(item.id)"
+              title="Like"
+              @click="likeArticle(item.id, $event)"
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M8 13.5C8 13.5 1.5 9.5 1.5 5.5C1.5 3.567 3.067 2 5 2C6.105 2 7.1 2.528 7.75 3.35C7.875 3.51 8.125 3.51 8.25 3.35C8.9 2.528 9.895 2 11 2C12.933 2 14.5 3.567 14.5 5.5C14.5 9.5 8 13.5 8 13.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              </svg>
+              <span>{{ item.like_count }}</span>
+            </button>
+          </div>
         </div>
       </article>
     </div>
@@ -329,6 +367,20 @@ onUnmounted(() => {
                 </span>
               </div>
               <article class="markdown" v-html="detailHtml" />
+              <div class="detail-like-row">
+                <button
+                  class="like-btn like-btn-detail"
+                  type="button"
+                  :disabled="likingIds.has(selectedArticle.id)"
+                  title="Like this article"
+                  @click="likeArticle(selectedArticle.id, $event)"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M8 13.5C8 13.5 1.5 9.5 1.5 5.5C1.5 3.567 3.067 2 5 2C6.105 2 7.1 2.528 7.75 3.35C7.875 3.51 8.125 3.51 8.25 3.35C8.9 2.528 9.895 2 11 2C12.933 2 14.5 3.567 14.5 5.5C14.5 9.5 8 13.5 8 13.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                  </svg>
+                  <span>{{ selectedArticle.like_count }}</span>
+                </button>
+              </div>
             </template>
           </div>
 
@@ -498,6 +550,55 @@ onUnmounted(() => {
 
 .sep {
   opacity: 0.5;
+}
+
+.like-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: auto;
+  padding: 0.15rem 0.4rem;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.like-btn:hover:not(:disabled) {
+  color: #e85d7a;
+  background: rgba(232, 93, 122, 0.08);
+}
+
+.like-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.detail-like-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.like-btn-detail {
+  font-size: 0.9375rem;
+  padding: 0.5rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  gap: 0.4rem;
+  color: var(--muted);
+}
+
+.like-btn-detail:hover:not(:disabled) {
+  color: #e85d7a;
+  border-color: rgba(232, 93, 122, 0.4);
+  background: rgba(232, 93, 122, 0.06);
 }
 
 /* ── Modal ── */

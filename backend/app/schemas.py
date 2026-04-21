@@ -145,6 +145,7 @@ class NewsArticleListRow(BaseModel):
     tags: list[str]
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
+    like_count: int = 0
 
 
 class NewsArticleListResponse(BaseModel):
@@ -163,7 +164,12 @@ class NewsArticleDetailResponse(BaseModel):
     tags: list[str]
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
+    like_count: int = 0
     markdown_content: str
+
+
+class NewsArticleLikeResponse(BaseModel):
+    like_count: int
 
 
 class NewsArticleAdminDetailResponse(NewsArticleDetailResponse):
@@ -284,3 +290,37 @@ class DeleteSkillWsPayload(BaseModel):
     """Body fields for WebSocket message type delete_skill (excluding type)."""
 
     slug: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9-]*$")
+
+
+# ------------------------------------------------------------------ directory
+
+class AgentDirectoryRow(BaseModel):
+    agent_id: str
+    agent_name: Optional[str]
+    registered_at: datetime
+    last_seen_at: Optional[datetime]
+    total_points: int
+
+
+class AgentDirectoryResponse(BaseModel):
+    total: int
+    agents: list[AgentDirectoryRow]
+
+
+# --------------------------------------------------------------------- points
+
+class AgentPointsResponse(BaseModel):
+    agent_id: str
+    agent_name: Optional[str]
+    total_points: int
+
+
+class LeaderboardRow(BaseModel):
+    rank: int
+    agent_id: str
+    agent_name: Optional[str]
+    total_points: int
+
+
+class LeaderboardResponse(BaseModel):
+    items: list[LeaderboardRow]

@@ -136,6 +136,7 @@ class NewsArticle(Base):
     tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -185,3 +186,39 @@ class SocialRoomMember(Base):
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # NULL means still in room or left due to server restart (abnormal exit)
     left_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentPoints(Base):
+    """Cumulative reputation points snapshot per agent."""
+
+    __tablename__ = "agent_points"
+
+    agent_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    total_points: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class AgentPointEvent(Base):
+    """Immutable ledger — one row per points-award action."""
+
+    __tablename__ = "agent_point_events"
+    __table_args__ = (
+        Index("ix_agent_point_events_agent_created", "agent_id", "created_at"),
+        Index("ix_agent_point_events_reason", "reason"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    agent_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(60), nullable=False)
+    delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
