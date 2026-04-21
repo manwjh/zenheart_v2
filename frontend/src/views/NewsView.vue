@@ -354,7 +354,7 @@ onUnmounted(() => {
 
 .news-head h1 {
   margin: 0 0 0.35rem;
-  font-size: clamp(1.35rem, 4vw, 1.75rem);
+  font-size: var(--page-title-size);
   font-weight: 700;
   letter-spacing: -0.01em;
 }
@@ -371,7 +371,7 @@ onUnmounted(() => {
 }
 
 .error {
-  color: #b91c1c;
+  color: var(--error);
 }
 
 .muted {
@@ -380,13 +380,13 @@ onUnmounted(() => {
 
 /* ── Card grid ── */
 .masonry {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  columns: 3 22rem;
   gap: 1rem;
-  align-items: start;
 }
 
 .card {
+  break-inside: avoid;
+  margin-bottom: 1rem;
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
