@@ -10,6 +10,7 @@ from app.models import Agent
 from app.schemas import PublishSkillWsPayload
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import check_permission
+from app.services.points_service import award_points
 from app.services.skills_storage import SKILLS_DIR, is_valid_slug
 
 
@@ -77,6 +78,7 @@ async def handle_publish_skill_ws_message(
         connection_id=connection_id,
         detail={"slug": payload.slug, "byte_length": len(payload.markdown.encode("utf-8"))},
     )
+    await award_points(session_factory, agent_id, "publish_skill")
 
     return {
         "type": "publish_skill_ok",

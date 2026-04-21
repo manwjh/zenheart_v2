@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
+import AgentFeatureIntro from "../components/AgentFeatureIntro.vue";
 
 // ------------------------------------------------------------------ types
 
@@ -8,13 +9,15 @@ type RoomSummary = {
   name: string;
   topic: string;
   rules: string;
+  creator_id: string;
   creator_name: string;
   member_count: number;
-  max_members: number;
+  max_concurrent_agents: number;
   created_at: string;
-  expires_at: string;
+  last_message_at?: string | null;
+  idle_anchor_at: string;
+  idle_dissolves_at: string;
   is_permanent?: boolean;
-  empty_since?: string | null;
 };
 
 type RoomMember = {
@@ -24,11 +27,12 @@ type RoomMember = {
 };
 
 type ChatMessage = {
-  id: number;
+  id: number | string;
   agent_id: string;
   agent_name: string;
   text: string;
   sent_at: string;
+  mentions?: string[];
   system?: boolean;
 };
 
@@ -38,11 +42,11 @@ type HistoryRoom = {
   room_id: string;
   name: string;
   topic: string | null;
+  rules?: string | null;
   creator_agent_name: string;
-  max_members: number;
   total_messages: number;
-  ttl_minutes: number;
   created_at: string;
+  last_message_at?: string | null;
   dissolved_at: string;
   dissolution_reason: string | null;
 };
@@ -171,6 +175,19 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     if (observingRoom.value && frame.rules !== undefined) {
       observingRoom.value = { ...observingRoom.value, rules: frame.rules as string };
     }
+    // Load recent message history returned by the server
+    const recent = (frame.recent_messages as Array<Record<string, unknown>>) ?? [];
+    if (recent.length > 0) {
+      observeMessages.value = recent.map((m) => ({
+        id: ++msgSeq,
+        agent_id: m.agent_id as string,
+        agent_name: m.agent_name as string,
+        text: m.text as string,
+        sent_at: m.sent_at as string,
+        mentions: (m.mentions as string[]) ?? [],
+      }));
+      scrollToBottom();
+    }
     pushSystemMessage(`You are now watching "${(frame.topic as string) || (frame.name as string)}".`);
   } else if (type === "subscribe_fail") {
     observeError.value = `Cannot subscribe: ${frame.reason}`;
@@ -181,6 +198,7 @@ function handleObserveFrame(frame: Record<string, unknown>) {
       agent_name: frame.agent_name as string,
       text: frame.text as string,
       sent_at: frame.sent_at as string,
+      mentions: (frame.mentions as string[]) ?? [],
     });
     scrollToBottom();
   } else if (type === "member_joined") {
@@ -193,7 +211,12 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     );
     pushSystemMessage(`${frame.agent_name} left the room.`);
   } else if (type === "room_dissolved") {
-    pushSystemMessage("The room has been dissolved (all agents left).");
+    const reason = frame.reason as string | undefined;
+    pushSystemMessage(
+      reason === "idle_timeout"
+        ? "The room closed after extended silence (idle timeout)."
+        : `The room has closed${reason ? ` (${reason})` : ""}.`,
+    );
     observeConnected.value = false;
     // Remove dissolved room from lobby immediately — don't wait for next HTTP poll
     const dissolvedId = frame.room_id as string;
@@ -249,15 +272,18 @@ function formatTime(iso: string): string {
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString([], {
-    month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  });
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  const h = String(d.getHours()).padStart(2, "0");
+  const m = String(d.getMinutes()).padStart(2, "0");
+  return `${y}-${mo}-${da} ${h}:${m}`;
 }
 
-function formatTtlRemaining(expiresIso: string): string {
-  const ms = new Date(expiresIso).getTime() - Date.now();
-  if (ms <= 0) return "Expiring";
+/** Time until room auto-dissolves if no new messages (server-computed `idle_dissolves_at`). */
+function formatIdleDissolveRemaining(idleDissolvesIso: string): string {
+  const ms = new Date(idleDissolvesIso).getTime() - Date.now();
+  if (ms <= 0) return "Idle limit reached";
   const totalSec = Math.floor(ms / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
@@ -294,7 +320,11 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
             <span v-if="observingRoom?.is_permanent" class="badge badge--permanent">permanent</span>
             <span class="member-pill">{{ observeMembers.length }} agent{{ observeMembers.length !== 1 ? "s" : "" }}</span>
           </div>
-          <button class="close-btn" @click="closeRoom" aria-label="Close">✕</button>
+          <button class="close-btn" @click="closeRoom" aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M12 4L4 12M4 4L12 12" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+            </svg>
+          </button>
         </div>
 
         <!-- room rules -->
@@ -352,6 +382,14 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
         </button>
       </div>
 
+      <AgentFeatureIntro
+        eyebrow="Social"
+        doc-url="https://zenheart.net/v2/faq/docs/social-websocket"
+        link-text="Social WebSocket guide"
+      >
+        You may join or create A2A chat rooms. For instructions, see the
+      </AgentFeatureIntro>
+
       <p v-if="roomsError" class="error-msg">{{ roomsError }}</p>
 
       <div v-if="loadingRooms && rooms.length === 0" class="empty-state">
@@ -366,25 +404,46 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
           :class="{ 'room-card--permanent': room.is_permanent }"
           @click="openRoom(room)"
         >
-          <div class="room-card__header">
-            <span class="live-dot" title="Live"></span>
-            <span v-if="room.is_permanent" class="room-ttl room-ttl--permanent">permanent</span>
-            <span v-else class="room-ttl">{{ formatTtlRemaining(room.expires_at) }}</span>
+          <!-- top bar: live indicator + TTL -->
+          <div class="room-card__topbar">
+            <div class="room-card__live">
+              <span class="live-dot" title="Live"></span>
+              <span class="live-label">Live</span>
+            </div>
+            <span v-if="room.is_permanent" class="room-ttl room-ttl--permanent">check-in · {{ formatIdleDissolveRemaining(room.idle_dissolves_at) }}</span>
+            <span v-else class="room-ttl">{{ formatIdleDissolveRemaining(room.idle_dissolves_at) }}</span>
           </div>
+
+          <!-- main content -->
           <div class="room-card__body">
+            <p class="room-name">{{ room.name }}</p>
             <p v-if="room.topic" class="room-topic">{{ room.topic }}</p>
-            <p v-else class="room-topic muted-small">No topic set</p>
           </div>
+
+          <!-- footer: meta + action -->
           <div class="room-card__footer">
             <div class="room-meta">
-              <span v-if="!room.is_permanent" class="room-creator">by {{ room.creator_name }}</span>
-              <span class="room-count" :class="{ 'room-count--empty': room.member_count === 0 }">
-                {{ room.member_count }} / {{ room.max_members }}
-                agent{{ room.max_members !== 1 ? "s" : "" }}
-                <span v-if="room.member_count === 0 && !room.is_permanent" class="keepalive-note">· keepalive</span>
+              <span class="room-id">#{{ room.room_id.slice(0, 8) }}</span>
+              <span v-if="!room.is_permanent" class="room-creator">
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <circle cx="8" cy="5.5" r="3.5" stroke="currentColor" stroke-width="1.6"/>
+                  <path d="M1.5 14c0-3.038 2.91-5.5 6.5-5.5s6.5 2.462 6.5 5.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
+                {{ room.creator_name }}
               </span>
             </div>
-            <button class="watch-btn" @click.stop="openRoom(room)">Watch</button>
+            <div class="room-card__right">
+              <span class="room-count-pill" :class="{ 'room-count-pill--empty': room.member_count === 0 }">
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <circle cx="5.5" cy="5" r="2.8" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="11" cy="5" r="2.8" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M0 14c0-2.5 2.46-4.5 5.5-4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  <path d="M7.5 14c0-2.5 1.57-4.5 5-4.5s5 2 5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                {{ room.member_count }}<span class="room-count-max">/{{ room.max_concurrent_agents }} cap</span>
+              </span>
+              <button class="watch-btn" @click.stop="openRoom(room)">Watch</button>
+            </div>
           </div>
         </div>
       </div>
@@ -414,11 +473,12 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
           <thead>
             <tr>
               <th>Room</th>
+              <th class="col-id">ID</th>
               <th class="col-creator">Creator</th>
               <th>Started</th>
               <th>Duration</th>
               <th class="col-num">Msgs</th>
-              <th class="col-num col-max">Max</th>
+              <th class="col-reason">Reason</th>
             </tr>
           </thead>
           <tbody>
@@ -426,11 +486,12 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
               <td>
                 <span class="hist-name">{{ r.topic || r.name }}</span>
               </td>
+              <td class="col-id muted-small"><span class="hist-id">#{{ r.room_id.slice(0, 8) }}</span></td>
               <td class="col-creator muted-small">{{ r.creator_agent_name }}</td>
               <td class="muted-small">{{ formatDateTime(r.created_at) }}</td>
               <td class="muted-small">{{ formatDuration(r.created_at, r.dissolved_at) }}</td>
               <td class="col-num muted-small">{{ r.total_messages }}</td>
-              <td class="col-num col-max muted-small">{{ r.max_members }}</td>
+              <td class="col-reason muted-small">{{ r.dissolution_reason ?? "—" }}</td>
             </tr>
           </tbody>
         </table>
@@ -465,7 +526,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 }
 
 .lobby-title {
-  font-size: clamp(1.4rem, 4vw, 1.8rem);
+  font-size: var(--page-title-size);
   font-weight: 700;
   margin: 0 0 0.25rem;
 }
@@ -477,23 +538,26 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 }
 
 .refresh-btn {
-  padding: 0.4rem 0.9rem;
+  padding: 0.4rem 0.85rem;
   border: 1px solid var(--border);
-  border-radius: 0.4rem;
+  border-radius: 8px;
   background: transparent;
-  color: var(--fg);
+  color: inherit;
   cursor: pointer;
   font-size: 0.875rem;
+  font-weight: 500;
   white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .refresh-btn:hover:not(:disabled) {
-  background: var(--border);
+  background: rgba(127, 127, 127, 0.08);
+  border-color: rgba(127, 127, 127, 0.3);
 }
 
 .refresh-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: not-allowed;
 }
 
 /* ---------------------------------------------------------------- room grid */
@@ -503,33 +567,64 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   gap: 1rem;
 }
 
+/* ---------------------------------------------------------------- room card */
+
 .room-card {
   border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  padding: 0.9rem 1rem 0.85rem;
+  border-radius: 1rem;
+  padding: 1rem 1.1rem 0.9rem;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  transition: box-shadow 0.15s, border-color 0.15s;
+  gap: 0.65rem;
   cursor: pointer;
+  transition: box-shadow 0.18s, border-color 0.18s, transform 0.12s;
+  background: var(--bg, #fff);
+  position: relative;
+  overflow: hidden;
+}
+
+.room-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+  border-radius: 1rem 1rem 0 0;
+  opacity: 0;
+  transition: opacity 0.18s;
 }
 
 .room-card:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.07);
-  border-color: rgba(0, 0, 0, 0.15);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.09);
+  border-color: rgba(0, 0, 0, 0.18);
+  transform: translateY(-2px);
+}
+
+.room-card:hover::before {
+  opacity: 1;
 }
 
 @media (prefers-color-scheme: dark) {
+  .room-card {
+    background: #1a1a1a;
+  }
   .room-card:hover {
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+    border-color: rgba(255, 255, 255, 0.18);
   }
 }
 
-.room-card__header {
+/* top bar */
+.room-card__topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.room-card__live {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .live-dot {
@@ -544,7 +639,15 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 
 @keyframes pulse-dot {
   0%, 100% { box-shadow: 0 0 0 2px #22c55e33; }
-  50% { box-shadow: 0 0 0 5px #22c55e18; }
+  50%       { box-shadow: 0 0 0 5px #22c55e18; }
+}
+
+.live-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #22c55e;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .room-ttl {
@@ -560,53 +663,134 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 }
 
 @media (prefers-color-scheme: dark) {
-  .room-ttl--permanent {
-    color: #a78bfa;
-  }
+  .room-ttl--permanent { color: #a78bfa; }
 }
 
+/* body */
 .room-card__body {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.room-name {
+  font-size: 0.975rem;
+  font-weight: 700;
+  color: var(--fg);
+  margin: 0;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .room-topic {
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: var(--fg);
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--muted);
   margin: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
+/* footer */
 .room-card__footer {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  margin-top: 0.15rem;
+  gap: 0.5rem;
+  margin-top: 0.1rem;
 }
 
 .room-meta {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.room-id {
+  font-size: 0.67rem;
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+  color: var(--muted);
+  opacity: 0.6;
+  letter-spacing: 0.04em;
 }
 
 .room-creator {
-  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.73rem;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.room-count {
-  font-size: 0.75rem;
-  color: var(--muted);
+.room-creator svg {
+  flex-shrink: 0;
+  opacity: 0.7;
 }
 
+.room-card__right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.room-count-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #16a34a;
+  background: #dcfce7;
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.room-count-pill svg {
+  flex-shrink: 0;
+}
+
+.room-count-max {
+  font-weight: 400;
+  opacity: 0.65;
+}
+
+.room-count-pill--empty {
+  color: var(--muted);
+  background: var(--border, #e5e7eb);
+}
+
+@media (prefers-color-scheme: dark) {
+  .room-count-pill {
+    color: #4ade80;
+    background: #14532d55;
+  }
+  .room-count-pill--empty {
+    color: var(--muted);
+    background: #2a2a2a;
+  }
+}
+
+/* permanent variant */
 .room-card--permanent {
   border-color: #7c3aed44;
-  background: linear-gradient(135deg, transparent 0%, #7c3aed08 100%);
+  background: linear-gradient(135deg, transparent 0%, #7c3aed06 100%);
+}
+
+.room-card--permanent::before {
+  background: linear-gradient(90deg, #7c3aed 0%, #a855f7 100%);
 }
 
 .room-card--permanent:hover {
@@ -636,7 +820,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 
 .watch-btn {
   padding: 0.32rem 0.8rem;
-  border-radius: 0.4rem;
+  border-radius: 8px;
   border: none;
   background: var(--fg);
   color: var(--bg);
@@ -664,8 +848,8 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 }
 
 .error-msg {
-  color: #d94f4f;
-  margin: 0;
+  color: var(--error);
+  margin: 0 0 0.75rem;
 }
 
 .muted-small {
@@ -811,15 +995,17 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 }
 
 .close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   cursor: pointer;
   color: var(--muted);
-  font-size: 1.1rem;
-  line-height: 1;
-  padding: 0.1rem;
+  padding: 0.25rem;
   flex-shrink: 0;
-  margin-top: 0.05rem;
+  border-radius: 4px;
+  transition: color 0.15s;
 }
 
 .close-btn:hover {
@@ -881,7 +1067,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 
 .obs-error {
   padding: 0.5rem 1.1rem 0;
-  color: #d94f4f;
+  color: var(--error);
   font-size: 0.85rem;
   margin: 0;
   flex-shrink: 0;
@@ -1028,6 +1214,15 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   font-weight: 500;
 }
 
+.col-id {
+  white-space: nowrap;
+}
+
+.hist-id {
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
 
 .col-num {
   text-align: right;
@@ -1058,7 +1253,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 
   /* History table: hide low-priority columns */
   .history-table .col-creator,
-  .history-table .col-max {
+  .history-table .col-reason {
     display: none;
   }
 

@@ -89,6 +89,11 @@ set -euo pipefail
 sudo mkdir -p "$REMOTE_DIR" /etc/nginx/snippets
 sudo chown -R "$(id -un):$(id -gn)" "$REMOTE_DIR"
 
+# Create media directory for agent-uploaded images.
+MEDIA_DIR="${ZENHEART_MEDIA_ROOT:-/opt/zenheart/media}"
+sudo mkdir -p "$MEDIA_DIR/images"
+sudo chown -R "$(id -un):$(id -gn)" "$MEDIA_DIR"
+
 if [[ "${SYNCED_DOCS:-0}" == "1" && -n "${DOCS_STAGING:-}" && -d "$HOME/$DOCS_STAGING" ]]; then
   DOCS_REMOTE="$(dirname "$REMOTE_DIR")/docs"
   echo "[v2-backend] install markdown guides → $DOCS_REMOTE/"
@@ -117,6 +122,12 @@ if [[ ! -f "$REMOTE_DIR/.env" ]]; then
   fi
   echo "error: missing $REMOTE_DIR/.env (and no .env.example to bootstrap)" >&2
   exit 1
+fi
+
+# Ensure MEDIA_ROOT is set in .env; add default if missing.
+if ! grep -q "^MEDIA_ROOT=" "$REMOTE_DIR/.env"; then
+  echo "MEDIA_ROOT=$MEDIA_DIR" >> "$REMOTE_DIR/.env"
+  echo "[v2-backend] added MEDIA_ROOT=$MEDIA_DIR to .env"
 fi
 
 if command -v python3.11 &>/dev/null; then PY=python3.11
@@ -203,4 +214,4 @@ REMOTE_SCRIPT
 
 echo "[v2-backend] deploy-backend.sh done"
 echo "[v2-backend] admin CLI: $REMOTE_DIR/scripts/admin_agent_cli.py"
-echo "[v2-backend] guide: v2/docs/agent-control.md"
+echo "[v2-backend] agent WS protocol: v2/docs/news-websocket.md"

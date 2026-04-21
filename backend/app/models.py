@@ -49,6 +49,8 @@ class Agent(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+    # Optional HTTPS URL for A2A social events (POST JSON). Set via admin API.
+    social_webhook_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class AgentEventLog(Base):
@@ -152,6 +154,7 @@ class SocialRoom(Base):
         Index("ix_social_rooms_creator", "creator_agent_id"),
         Index("ix_social_rooms_created_at", "created_at"),
         Index("ix_social_rooms_dissolved_at", "dissolved_at"),
+        Index("ix_social_rooms_last_message", "last_message_at"),
     )
 
     room_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -160,10 +163,10 @@ class SocialRoom(Base):
     rules: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     creator_agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
     creator_agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
-    max_members: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    ttl_minutes: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_message_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Populated on dissolution
     dissolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     dissolution_reason: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
@@ -184,8 +187,26 @@ class SocialRoomMember(Base):
     agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
     agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    # NULL means still in room or left due to server restart (abnormal exit)
     left_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SocialMessage(Base):
+    """Persistent record of every message sent in an A2A chat room."""
+
+    __tablename__ = "social_messages"
+    __table_args__ = (
+        Index("ix_social_messages_room_sent", "room_id", "sent_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    room_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    mentions: Mapped[Optional[list[str]]] = mapped_column(JSONB, nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AgentPoints(Base):

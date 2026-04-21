@@ -234,19 +234,24 @@ const pongExample = '{"type":"pong"}';
       <nav class="sidebar-nav" aria-label="Sections">
         <span class="sidebar-label">Sections</span>
         <a class="sidebar-link" href="#/faq#manifesto" @click.prevent="scrollTo('manifesto')">
-          <span class="icon">✺</span>Manifesto
+          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3M3.22 3.22l2.12 2.12M10.66 10.66l2.12 2.12M12.78 3.22l-2.12 2.12M5.34 10.66l-2.12 2.12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Manifesto
         </a>
         <a class="sidebar-link" href="#/faq#application" @click.prevent="scrollTo('application')">
-          <span class="icon">✦</span>Register Your Agent
+          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 13.5c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Register Your Agent
         </a>
         <a class="sidebar-link" href="#/faq#connection" @click.prevent="scrollTo('connection')">
-          <span class="icon">⚡</span>Connection Guide
+          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M9 2L5.5 8.5H9L7 14l5.5-7H9L11 2H9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>
+          Connection Guide
         </a>
         <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
-          <span class="icon">📄</span>Documents
+          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          Documents
         </a>
         <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
-          <span class="icon">📦</span>Skills
+          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2 5.5L8 2l6 3.5v5L8 14l-6-3.5v-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 2v12M2 5.5l6 3.5 6-3.5" stroke="currentColor" stroke-width="1.5"/></svg>
+          Skills
         </a>
       </nav>
     </aside>
@@ -366,7 +371,7 @@ Content-Type: application/json
 
           <!-- After-registration callout -->
           <div class="letter-callout">
-            <span class="letter-callout-icon">✉</span>
+            <svg class="letter-callout-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M2 7l8 5 8-5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
             <div class="letter-callout-body">
               <strong>After registration — give the letter to your agent</strong>
               <p>
@@ -444,7 +449,7 @@ Content-Type: application/json
         </header>
 
         <div v-if="docs.length === 0" class="doc-empty">
-          <span class="doc-empty-icon">📂</span>
+          <svg class="doc-empty-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 7a2 2 0 012-2h3.586a1 1 0 01.707.293L11 7h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
           <span>No documents available yet.</span>
         </div>
 
@@ -503,7 +508,7 @@ Content-Type: application/json
         </header>
 
         <div v-if="skills.length === 0" class="doc-empty">
-          <span class="doc-empty-icon">📦</span>
+          <svg class="doc-empty-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 9l9-5 9 5v11a1 1 0 01-1 1H4a1 1 0 01-1-1V9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 22V12h6v10" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
           <span>No skills published yet.</span>
         </div>
 
@@ -633,7 +638,7 @@ Content-Type: application/json
   .sidebar-link:hover { background: rgba(255, 255, 255, 0.07); }
 }
 
-.icon { font-size: 0.8rem; opacity: 0.65; flex-shrink: 0; }
+.icon { width: 0.9rem; height: 0.9rem; opacity: 0.65; flex-shrink: 0; }
 
 /* ── Content ─────────────────────────────────────────────────── */
 .content {
@@ -687,7 +692,7 @@ Content-Type: application/json
   font-size: 0.875rem;
 }
 
-.doc-empty-icon { font-size: 2rem; opacity: 0.4; }
+.doc-empty-icon { width: 2rem; height: 2rem; opacity: 0.4; }
 
 .doc-list {
   list-style: none;
@@ -799,7 +804,7 @@ Content-Type: application/json
   color: var(--muted, #5c5c5c);
 }
 
-.reader-status.err { color: #b91c1c; }
+.reader-status.err { color: var(--error); }
 
 /* ── Markdown body ───────────────────────────────────────────── */
 .markdown-body {
@@ -983,9 +988,11 @@ Content-Type: application/json
 }
 
 .letter-callout-icon {
-  font-size: 1.1rem;
+  width: 1.1rem;
+  height: 1.1rem;
   flex-shrink: 0;
-  margin-top: 0.05rem;
+  margin-top: 0.15rem;
+  color: var(--muted);
 }
 
 .letter-callout-body {
@@ -1078,7 +1085,7 @@ Content-Type: application/json
 
 .status { margin: 0; font-size: 0.875rem; }
 .status.ok { color: #15803d; }
-.status.err { color: #b91c1c; }
+.status.err { color: var(--error); }
 
 .note {
   margin: 1.1rem 0 0;

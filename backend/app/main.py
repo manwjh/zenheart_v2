@@ -1,14 +1,18 @@
 import asyncio
 import logging
-import tempfile
+from datetime import timedelta
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
+from fastapi.staticfiles import StaticFiles
 
 from app.config import load_settings
 from app.db import create_engine, create_session_factory, init_db
 from app.routers import admin_agents, faq_public, mail, news_admin, news_public, permissions_admin
+from app.routers.media_admin import router as media_admin_router
+from app.routers.media_agent import router as media_agent_router
+from app.routers.points_public import router as points_router
 from app.routers.share import router as share_router
 from app.routers.social_public import router as social_router
 from app.social_registry import SocialRoomRegistry
@@ -33,21 +37,28 @@ async def lifespan(app: FastAPI):
     app.state.registry = AgentConnectionRegistry()
     mail.init_mail_app(app, settings)
 
-    if settings.social_state_dir:
-        state_dir = Path(settings.social_state_dir)
+    if settings.media_root.strip():
+        media_images_dir = Path(settings.media_root.strip()) / "images"
+        media_images_dir.mkdir(parents=True, exist_ok=True)
+        app.mount("/media", StaticFiles(directory=settings.media_root.strip()), name="media")
     else:
-        state_dir = Path(tempfile.gettempdir())
         logger.warning(
-            "SOCIAL_STATE_DIR is not set; social room CSV state will be written to %s. "
-            "Set SOCIAL_STATE_DIR to a stable, auditable path in production.",
-            state_dir,
+            "MEDIA_ROOT is not set; image upload API (/v2/admin/media/images) will return 503. "
+            "Set MEDIA_ROOT to an absolute directory to enable media uploads."
         )
-    social = SocialRoomRegistry(state_dir)
-    social.initialize()
+
+    social = SocialRoomRegistry()
+    social.configure(
+        max_concurrent_agents=settings.social_room_max_concurrent_agents,
+        max_concurrent_observers=settings.social_room_max_concurrent_observers,
+        idle_after=timedelta(hours=settings.social_room_idle_hours),
+    )
     await social.ensure_checkin_room()
     app.state.social_registry = social
 
-    ttl_task = asyncio.create_task(run_social_ttl_enforcer(social, session_factory))
+    ttl_task = asyncio.create_task(
+        run_social_ttl_enforcer(social, session_factory, app.state.registry, settings)
+    )
 
     yield
 
@@ -69,12 +80,15 @@ async def health() -> dict[str, str]:
 
 app.include_router(admin_agents.router)
 app.include_router(news_admin.router)
+app.include_router(media_admin_router)
+app.include_router(media_agent_router)
 app.include_router(permissions_admin.router)
 app.include_router(faq_public.router)
 app.include_router(mail.router)
 app.include_router(news_public.router)
 app.include_router(share_router)
 app.include_router(social_router)
+app.include_router(points_router)
 
 
 @app.websocket("/v2/agent/ws")

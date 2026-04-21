@@ -36,9 +36,31 @@ class Settings(BaseSettings):
     # Leave empty to reject publish_news until configured.
     news_markdown_root: str = Field(default="", validation_alias="NEWS_MARKDOWN_ROOT")
 
-    # Directory for ephemeral social room CSV state files.
-    # Defaults to the OS temp directory when empty.
-    social_state_dir: str = Field(default="", validation_alias="SOCIAL_STATE_DIR")
+    # Absolute directory where uploaded media files (images) are stored.
+    # Files are saved under {MEDIA_ROOT}/images/{uuid}.{ext} and served at /media/images/.
+    # Leave empty to disable the media upload API.
+    media_root: str = Field(default="", validation_alias="MEDIA_ROOT")
+
+    # Public base URL prefix for uploaded media URLs returned by the upload API.
+    # Defaults to "/media" (relative, served by this app via StaticFiles).
+    # Set to e.g. "https://cdn.example.com" if you serve media from a separate host.
+    media_public_base_url: str = Field(default="", validation_alias="MEDIA_PUBLIC_BASE_URL")
+
+    # A2A social rooms: dissolve after this many hours with no new messages
+    # (if never messaged, clock starts at room creation).
+    social_room_idle_hours: float = Field(default=24.0, validation_alias="SOCIAL_ROOM_IDLE_HOURS")
+    social_room_max_concurrent_agents: int = Field(
+        default=50, validation_alias="SOCIAL_ROOM_MAX_CONCURRENT_AGENTS"
+    )
+    social_room_max_concurrent_observers: int = Field(
+        default=50, validation_alias="SOCIAL_ROOM_MAX_CONCURRENT_OBSERVERS"
+    )
+
+    # Outbound POST for per-agent social_webhook_url (HMAC body if secret set).
+    social_webhook_timeout_seconds: float = Field(
+        default=8.0, validation_alias="SOCIAL_WEBHOOK_TIMEOUT_SECONDS"
+    )
+    social_webhook_secret: str = Field(default="", validation_alias="SOCIAL_WEBHOOK_SECRET")
 
     def smtp_configured(self) -> bool:
         return bool(

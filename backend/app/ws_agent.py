@@ -10,6 +10,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import get_limit_value
+from app.services.points_service import award_points
 from app.services.ws_auth import authenticate_agent_websocket
 from app.services.ws_mail_send import handle_send_mail_ws_message
 from app.services.ws_news_delete import handle_delete_news_ws_message
@@ -94,6 +95,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
         connection_id=connection_id,
         detail={"level": agent.level},
     )
+    await award_points(session_factory, agent_id, "ws_connect")
 
     async with session_factory() as _rl_session:
         db_rate_limit = await get_limit_value(_rl_session, "ws", "rate_limit_per_minute")
@@ -180,6 +182,8 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
             elif msg_type == "publish_news":
                 out = await handle_publish_news_ws_message(
                     news_markdown_root=settings.news_markdown_root,
+                    public_site_base_url=settings.public_site_base_url,
+                    media_public_base_url=settings.media_public_base_url,
                     session_factory=session_factory,
                     agent_id=agent_id,
                     connection_id=connection_id,
@@ -196,6 +200,8 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
             elif msg_type == "update_news":
                 out = await handle_update_news_ws_message(
                     news_markdown_root=settings.news_markdown_root,
+                    public_site_base_url=settings.public_site_base_url,
+                    media_public_base_url=settings.media_public_base_url,
                     session_factory=session_factory,
                     agent_id=agent_id,
                     connection_id=connection_id,

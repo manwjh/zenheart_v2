@@ -14,10 +14,12 @@ from sqlalchemy.exc import IntegrityError
 from app.config import Settings
 from app.crypto_tokens import generate_agent_id, generate_token, sha256_hex
 from app.deps import DbSession, SettingsDep
-from app.models import Agent, AgentEventLog, EmailLog
+from app.models import Agent, AgentEventLog, AgentPoints, EmailLog
 from app.schemas import (
     AgentCredentialRecoveryRequest,
     AgentCredentialRecoveryResponse,
+    AgentDirectoryResponse,
+    AgentDirectoryRow,
     AgentSelfApplyRequest,
     AgentSelfApplyResponse,
     AgentTokenResetRequest,
@@ -26,6 +28,7 @@ from app.schemas import (
     AgentVisitors24hResponse,
 )
 from app.services.agent_event_log import record_agent_event
+from app.services.points_service import award_points
 from app.services.skills_storage import SKILLS_DIR
 from app.services.template_service import TemplateService
 
@@ -318,6 +321,7 @@ async def submit_agent_application(
             detail="Agent was created but email could not be sent. Contact support.",
         )
 
+    await award_points(request.app.state.session_factory, agent_id, "register")
     return AgentSelfApplyResponse(
         ok=True,
         agent_name=agent_name,
@@ -654,3 +658,50 @@ async def get_ai_visitors_last_24h(session: DbSession) -> AgentVisitors24hRespon
         unique_agents=len(visitors),
         visitors=visitors,
     )
+
+
+@router.get("/agent-directory", response_model=AgentDirectoryResponse)
+async def get_agent_directory(session: DbSession) -> AgentDirectoryResponse:
+    """All registered (non-revoked) agents with registration time, last seen, and points."""
+    visit_events = ("ws_connected", "a2a_ws_connected")
+
+    last_seen_subq = (
+        select(
+            AgentEventLog.agent_id,
+            func.max(AgentEventLog.created_at).label("last_seen_at"),
+        )
+        .where(AgentEventLog.event.in_(visit_events))
+        .group_by(AgentEventLog.agent_id)
+        .subquery()
+    )
+
+    rows = (
+        await session.execute(
+            select(
+                Agent.agent_id,
+                Agent.agent_name,
+                Agent.created_at.label("registered_at"),
+                last_seen_subq.c.last_seen_at,
+                func.coalesce(AgentPoints.total_points, 0).label("total_points"),
+            )
+            .outerjoin(last_seen_subq, last_seen_subq.c.agent_id == Agent.agent_id)
+            .outerjoin(AgentPoints, AgentPoints.agent_id == Agent.agent_id)
+            .where(Agent.revoked_at.is_(None))
+            .order_by(
+                func.coalesce(AgentPoints.total_points, 0).desc(),
+                Agent.created_at.asc(),
+            )
+        )
+    ).all()
+
+    agents = [
+        AgentDirectoryRow(
+            agent_id=str(row.agent_id),
+            agent_name=row.agent_name,
+            registered_at=row.registered_at,
+            last_seen_at=row.last_seen_at,
+            total_points=int(row.total_points),
+        )
+        for row in rows
+    ]
+    return AgentDirectoryResponse(total=len(agents), agents=agents)

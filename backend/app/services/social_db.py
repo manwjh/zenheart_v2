@@ -6,8 +6,9 @@ exceptions are caught and logged so that a DB hiccup never breaks the
 WebSocket flow.
 
 Tables written:
-  social_rooms        – room lifecycle (created → dissolved)
+  social_rooms        – room lifecycle, last_message_at, dissolved metadata
   social_room_members – per-agent join/leave history
+  social_messages     – full text of each chat message (for replay on join/subscribe)
 """
 from __future__ import annotations
 
@@ -15,10 +16,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import SocialRoom, SocialRoomMember
+from app.models import SocialMessage, SocialRoom, SocialRoomMember
 from app.social_registry import ChatRoom
 
 logger = logging.getLogger(__name__)
@@ -38,10 +39,8 @@ async def create_room_record(
                 rules=room.rules or None,
                 creator_agent_id=room.creator_id,
                 creator_agent_name=room.creator_name,
-                max_members=room.max_members,
-                ttl_minutes=room.ttl_minutes,
                 created_at=room.created_at,
-                expires_at=room.expires_at,
+                last_message_at=room.last_message_at,
             ))
             # Creator is the first member
             session.add(SocialRoomMember(
@@ -89,7 +88,6 @@ async def record_member_leave(
     ts = left_at or datetime.now(timezone.utc)
     try:
         async with session_factory() as session:
-            # Update the latest open row (left_at IS NULL) for this agent in this room
             await session.execute(
                 update(SocialRoomMember)
                 .where(
@@ -107,6 +105,74 @@ async def record_member_leave(
         )
 
 
+async def record_social_message(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    agent_id: str,
+    agent_name: str,
+    text: str,
+    mentions: list[str],
+    sent_at: datetime,
+) -> None:
+    """Persist a chat message and refresh room last_message_at. Fire-and-forget."""
+    try:
+        async with session_factory() as session:
+            session.add(SocialMessage(
+                room_id=room_id,
+                agent_id=agent_id,
+                agent_name=agent_name,
+                text=text,
+                mentions=mentions or None,
+                sent_at=sent_at,
+            ))
+            await session.execute(
+                update(SocialRoom)
+                .where(SocialRoom.room_id == room_id)
+                .values(
+                    last_message_at=sent_at,
+                    total_messages=SocialRoom.total_messages + 1,
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "social_db: failed to record message room_id=%s agent_id=%s",
+            room_id, agent_id,
+        )
+
+
+async def get_room_messages(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    limit: int = 50,
+) -> list[dict]:
+    """Return the most recent messages for a room, ordered oldest-first."""
+    try:
+        async with session_factory() as session:
+            result = await session.execute(
+                select(SocialMessage)
+                .where(SocialMessage.room_id == room_id)
+                .order_by(SocialMessage.sent_at.desc())
+                .limit(limit)
+            )
+            rows = result.scalars().all()
+        return [
+            {
+                "id": str(r.id),
+                "room_id": r.room_id,
+                "agent_id": r.agent_id,
+                "agent_name": r.agent_name,
+                "text": r.text,
+                "mentions": r.mentions or [],
+                "sent_at": r.sent_at.isoformat(),
+            }
+            for r in reversed(rows)
+        ]
+    except Exception:
+        logger.exception("social_db: failed to get messages room_id=%s", room_id)
+        return []
+
+
 async def record_room_dissolved(
     session_factory: async_sessionmaker[AsyncSession],
     room_id: str,
@@ -115,13 +181,7 @@ async def record_room_dissolved(
     dissolved_at: Optional[datetime] = None,
     member_ids: Optional[list[str]] = None,
 ) -> None:
-    """
-    Mark the room as dissolved and close any still-open membership rows.
-
-    member_ids: agent_ids that should have their left_at set (members who were
-    still in the room at dissolution time — relevant for TTL expiry where agents
-    didn't send an explicit leave_room).
-    """
+    """Set dissolved_at on the room; set left_at for each id in member_ids if provided."""
     ts = dissolved_at or datetime.now(timezone.utc)
     try:
         async with session_factory() as session:

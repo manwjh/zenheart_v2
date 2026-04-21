@@ -1,19 +1,22 @@
 """
-Background TTL enforcer for A2A chat rooms.
+Background idle enforcer for A2A chat rooms.
 
 Runs as a persistent asyncio task. Every 30 seconds it:
-  1. Dissolves rooms whose expires_at has passed (ttl_expired).
-  2. Dissolves rooms that have been empty for >= ROOM_KEEPALIVE_MINUTES (all_members_left).
-  3. Ensures the permanent check-in room exists (recreates it if missing).
+  1. Dissolves rooms whose idle anchor (last message time, else creation time)
+     is older than the configured idle interval (idle_timeout).
+  2. Ensures the permanent check-in room exists (recreates it if missing).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 
+from app.config import Settings
 from app.services.agent_event_log import record_agent_event
 from app.services.social_db import record_room_dissolved
+from app.services.social_notify import build_room_dissolved_notify, schedule_social_notify
 from app.social_registry import SocialRoomRegistry
+from app.ws_registry import AgentConnectionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -23,17 +26,14 @@ _CHECK_INTERVAL_SECONDS = 30
 async def run_social_ttl_enforcer(
     social: SocialRoomRegistry,
     session_factory: object,
+    registry: AgentConnectionRegistry,
+    settings: Settings,
 ) -> None:
     """Run forever. Cancel to stop (e.g. during lifespan shutdown)."""
     while True:
         await asyncio.sleep(_CHECK_INTERVAL_SECONDS)
         try:
             dissolved_rooms = await social.dissolve_expired()
-            # dissolve_expired removes rooms from the registry under the lock and
-            # returns snapshots. Any concurrent leave_room call that wins the lock
-            # first will find the room already gone and return (None, False), leaving
-            # left_at as NULL in social_room_members — an accepted trade-off noted in
-            # the model comment ("NULL means still in room or abnormal exit").
             for room, reason in dissolved_rooms:
                 member_ids = list(room.members.keys())
                 await social.broadcast_dissolution(room, reason=reason)
@@ -52,7 +52,6 @@ async def run_social_ttl_enforcer(
                         "room_id": room.room_id,
                         "name": room.name,
                         "reason": reason,
-                        "ttl_minutes": room.ttl_minutes,
                         "total_messages": room.message_count,
                     },
                 )
@@ -60,6 +59,21 @@ async def run_social_ttl_enforcer(
                     "A2A room dissolved: %s (%s) reason=%s",
                     room.room_id, room.name, reason,
                 )
+                if member_ids:
+                    ws_body, hook_payload = build_room_dissolved_notify(
+                        room_id=room.room_id,
+                        room_name=room.name,
+                        reason=reason,
+                    )
+                    schedule_social_notify(
+                        session_factory=session_factory,
+                        registry=registry,
+                        settings=settings,
+                        recipient_agent_ids=member_ids,
+                        ws_body=ws_body,
+                        webhook_event="social.room_dissolved",
+                        webhook_payload=hook_payload,
+                    )
 
             await social.ensure_checkin_room()
         except asyncio.CancelledError:

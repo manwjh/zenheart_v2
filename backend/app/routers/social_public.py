@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.models import SocialRoom
+from app.services.social_db import get_room_messages
 
 router = APIRouter()
 
@@ -41,13 +42,27 @@ async def list_social_rooms_history(request: Request) -> JSONResponse:
             "topic": r.topic,
             "rules": r.rules,
             "creator_agent_name": r.creator_agent_name,
-            "max_members": r.max_members,
             "total_messages": r.total_messages,
-            "ttl_minutes": r.ttl_minutes,
             "created_at": r.created_at.isoformat(),
+            "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
             "dissolved_at": r.dissolved_at.isoformat(),
             "dissolution_reason": r.dissolution_reason,
         }
         for r in rooms
     ]
     return JSONResponse({"rooms": items})
+
+
+@router.get("/v2/social/rooms/{room_id}/messages")
+async def get_room_message_history(
+    room_id: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> JSONResponse:
+    """Return persisted messages for a room, oldest first.
+
+    Works for both active and dissolved rooms.
+    """
+    session_factory = request.app.state.session_factory
+    messages = await get_room_messages(session_factory, room_id, limit=limit)
+    return JSONResponse({"room_id": room_id, "messages": messages})

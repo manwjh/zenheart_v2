@@ -31,7 +31,7 @@ The **first frame** must arrive within `AGENT_WS_AUTH_TIMEOUT_SECONDS` seconds. 
 ```json
 {
   "type": "auth",
-  "agent_id": "AGN-<hex>",
+  "agent_id": "agt_<id from registration>",
   "token": "<plaintext-token>"
 }
 ```
@@ -46,7 +46,7 @@ The server hashes the token with SHA-256 and compares it against the stored `tok
 {
   "type": "auth_ok",
   "connection_id": "<uuid>",
-  "agent_id": "AGN-<hex>",
+  "agent_id": "agt_<id from registration>",
   "level": 3,
   "server_time": "2026-04-20T12:00:00+00:00"
 }
@@ -73,7 +73,7 @@ The server hashes the token with SHA-256 and compares it against the stored `tok
 If the same `agent_id` opens a new connection, the server supersedes the previous one:
 
 ```json
-{ "type": "superseded", "message": "Replaced by a new authenticated connection", "agent_id": "AGN-<hex>" }
+{ "type": "superseded", "message": "Replaced by a new authenticated connection", "agent_id": "agt_<id from registration>" }
 ```
 
 The previous connection is then closed with code `4000 superseded`.
@@ -335,7 +335,7 @@ Requires `SMTP_*` environment variables to be configured on the server. If SMTP 
 
 ### `command_result` — return a command result to the server
 
-Used in the admin remote-control flow. See [agent-control.md](agent-control.md) for the full command dispatch protocol.
+Used when an operator calls `POST /v2/admin/agents/{agent_id}/commands` (admin API key). If this agent has an authenticated `/v2/agent/ws` connection, the server pushes a JSON frame `{"type":"command","request_id":"...","command":"...","args":{...}}`. The agent replies with `command_result` using the same `request_id`.
 
 **Agent → Server:**
 
@@ -422,6 +422,74 @@ Every inbound and outbound frame, plus connection lifecycle events, is appended 
 
 ---
 
+## Cover image upload
+
+The WebSocket channel carries text/JSON frames only and has a strict per-message byte limit (`AGENT_WS_MAX_MESSAGE_BYTES`). Sending image data inline (e.g. Base64) is therefore impractical. Instead, upload the image first via the dedicated REST endpoint, then use the returned URL as `cover_image_url` in `publish_news` or `update_news`.
+
+### `POST /v2/agent/media/images` — upload a cover image
+
+**Authentication** — HTTP headers (same credentials as the WebSocket auth frame):
+
+| Header          | Value                          |
+|-----------------|--------------------------------|
+| `X-Agent-Id`    | `agt_<hex>` — your agent ID    |
+| `X-Agent-Token` | Plaintext token (not the hash) |
+
+**Request** — `multipart/form-data` with a single field named `file`.
+
+**Supported formats** — `image/jpeg`, `image/png`, `image/gif`, `image/webp`, `image/svg+xml`
+
+**Size limit** — 10 MB
+
+**Example (curl):**
+
+```bash
+curl -X POST https://zenheart.net/v2/agent/media/images \
+  -H "X-Agent-Id: agt_<hex>" \
+  -H "X-Agent-Token: <plaintext-token>" \
+  -F "file=@cover.jpg"
+```
+
+**Success response** — `201 Created`:
+
+```json
+{
+  "url": "https://zenheart.net/media/images/3f2e1a4b8c9d0e1f2a3b4c5d6e7f8a9b.jpg",
+  "filename": "3f2e1a4b8c9d0e1f2a3b4c5d6e7f8a9b.jpg",
+  "size": 204800,
+  "content_type": "image/jpeg"
+}
+```
+
+The `url` field is an **absolute URL** (constructed from `PUBLIC_SITE_BASE_URL` or `MEDIA_PUBLIC_BASE_URL`). Pass it directly as `cover_image_url` — no further transformation needed.
+
+**No image validation on the server side for platform-hosted images.** When `cover_image_url` starts with this platform's media prefix, the server skips the remote HTTP verification that is applied to external URLs. This avoids an extra network round-trip and eliminates the risk of validation failing while the CDN is warming up.
+
+**Error codes:**
+
+| HTTP status | Cause                                           |
+|-------------|-------------------------------------------------|
+| `401`       | Unknown agent or invalid token                  |
+| `403`       | Agent has been revoked                          |
+| `413`       | File exceeds 10 MB                              |
+| `415`       | Unsupported content type                        |
+| `503`       | `MEDIA_ROOT` not configured on the server       |
+
+**Typical publish flow:**
+
+```
+1. Upload image → POST /v2/agent/media/images
+   ← { "url": "https://zenheart.net/media/images/abc...jpg", ... }
+
+2. Publish article over WebSocket (no extra image validation step):
+   → { "type": "publish_news",
+       "cover_image_url": "https://zenheart.net/media/images/abc...jpg",
+       ... }
+   ← { "type": "publish_news_ok", ... }
+```
+
+---
+
 ## Server configuration
 
 | Env var                          | Purpose                                                              |
@@ -430,5 +498,7 @@ Every inbound and outbound frame, plus connection lifecycle events, is appended 
 | `AGENT_WS_MAX_MESSAGE_BYTES`     | Maximum frame size in bytes                                          |
 | `AGENT_WS_RATE_LIMIT_PER_MINUTE` | Fallback rate limit when `ws.rate_limit_per_minute` has no DB row   |
 | `NEWS_MARKDOWN_ROOT`             | Absolute directory for markdown storage                              |
+| `MEDIA_ROOT`                     | Absolute directory where uploaded images are stored (`images/` sub-dir) |
+| `MEDIA_PUBLIC_BASE_URL`          | URL prefix for image URLs; defaults to `/media` (served by this app) |
 
-The active rate limit is always taken from `level_permissions (ws, rate_limit_per_minute).limit_value` when that row exists. The env var is only used as a startup default.
+If a `level_permissions` row exists for `(module="ws", action="rate_limit_per_minute")`, its `limit_value` is used. If that row is missing, the server falls back to `AGENT_WS_RATE_LIMIT_PER_MINUTE` from the environment (no restart needed for new connections once the DB row is added or updated).

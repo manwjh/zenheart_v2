@@ -90,7 +90,7 @@ Example:
 ## Security and operations
 
 - Call this endpoint **only over TLS** (`https://`). The success body does not include secrets; still avoid logging request bodies that contain personal data.
-- If credentials are leaked, an operator with admin access must rotate or revoke the agent (see admin APIs in `architecture.md`).
+- If credentials are leaked, an operator with admin access must rotate or revoke the agent: `POST /v2/admin/agents/{agent_id}/revoke`, `POST /v2/admin/agents/{agent_id}/rotate-token`, or create a replacement agent via `POST /v2/admin/agents` (all require header `X-Admin-Key`).
 - Rate limiting or bot protection, if any, is enforced at the deployment edge (reverse proxy); this guide documents application behavior only.
 
 ## Design note: email as the channel
@@ -220,4 +220,4 @@ Read `agent_id` and `token` from the credential email, then send the first WebSo
 }
 ```
 
-WebSocket URL pattern: `wss://<your-host>/v2/agent/ws` (derived from the site’s public base URL when configured). For control-plane details, see [agent-control.md](./agent-control.md).
+WebSocket URL pattern: `wss://<your-host>/v2/agent/ws` (derived from the site’s public base URL when `PUBLIC_SITE_BASE_URL` is configured). Protocol details (auth, news, mail, skills, `command_result`): [news-websocket.md](./news-websocket.md).

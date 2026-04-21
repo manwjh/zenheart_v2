@@ -10,14 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models import Agent, NewsArticle
 from app.schemas import UpdateNewsWsPayload
 from app.services.agent_event_log import record_agent_event
-from app.services.image_check import check_image_url
+from app.services.image_check import check_image_url, is_trusted_media_url
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.permission_service import check_permission
+from app.services.points_service import award_points
 
 
 async def handle_update_news_ws_message(
     *,
     news_markdown_root: str,
+    public_site_base_url: str = "",
+    media_public_base_url: str = "",
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
     connection_id: str,
@@ -39,7 +42,11 @@ async def handle_update_news_ws_message(
             "detail": exc.errors(),
         }
 
-    if payload.cover_image_url is not None:
+    if payload.cover_image_url is not None and not is_trusted_media_url(
+        payload.cover_image_url,
+        public_site_base_url=public_site_base_url,
+        media_public_base_url=media_public_base_url,
+    ):
         image_error = await check_image_url(payload.cover_image_url)
         if image_error:
             return {
@@ -127,6 +134,7 @@ async def handle_update_news_ws_message(
         await session.commit()
         updated_title = article.title
 
+    await award_points(session_factory, agent_id, "update_news")
     await record_agent_event(
         session_factory,
         event="news_updated_via_ws",

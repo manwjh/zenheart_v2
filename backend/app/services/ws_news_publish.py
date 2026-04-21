@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models import Agent, NewsArticle
 from app.schemas import PublishNewsWsPayload
 from app.services.agent_event_log import record_agent_event
-from app.services.image_check import check_image_url
+from app.services.image_check import check_image_url, is_trusted_media_url
 from app.services.permission_service import check_permission
+from app.services.points_service import award_points
 
 
 def _markdown_file_under_root(root: Path, article_id: uuid.UUID) -> tuple[Path, str]:
@@ -30,6 +31,8 @@ def _markdown_file_under_root(root: Path, article_id: uuid.UUID) -> tuple[Path, 
 async def handle_publish_news_ws_message(
     *,
     news_markdown_root: str,
+    public_site_base_url: str = "",
+    media_public_base_url: str = "",
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
     connection_id: str,
@@ -65,13 +68,18 @@ async def handle_publish_news_ws_message(
             "detail": exc.errors(),
         }
 
-    image_error = await check_image_url(payload.cover_image_url)
-    if image_error:
-        return {
-            "type": "error",
-            "reason": "invalid_publish_news_payload",
-            "detail": [{"loc": ["cover_image_url"], "msg": image_error, "type": "value_error"}],
-        }
+    if not is_trusted_media_url(
+        payload.cover_image_url,
+        public_site_base_url=public_site_base_url,
+        media_public_base_url=media_public_base_url,
+    ):
+        image_error = await check_image_url(payload.cover_image_url)
+        if image_error:
+            return {
+                "type": "error",
+                "reason": "invalid_publish_news_payload",
+                "detail": [{"loc": ["cover_image_url"], "msg": image_error, "type": "value_error"}],
+            }
 
     # Verify identity and permission before any file I/O.
     async with session_factory() as session:
@@ -141,6 +149,7 @@ async def handle_publish_news_ws_message(
             "status": "post_published_ok",
         },
     )
+    await award_points(session_factory, agent_id, "publish_news")
 
     return {
         "type": "publish_news_ok",

@@ -6,6 +6,27 @@ _TIMEOUT = 8.0
 _FALLBACK_METHODS = ("head", "get")
 
 
+def is_trusted_media_url(url: str, *, public_site_base_url: str, media_public_base_url: str) -> bool:
+    """Return True if *url* refers to a locally-hosted image that does not need remote verification.
+
+    Trusted patterns:
+    - Relative path starting with /media/ (served by this app's StaticFiles or nginx alias)
+    - Absolute URL whose prefix matches MEDIA_PUBLIC_BASE_URL (custom CDN/storage we control)
+    - Absolute URL whose prefix matches PUBLIC_SITE_BASE_URL/media (same host, /media path)
+    """
+    if url.startswith("/media/"):
+        return True
+    if media_public_base_url.strip():
+        prefix = media_public_base_url.rstrip("/") + "/"
+        if url.startswith(prefix):
+            return True
+    if public_site_base_url.strip():
+        prefix = public_site_base_url.rstrip("/") + "/media/"
+        if url.startswith(prefix):
+            return True
+    return False
+
+
 async def check_image_url(url: str) -> str | None:
     """Verify that *url* resolves to an accessible image resource.
 
@@ -15,6 +36,8 @@ async def check_image_url(url: str) -> str | None:
     Returns None when the URL is valid and reachable.
     Returns a human-readable error string on any failure so the caller can
     embed it directly in a validation error detail.
+
+    Call is_trusted_media_url() first and skip this function for locally-hosted images.
     """
     async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT) as client:
         for method in _FALLBACK_METHODS:

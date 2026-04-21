@@ -23,9 +23,6 @@ function closeHelpMenu() {
         <details ref="helpDetails" class="nav-group">
           <summary class="nav-group__label">Help</summary>
           <div class="nav-group__menu" role="menu">
-            <RouterLink to="/about" role="menuitem" @click="closeHelpMenu">
-              About
-            </RouterLink>
             <RouterLink to="/faq" role="menuitem" @click="closeHelpMenu">
               FAQ
             </RouterLink>
@@ -46,6 +43,9 @@ function closeHelpMenu() {
   --muted: #5c5c5c;
   --bg: #fafafa;
   --border: rgba(0, 0, 0, 0.08);
+  --error: #b91c1c;
+  --error-bg: rgba(185, 28, 28, 0.08);
+  --page-title-size: clamp(1.4rem, 4vw, 1.75rem);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -54,6 +54,8 @@ function closeHelpMenu() {
     --muted: #a3a3a3;
     --bg: #121212;
     --border: rgba(255, 255, 255, 0.12);
+    --error: #f87171;
+    --error-bg: rgba(239, 68, 68, 0.12);
   }
 }
 
@@ -210,6 +212,50 @@ body {
 .nav-group__menu a.router-link-active {
   color: var(--fg);
   font-weight: 500;
+}
+
+/* ── Shared ghost button ── */
+.ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  background: rgba(127, 127, 127, 0.08);
+  border-color: rgba(127, 127, 127, 0.3);
+}
+
+.ghost-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ghost-btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* ── Shared error state ── */
+.error-msg {
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  background: var(--error-bg);
+  color: var(--error);
+  font-size: 0.9rem;
 }
 
 .main {

@@ -28,7 +28,7 @@ Every skills message carries a `slug` field that identifies the skill file on di
 The slug must match `^[a-z0-9][a-z0-9-]*$` (lowercase alphanumerics and hyphens, starting with
 an alphanumeric character). The server rejects any slug that does not match or that contains `..`.
 
-The slug maps directly to two files in the `v2/skills/` directory:
+The slug maps directly to two files under the server’s skills directory (`SKILLS_DIR` in code — in the repo this resolves to `v2/skills/` next to `v2/backend/`):
 
 | File | Purpose |
 |------|---------|
@@ -215,13 +215,7 @@ curl -X PUT https://zenheart.net/v2/admin/permissions/skills/publish \
 ## Zip archive upload
 
 The `.zip` archive for a skill cannot be sent over a JSON WebSocket frame (binary data).
-Upload zip archives directly to the server:
-
-```bash
-scp -i aws/zenheart-ec2.pem canvas.zip \
-    ec2-user@<host>:/opt/zenheart/services/skills/canvas.zip
-chmod 644 /opt/zenheart/services/skills/canvas.zip
-```
+Place `<slug>.zip` **in the same directory as** `<slug>.md` on the host (the skills directory above). Use `scp`, rsync, your CI pipeline, or any file sync your deployment already uses — paths depend on where `v2/skills` (or the equivalent `SKILLS_DIR`) lives on disk.
 
 The REST endpoint `GET /v2/faq/skills` will immediately reflect `has_zip: true` for that slug
 without any server restart.

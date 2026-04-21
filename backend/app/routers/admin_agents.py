@@ -19,6 +19,8 @@ from app.schemas import (
     AgentConnectionStatusResponse,
     DispatchAgentCommandRequest,
     DispatchAgentCommandResponse,
+    UpdateAgentSocialWebhookRequest,
+    UpdateAgentSocialWebhookResponse,
 )
 
 router = APIRouter(
@@ -95,6 +97,34 @@ async def get_agent_credentials(agent_id: str, session: DbSession) -> AdminAgent
         revoked_at=agent.revoked_at,
         created_at=agent.created_at,
         token_hash=agent.token_hash,
+        social_webhook_url=agent.social_webhook_url,
+    )
+
+
+@router.patch(
+    "/agents/{agent_id}/social-webhook",
+    response_model=UpdateAgentSocialWebhookResponse,
+)
+async def update_agent_social_webhook(
+    agent_id: str,
+    body: UpdateAgentSocialWebhookRequest,
+    session: DbSession,
+    request: Request,
+) -> UpdateAgentSocialWebhookResponse:
+    agent = await _get_agent_or_404(session, agent_id)
+    agent.social_webhook_url = body.social_webhook_url
+    await session.commit()
+    await session.refresh(agent)
+    session_factory = request.app.state.session_factory
+    await record_agent_event(
+        session_factory,
+        event="admin_social_webhook_updated",
+        agent_id=agent_id,
+        detail={"has_url": bool(agent.social_webhook_url)},
+    )
+    return UpdateAgentSocialWebhookResponse(
+        agent_id=agent.agent_id,
+        social_webhook_url=agent.social_webhook_url,
     )
 
 

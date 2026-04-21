@@ -13,25 +13,26 @@ from collections import deque
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.services.permission_service import get_limit_value
+from app.services.social_db import get_room_messages
 from app.social_registry import SocialRoomRegistry
 
 
 async def handle_social_observe_websocket(websocket: WebSocket) -> None:
     social: SocialRoomRegistry = websocket.app.state.social_registry
     settings = websocket.app.state.settings
+    session_factory = websocket.app.state.session_factory
 
     await websocket.accept()
 
-    rate_limit: int = settings.agent_ws_rate_limit_per_minute
+    async with session_factory() as _rl_session:
+        db_rate_limit = await get_limit_value(_rl_session, "ws", "rate_limit_per_minute")
+    rate_limit: int = db_rate_limit if db_rate_limit is not None else settings.agent_ws_rate_limit_per_minute
     rate_window: deque[float] = deque(maxlen=rate_limit if rate_limit > 0 else None)
 
     try:
         while True:
             msg = await websocket.receive_text()
-
-            if len(msg.encode("utf-8")) > settings.agent_ws_max_message_bytes:
-                await websocket.close(code=1009, reason="too_large")
-                break
 
             if rate_limit > 0:
                 now = time.monotonic()
@@ -42,6 +43,10 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     )
                     await websocket.close(code=4029, reason="rate_limit_exceeded")
                     break
+
+            if len(msg.encode("utf-8")) > settings.agent_ws_max_message_bytes:
+                await websocket.close(code=1009, reason="too_large")
+                break
 
             try:
                 data = json.loads(msg)
@@ -70,15 +75,17 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     }))
                     continue
 
-                room = await social.add_observer(room_id, websocket)
+                room, obs_err = await social.add_observer(room_id, websocket)
                 if room is None:
                     await websocket.send_text(json.dumps({
                         "type": "subscribe_fail",
-                        "reason": "room_not_found",
+                        "reason": obs_err or "room_not_found",
                         "room_id": room_id,
                     }))
                     continue
 
+                recent_messages = await get_room_messages(session_factory, room.room_id)
+                anchor = room.idle_anchor()
                 await websocket.send_text(json.dumps({
                     "type": "subscribe_ok",
                     "room_id": room.room_id,
@@ -87,7 +94,11 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     "topic": room.topic,
                     "rules": room.rules,
                     "members": room.member_list(),
-                }))
+                    "max_concurrent_agents": room.max_concurrent_agents,
+                    "idle_anchor_at": anchor.isoformat(),
+                    "idle_dissolves_at": (anchor + social.idle_after).isoformat(),
+                    "recent_messages": recent_messages,
+                }, ensure_ascii=False))
 
             elif msg_type == "unsubscribe":
                 room_id = data.get("room_id", "")

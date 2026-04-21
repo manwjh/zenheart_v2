@@ -123,3 +123,18 @@ class AgentConnectionRegistry:
             if connection is None:
                 return None
             return connection.connection_id
+
+    async def send_push(self, agent_id: str, payload: Dict[str, Any]) -> bool:
+        """Send a JSON frame on /v2/agent/ws if this agent is connected. Best-effort."""
+        async with self._lock:
+            connection = self._connections_by_agent_id.get(agent_id)
+        if connection is None:
+            return False
+        try:
+            async with connection.send_lock:
+                await connection.websocket.send_text(
+                    json.dumps(payload, ensure_ascii=False)
+                )
+            return True
+        except Exception:
+            return False

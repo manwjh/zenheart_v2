@@ -4,49 +4,76 @@ Agent social WebSocket handler — /v2/social/ws
 Agents authenticate with the same token scheme as /v2/agent/ws, then
 participate in A2A chat rooms (create / join / leave / send_message).
 
-Room limits per agent level
----------------------------
-Level 0-2  (high trust)  : max 10 members, max 30 min TTL
-Level 3-5  (standard)    : max  5 members, max 20 min TTL
-Level 6-9  (limited)     : max  3 members, max 10 min TTL
+Room capacity is limited by concurrent WebSocket connections per room
+(configurable). Rooms auto-dissolve after configurable idle time with no
+messages (see Settings social_room_*).
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 import uuid
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.config import Settings
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import check_permission, get_limit_value
+from app.services.points_service import award_points
 from app.services.social_db import (
     create_room_record,
+    get_room_messages,
     record_member_join,
     record_member_leave,
+    record_social_message,
+)
+from app.services.social_notify import (
+    build_member_joined_notify,
+    build_member_left_notify,
+    build_message_notify,
+    schedule_social_notify,
 )
 from app.services.ws_auth import authenticate_agent_websocket
 from app.social_registry import (
     ChatRoom,
     SocialRoomRegistry,
-    _ROOM_CAPACITY_DEFAULT,
-    _ROOM_TTL_DEFAULT,
-    get_room_limits,
     parse_mentions,
 )
+from app.ws_registry import AgentConnectionRegistry
 
 
 def _jdump(obj: dict) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+def _room_join_payload(
+    room: ChatRoom, recent_messages: list[dict], idle_after: timedelta,
+) -> dict:
+    anchor = room.idle_anchor()
+    return {
+        "type": "room_joined",
+        "room_id": room.room_id,
+        "status": "active",
+        "name": room.name,
+        "topic": room.topic,
+        "rules": room.rules,
+        "max_concurrent_agents": room.max_concurrent_agents,
+        "created_at": room.created_at.isoformat(),
+        "last_message_at": room.last_message_at.isoformat() if room.last_message_at else None,
+        "idle_anchor_at": anchor.isoformat(),
+        "idle_dissolves_at": (anchor + idle_after).isoformat(),
+        "members": room.member_list(),
+        "recent_messages": recent_messages,
+    }
+
+
 async def handle_social_agent_websocket(websocket: WebSocket) -> None:
     settings = websocket.app.state.settings
     social: SocialRoomRegistry = websocket.app.state.social_registry
     session_factory = websocket.app.state.session_factory
+    registry = websocket.app.state.registry
 
     await websocket.accept()
 
@@ -63,7 +90,6 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
     agent_id = auth.agent_id
 
     connection_id = str(uuid.uuid4())
-    max_members_cap, max_ttl_cap = get_room_limits(agent.level)
 
     await websocket.send_text(_jdump({
         "type": "auth_ok",
@@ -71,9 +97,10 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
         "agent_id": agent_id,
         "level": agent.level,
         "server_time": datetime.now(timezone.utc).isoformat(),
-        "room_limits": {
-            "max_members_cap": max_members_cap,
-            "max_ttl_minutes_cap": max_ttl_cap,
+        "social_limits": {
+            "max_concurrent_agents_per_room": social.max_concurrent_agents,
+            "max_concurrent_observers_per_room": social.max_concurrent_observers,
+            "room_idle_hours": settings.social_room_idle_hours,
         },
     }))
     await record_agent_event(
@@ -86,8 +113,6 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
         db_rate_limit = await get_limit_value(_rl_session, "ws", "rate_limit_per_minute")
     rate_limit = db_rate_limit if db_rate_limit is not None else settings.agent_ws_rate_limit_per_minute
     rate_window: deque[float] = deque(maxlen=rate_limit if rate_limit > 0 else None)
-
-    # ------------------------------------------------------------------ message loop
 
     try:
         while True:
@@ -128,23 +153,24 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
             elif msg_type == "create_room":
                 await _handle_create_room(
                     websocket, social, session_factory,
-                    agent_id, agent.agent_name, agent.level,
-                    max_members_cap, max_ttl_cap, data,
+                    agent_id, agent.agent_name, agent.level, data,
                 )
 
             elif msg_type == "join_room":
                 await _handle_join_room(
-                    websocket, social, session_factory,
+                    websocket, social, session_factory, registry, settings,
                     agent_id, agent.agent_name, agent.level, data,
                 )
 
             elif msg_type == "leave_room":
-                await _handle_leave_room(websocket, social, session_factory,
-                                         agent_id, agent.agent_name)
+                await _handle_leave_room(
+                    websocket, social, session_factory, registry, settings,
+                    agent_id, agent.agent_name,
+                )
 
             elif msg_type == "send_message":
                 await _handle_send_message(
-                    websocket, social, session_factory,
+                    websocket, social, session_factory, registry, settings,
                     agent_id, agent.agent_name, agent.level, data,
                 )
 
@@ -154,26 +180,40 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        # Implicit leave on disconnect
-        room, _dissolved = await social.leave_room(agent_id)
+        room = await social.leave_room(agent_id)
         if room is not None:
             now = datetime.now(timezone.utc)
+            left_at_str = now.isoformat()
             await record_member_leave(session_factory, room.room_id, agent_id, now)
             await record_agent_event(
                 session_factory, event="a2a_room_disconnected",
                 agent_id=agent_id, connection_id=connection_id,
                 detail={"room_id": room.room_id, "room_name": room.name},
             )
-            await _broadcast_member_left(
-                social, room, agent_id, agent.agent_name, session_factory
-            )
+            await _broadcast_member_left(social, room, agent_id, agent.agent_name)
+            recipient_ids = list(room.members.keys())
+            if recipient_ids:
+                ws_body, hook_payload = build_member_left_notify(
+                    room_id=room.room_id,
+                    room_name=room.name,
+                    leaver_agent_id=agent_id,
+                    leaver_agent_name=agent.agent_name,
+                    left_at=left_at_str,
+                )
+                schedule_social_notify(
+                    session_factory=session_factory,
+                    registry=registry,
+                    settings=settings,
+                    recipient_agent_ids=recipient_ids,
+                    ws_body=ws_body,
+                    webhook_event="social.member_left",
+                    webhook_payload=hook_payload,
+                )
         await record_agent_event(
             session_factory, event="a2a_ws_disconnected",
             agent_id=agent_id, connection_id=connection_id, detail={},
         )
 
-
-# ------------------------------------------------------------------ message handlers
 
 async def _handle_create_room(
     ws: WebSocket,
@@ -182,8 +222,6 @@ async def _handle_create_room(
     agent_id: str,
     agent_name: str,
     level: int,
-    max_members_cap: int,
-    max_ttl_cap: int,
     data: dict,
 ) -> None:
     async with session_factory() as session:
@@ -192,7 +230,6 @@ async def _handle_create_room(
         await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
 
-    # Validate name
     name = data.get("name", "")
     if not isinstance(name, str) or not (1 <= len(name.strip()) <= 80):
         await ws.send_text(_jdump({
@@ -201,42 +238,14 @@ async def _handle_create_room(
         }))
         return
 
-    # Validate topic
     topic = data.get("topic", "")
-    if not isinstance(topic, str) or len(topic) > 300:
+    if not isinstance(topic, str) or not (1 <= len(topic.strip()) <= 300):
         await ws.send_text(_jdump({
             "type": "error", "reason": "invalid_create_room_payload",
-            "detail": "topic must be ≤300 chars",
+            "detail": "topic is required and must be 1-300 chars",
         }))
         return
 
-    # Validate max_members (capped by level)
-    requested_members = data.get("max_members", _ROOM_CAPACITY_DEFAULT)
-    if not isinstance(requested_members, int):
-        requested_members = _ROOM_CAPACITY_DEFAULT
-    requested_members = max(2, requested_members)
-    if requested_members > max_members_cap:
-        await ws.send_text(_jdump({
-            "type": "error", "reason": "max_members_exceeds_level_cap",
-            "detail": f"Your level allows max {max_members_cap} members",
-            "max_members_cap": max_members_cap,
-        }))
-        return
-
-    # Validate ttl_minutes (capped by level)
-    requested_ttl = data.get("ttl_minutes", _ROOM_TTL_DEFAULT)
-    if not isinstance(requested_ttl, int):
-        requested_ttl = _ROOM_TTL_DEFAULT
-    requested_ttl = max(1, requested_ttl)
-    if requested_ttl > max_ttl_cap:
-        await ws.send_text(_jdump({
-            "type": "error", "reason": "ttl_exceeds_level_cap",
-            "detail": f"Your level allows max {max_ttl_cap} minutes",
-            "max_ttl_minutes_cap": max_ttl_cap,
-        }))
-        return
-
-    # Validate rules (optional guidance for agents joining this room)
     rules = data.get("rules", "")
     if not isinstance(rules, str) or len(rules) > 2000:
         await ws.send_text(_jdump({
@@ -249,8 +258,6 @@ async def _handle_create_room(
         name=name.strip(),
         topic=topic.strip(),
         rules=rules.strip(),
-        max_members=requested_members,
-        ttl_minutes=requested_ttl,
         creator_id=agent_id,
         creator_name=agent_name,
         ws=ws,
@@ -267,25 +274,30 @@ async def _handle_create_room(
         "name": room.name,
         "topic": room.topic,
         "rules": room.rules,
-        "max_members": room.max_members,
-        "ttl_minutes": room.ttl_minutes,
-        "expires_at": room.expires_at.isoformat(),
+        "max_concurrent_agents": room.max_concurrent_agents,
+        "created_at": room.created_at.isoformat(),
+        "last_message_at": None,
+        "idle_anchor_at": room.idle_anchor().isoformat(),
+        "idle_dissolves_at": (room.idle_anchor() + social.idle_after).isoformat(),
         "members": room.member_list(),
+        "recent_messages": [],
     }))
     await create_room_record(session_factory, room)
     await record_agent_event(
         session_factory, event="a2a_room_created", agent_id=agent_id,
         detail={
             "room_id": room.room_id, "name": room.name, "topic": room.topic,
-            "max_members": room.max_members, "ttl_minutes": room.ttl_minutes,
         },
     )
+    await award_points(session_factory, agent_id, "create_room")
 
 
 async def _handle_join_room(
     ws: WebSocket,
     social: SocialRoomRegistry,
     session_factory: object,
+    registry: AgentConnectionRegistry,
+    settings: Settings,
     agent_id: str,
     agent_name: str,
     level: int,
@@ -316,18 +328,8 @@ async def _handle_join_room(
     now = datetime.now(timezone.utc)
     joined_at_str = now.isoformat()
 
-    await ws.send_text(_jdump({
-        "type": "room_joined",
-        "room_id": room.room_id,
-        "status": "active",
-        "name": room.name,
-        "topic": room.topic,
-        "rules": room.rules,
-        "max_members": room.max_members,
-        "ttl_minutes": room.ttl_minutes,
-        "expires_at": room.expires_at.isoformat(),
-        "members": room.member_list(),
-    }))
+    recent_messages = await get_room_messages(session_factory, room.room_id)
+    await ws.send_text(_jdump(_room_join_payload(room, recent_messages, social.idle_after)))
 
     broadcast_frame = {
         "type": "member_joined",
@@ -343,20 +345,42 @@ async def _handle_join_room(
         detail={"room_id": room.room_id, "name": room.name},
     )
 
+    recipient_ids = [k for k in room.members if k != agent_id]
+    if recipient_ids:
+        ws_body, hook_payload = build_member_joined_notify(
+            room_id=room.room_id,
+            room_name=room.name,
+            joiner_agent_id=agent_id,
+            joiner_agent_name=agent_name,
+            joined_at=joined_at_str,
+        )
+        schedule_social_notify(
+            session_factory=session_factory,
+            registry=registry,
+            settings=settings,
+            recipient_agent_ids=recipient_ids,
+            ws_body=ws_body,
+            webhook_event="social.member_joined",
+            webhook_payload=hook_payload,
+        )
+
 
 async def _handle_leave_room(
     ws: WebSocket,
     social: SocialRoomRegistry,
     session_factory: object,
+    registry: AgentConnectionRegistry,
+    settings: Settings,
     agent_id: str,
     agent_name: str,
 ) -> None:
-    room, _dissolved = await social.leave_room(agent_id)
+    room = await social.leave_room(agent_id)
     if room is None:
         await ws.send_text(_jdump({"type": "error", "reason": "not_in_room"}))
         return
 
     now = datetime.now(timezone.utc)
+    left_at_str = now.isoformat()
     await ws.send_text(_jdump({
         "type": "room_left",
         "room_id": room.room_id,
@@ -367,13 +391,33 @@ async def _handle_leave_room(
         session_factory, event="a2a_room_left", agent_id=agent_id,
         detail={"room_id": room.room_id, "name": room.name},
     )
-    await _broadcast_member_left(social, room, agent_id, agent_name, session_factory)
+    await _broadcast_member_left(social, room, agent_id, agent_name)
+    recipient_ids = list(room.members.keys())
+    if recipient_ids:
+        ws_body, hook_payload = build_member_left_notify(
+            room_id=room.room_id,
+            room_name=room.name,
+            leaver_agent_id=agent_id,
+            leaver_agent_name=agent_name,
+            left_at=left_at_str,
+        )
+        schedule_social_notify(
+            session_factory=session_factory,
+            registry=registry,
+            settings=settings,
+            recipient_agent_ids=recipient_ids,
+            ws_body=ws_body,
+            webhook_event="social.member_left",
+            webhook_payload=hook_payload,
+        )
 
 
 async def _handle_send_message(
     ws: WebSocket,
     social: SocialRoomRegistry,
     session_factory: object,
+    registry: AgentConnectionRegistry,
+    settings: Settings,
     agent_id: str,
     agent_name: str,
     level: int,
@@ -393,7 +437,6 @@ async def _handle_send_message(
         }))
         return
 
-    # Resolve @mentions before recording message (need room members snapshot)
     name_to_id = await social.get_name_to_id_map(agent_id)
     mentions = parse_mentions(text, name_to_id)
 
@@ -415,6 +458,15 @@ async def _handle_send_message(
         frame["mentions"] = mentions
 
     await social.broadcast_to_room(room_id, frame)
+    await record_social_message(
+        session_factory,
+        room_id=room_id,
+        agent_id=agent_id,
+        agent_name=agent_name,
+        text=text,
+        mentions=mentions,
+        sent_at=datetime.fromisoformat(sent_at),
+    )
     await record_agent_event(
         session_factory, event="a2a_message_sent", agent_id=agent_id,
         detail={
@@ -423,24 +475,38 @@ async def _handle_send_message(
             "mention_count": len(mentions),
         },
     )
+    await award_points(session_factory, agent_id, "chat_message")
 
+    room_obj = await social.get_room(room_id)
+    if room_obj:
+        recipient_ids = [k for k in room_obj.members if k != agent_id]
+        if recipient_ids:
+            ws_body, hook_payload = build_message_notify(
+                room_id=room_id,
+                room_name=room_obj.name,
+                sender_agent_id=agent_id,
+                sender_agent_name=agent_name,
+                text=text,
+                mentions=mentions,
+                sent_at=sent_at,
+            )
+            schedule_social_notify(
+                session_factory=session_factory,
+                registry=registry,
+                settings=settings,
+                recipient_agent_ids=recipient_ids,
+                ws_body=ws_body,
+                webhook_event="social.message",
+                webhook_payload=hook_payload,
+            )
 
-# ------------------------------------------------------------------ helpers
 
 async def _broadcast_member_left(
     social: SocialRoomRegistry,
     room: ChatRoom,
     agent_id: str,
     agent_name: str,
-    session_factory: object,
 ) -> None:
-    """Broadcast member_left to remaining members and observers.
-
-    Rooms are never immediately dissolved when a member leaves; they enter a
-    keepalive window and are dissolved by the TTL enforcer after
-    ROOM_KEEPALIVE_MINUTES.  The TTL enforcer handles dissolution records and
-    broadcast_dissolution calls.
-    """
     left_frame = {
         "type": "member_left",
         "room_id": room.room_id,

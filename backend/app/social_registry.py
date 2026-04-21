@@ -1,42 +1,29 @@
 """
-SocialRoomRegistry – ephemeral room state backed by CSV snapshots.
+SocialRoomRegistry – in-memory A2A room state (single-process).
 
-Two CSV files live under SOCIAL_STATE_DIR (defaults to OS tempdir):
-  social_rooms.csv    – one row per active room
-  social_members.csv  – one row per active membership
+Rooms dissolve after a configurable idle period with no messages (anchor:
+last_message_at if any message was sent, else created_at). Capacity is
+limited by concurrent WebSocket connections (agents per room; observers
+separately), not by a fixed roster size.
 
-Both files are wiped on startup and rewritten on every mutation.
-WebSocket handles live only in memory; the CSVs are a live file-level
-snapshot for external monitoring or debugging without an API call.
+Live membership and WebSocket handles are held in memory. Room lifecycle
+and chat messages are persisted in PostgreSQL (`social_rooms`,
+`social_room_members`, `social_messages`) via `social_db` helpers.
 """
 from __future__ import annotations
 
 import asyncio
-import csv
 import json
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 from starlette.websockets import WebSocket
 
-# ------------------------------------------------------------------ level limits
-
-_LEVEL_LIMITS: list[tuple[int, int, int]] = [
-    # (max_level_inclusive, max_members, max_ttl_minutes)
-    (2, 10, 30),
-    (5,  5, 20),
-    (9,  3, 10),
-]
-_ROOM_CAPACITY_DEFAULT = 3
-_ROOM_TTL_DEFAULT = 30
-
 # ------------------------------------------------------------------ permanent check-in room
 
-# Fixed, well-known room ID that always exists.
 CHECKIN_ROOM_ID = "00000000-0000-0000-0000-000000000001"
 CHECKIN_ROOM_NAME = "AI Agent Check-in"
 CHECKIN_ROOM_TOPIC = (
@@ -47,21 +34,6 @@ CHECKIN_ROOM_RULES = (
     "This is a permanent, system-managed check-in room. "
     "All registered agents are welcome. Join to check in, then leave when done."
 )
-CHECKIN_ROOM_MAX_MEMBERS = 20
-
-# Minimum time an empty room stays alive before the TTL enforcer dissolves it.
-ROOM_KEEPALIVE_MINUTES = 5
-
-
-def get_room_limits(level: int) -> tuple[int, int]:
-    """Return (max_members_cap, max_ttl_minutes_cap) for a given agent level.
-
-    Lower level number = higher trust (level 0 = admin).
-    """
-    for threshold, max_members, max_ttl in _LEVEL_LIMITS:
-        if level <= threshold:
-            return max_members, max_ttl
-    return _LEVEL_LIMITS[-1][1], _LEVEL_LIMITS[-1][2]
 
 
 # ------------------------------------------------------------------ mention parsing
@@ -84,13 +56,6 @@ def parse_mentions(text: str, name_to_id: dict[str, str]) -> list[str]:
 
 
 # ------------------------------------------------------------------ data classes
-
-_ROOMS_HEADER = [
-    "room_id", "name", "topic", "creator_id", "creator_name",
-    "created_at", "expires_at", "max_members", "ttl_minutes",
-    "is_permanent", "empty_since",
-]
-_MEMBERS_HEADER = ["room_id", "agent_id", "agent_name", "joined_at"]
 
 
 @dataclass
@@ -116,18 +81,21 @@ class ChatRoom:
     creator_id: str
     creator_name: str
     created_at: datetime
-    expires_at: datetime
-    max_members: int
-    ttl_minutes: int
+    max_concurrent_agents: int
     rules: str = ""
     members: dict[str, RoomMember] = field(default_factory=dict)
     observers: set[WebSocket] = field(default_factory=set)
     message_count: int = 0
     is_permanent: bool = False
-    empty_since: Optional[datetime] = None
+    last_message_at: Optional[datetime] = None
 
-    def to_summary(self) -> dict[str, Any]:
+    def idle_anchor(self) -> datetime:
+        """Time anchor for idle dissolution (no new messages resets the clock)."""
+        return self.last_message_at or self.created_at
+
+    def to_summary(self, idle_after: timedelta) -> dict[str, Any]:
         """Full room snapshot used in list_rooms responses."""
+        anchor = self.idle_anchor()
         return {
             "room_id": self.room_id,
             "status": "active",
@@ -137,13 +105,13 @@ class ChatRoom:
             "creator_id": self.creator_id,
             "creator_name": self.creator_name,
             "member_count": len(self.members),
-            "max_members": self.max_members,
-            "ttl_minutes": self.ttl_minutes,
+            "max_concurrent_agents": self.max_concurrent_agents,
             "created_at": self.created_at.isoformat(),
-            "expires_at": self.expires_at.isoformat(),
+            "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
+            "idle_anchor_at": anchor.isoformat(),
+            "idle_dissolves_at": (anchor + idle_after).isoformat(),
             "members": self.member_list(),
             "is_permanent": self.is_permanent,
-            "empty_since": self.empty_since.isoformat() if self.empty_since else None,
         }
 
     def member_list(self) -> list[dict[str, Any]]:
@@ -157,58 +125,38 @@ class ChatRoom:
 # ------------------------------------------------------------------ registry
 
 class SocialRoomRegistry:
-    def __init__(self, state_dir: Path) -> None:
+    """Holds runtime limits; call :meth:`configure` before accepting traffic."""
+
+    def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._rooms: dict[str, ChatRoom] = {}
         self._agent_room: dict[str, str] = {}  # agent_id → room_id
-        self._state_dir = state_dir
-        self._rooms_file = state_dir / "social_rooms.csv"
-        self._members_file = state_dir / "social_members.csv"
+        self._max_concurrent_agents: int = 50
+        self._max_concurrent_observers: int = 50
+        self._idle_after: timedelta = timedelta(hours=24)
 
-    def initialize(self) -> None:
-        """Wipe stale CSV state. Call once at server startup."""
-        self._state_dir.mkdir(parents=True, exist_ok=True)
-        self._write_rooms_csv()
-        self._write_members_csv()
+    def configure(
+        self,
+        *,
+        max_concurrent_agents: int,
+        max_concurrent_observers: int,
+        idle_after: timedelta,
+    ) -> None:
+        self._max_concurrent_agents = max(1, max_concurrent_agents)
+        self._max_concurrent_observers = max(1, max_concurrent_observers)
+        self._idle_after = idle_after if idle_after.total_seconds() > 0 else timedelta(hours=24)
 
-    # ------------------------------------------------------------------ CSV I/O
+    @property
+    def max_concurrent_agents(self) -> int:
+        return self._max_concurrent_agents
 
-    def _write_rooms_csv(self) -> None:
-        with self._rooms_file.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=_ROOMS_HEADER)
-            w.writeheader()
-            for r in self._rooms.values():
-                w.writerow({
-                    "room_id": r.room_id,
-                    "name": r.name,
-                    "topic": r.topic,
-                    "creator_id": r.creator_id,
-                    "creator_name": r.creator_name,
-                    "created_at": r.created_at.isoformat(),
-                    "expires_at": r.expires_at.isoformat(),
-                    "max_members": r.max_members,
-                    "ttl_minutes": r.ttl_minutes,
-                    "is_permanent": r.is_permanent,
-                    "empty_since": r.empty_since.isoformat() if r.empty_since else "",
-                })
+    @property
+    def max_concurrent_observers(self) -> int:
+        return self._max_concurrent_observers
 
-    def _write_members_csv(self) -> None:
-        with self._members_file.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=_MEMBERS_HEADER)
-            w.writeheader()
-            for r in self._rooms.values():
-                for m in r.members.values():
-                    w.writerow({
-                        "room_id": r.room_id,
-                        "agent_id": m.agent_id,
-                        "agent_name": m.agent_name,
-                        "joined_at": m.joined_at.isoformat(),
-                    })
-
-    def _flush(self) -> None:
-        """Rewrite both CSVs. Must be called while _lock is held."""
-        self._write_rooms_csv()
-        self._write_members_csv()
+    @property
+    def idle_after(self) -> timedelta:
+        return self._idle_after
 
     # ------------------------------------------------------------------ actions
 
@@ -216,8 +164,6 @@ class SocialRoomRegistry:
         self,
         name: str,
         topic: str,
-        max_members: int,
-        ttl_minutes: int,
         creator_id: str,
         creator_name: str,
         ws: WebSocket,
@@ -229,7 +175,6 @@ class SocialRoomRegistry:
                 return "already_in_room"
             room_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
-            expires_at = now + timedelta(minutes=ttl_minutes)
             member = RoomMember(
                 agent_id=creator_id,
                 agent_name=creator_name,
@@ -244,14 +189,11 @@ class SocialRoomRegistry:
                 creator_id=creator_id,
                 creator_name=creator_name,
                 created_at=now,
-                expires_at=expires_at,
-                max_members=max_members,
-                ttl_minutes=ttl_minutes,
+                max_concurrent_agents=self._max_concurrent_agents,
                 members={creator_id: member},
             )
             self._rooms[room_id] = room
             self._agent_room[creator_id] = room_id
-            self._flush()
             return room
 
     async def join_room(
@@ -268,8 +210,8 @@ class SocialRoomRegistry:
             room = self._rooms.get(room_id)
             if room is None:
                 return "room_not_found"
-            if len(room.members) >= room.max_members:
-                return "room_full"
+            if len(room.members) >= room.max_concurrent_agents:
+                return "room_concurrency_full"
             member = RoomMember(
                 agent_id=agent_id,
                 agent_name=agent_name,
@@ -277,67 +219,42 @@ class SocialRoomRegistry:
                 ws=ws,
             )
             room.members[agent_id] = member
-            room.empty_since = None
             self._agent_room[agent_id] = room_id
-            self._flush()
             return room
 
-    async def leave_room(self, agent_id: str) -> tuple[ChatRoom | None, bool]:
-        """
-        Remove agent from their current room.
-
-        Rooms are never immediately dissolved on the last member leaving.
-        Instead empty_since is stamped and the TTL enforcer dissolves them
-        after ROOM_KEEPALIVE_MINUTES.  Permanent rooms are never dissolved.
-
-        Always returns (room, False).  dissolved=True is no longer emitted.
-        Returns (None, False) if the agent was not in any room.
-        """
+    async def leave_room(self, agent_id: str) -> ChatRoom | None:
+        """Remove the agent from their current room. Returns None if not in a room."""
         async with self._lock:
             room_id = self._agent_room.pop(agent_id, None)
             if room_id is None:
-                return None, False
+                return None
             room = self._rooms.get(room_id)
             if room is None:
-                return None, False
+                return None
             room.members.pop(agent_id, None)
-            if len(room.members) == 0 and room.empty_since is None:
-                room.empty_since = datetime.now(timezone.utc)
-            self._flush()
-            return room, False
+            return room
 
     async def dissolve_expired(self) -> list[tuple[ChatRoom, str]]:
         """
-        Remove rooms that have exceeded their TTL or their keepalive window.
+        Remove rooms whose idle anchor (last message or creation) exceeds idle_after.
 
-        Permanent rooms are never dissolved.
-
-        Returns a list of (room, reason) pairs where reason is one of:
-          "ttl_expired"      – room's expires_at has passed (members may still be present)
-          "all_members_left" – room has been empty for >= ROOM_KEEPALIVE_MINUTES
+        Permanent rooms are never dissolved by TTL.
+        Returns a list of (room, reason) pairs; reason is always ``idle_timeout``.
         """
         now = datetime.now(timezone.utc)
-        keepalive_seconds = ROOM_KEEPALIVE_MINUTES * 60
         async with self._lock:
             to_dissolve: list[tuple[ChatRoom, str]] = []
             for room in list(self._rooms.values()):
                 if room.is_permanent:
                     continue
-                if room.expires_at <= now:
-                    to_dissolve.append((room, "ttl_expired"))
-                elif (
-                    room.empty_since is not None
-                    and (now - room.empty_since).total_seconds() >= keepalive_seconds
-                ):
-                    to_dissolve.append((room, "all_members_left"))
+                if now - room.idle_anchor() >= self._idle_after:
+                    to_dissolve.append((room, "idle_timeout"))
 
             for room, _ in to_dissolve:
                 for agent_id in list(room.members.keys()):
                     self._agent_room.pop(agent_id, None)
                 del self._rooms[room.room_id]
 
-            if to_dissolve:
-                self._flush()
             return to_dissolve
 
     async def ensure_checkin_room(self) -> None:
@@ -354,13 +271,10 @@ class SocialRoomRegistry:
                 creator_id="system",
                 creator_name="system",
                 created_at=now,
-                expires_at=now + timedelta(days=36500),
-                max_members=CHECKIN_ROOM_MAX_MEMBERS,
-                ttl_minutes=0,
+                max_concurrent_agents=self._max_concurrent_agents,
                 is_permanent=True,
             )
             self._rooms[CHECKIN_ROOM_ID] = room
-            self._flush()
 
     async def current_room_id(self, agent_id: str) -> str | None:
         async with self._lock:
@@ -387,17 +301,22 @@ class SocialRoomRegistry:
             self._rooms.values(),
             key=lambda r: (0 if r.is_permanent else 1, r.created_at),
         )
-        return [r.to_summary() for r in rooms]
+        return [r.to_summary(self._idle_after) for r in rooms]
 
     # ---------------------------------------------------------------- observer management
 
-    async def add_observer(self, room_id: str, ws: WebSocket) -> ChatRoom | None:
+    async def add_observer(
+        self, room_id: str, ws: WebSocket
+    ) -> tuple[ChatRoom | None, Optional[str]]:
+        """Return (room, None) on success, or (None, reason) on failure."""
         async with self._lock:
             room = self._rooms.get(room_id)
             if room is None:
-                return None
+                return None, "room_not_found"
+            if len(room.observers) >= self._max_concurrent_observers:
+                return None, "observer_room_full"
             room.observers.add(ws)
-            return room
+            return room, None
 
     async def remove_observer(self, room_id: str, ws: WebSocket) -> None:
         async with self._lock:
@@ -413,13 +332,15 @@ class SocialRoomRegistry:
     # ---------------------------------------------------------------- message helpers
 
     async def record_message(self, agent_id: str) -> str | None:
-        """Increment message counter for agent's room. Returns room_id or None."""
+        """Bump message counter, set last_message_at. Returns room_id or None."""
+        now = datetime.now(timezone.utc)
         async with self._lock:
             room_id = self._agent_room.get(agent_id)
             if room_id:
                 room = self._rooms.get(room_id)
                 if room:
                     room.message_count += 1
+                    room.last_message_at = now
             return room_id
 
     # ---------------------------------------------------------------- broadcast helpers
@@ -446,7 +367,6 @@ class SocialRoomRegistry:
             try:
                 await ws.send_text(text)
             except (RuntimeError, OSError):
-                # Connection already closed; skip silently.
                 pass
 
     async def broadcast_dissolution(

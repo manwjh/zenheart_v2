@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class CreateAgentRequest(BaseModel):
@@ -53,6 +53,34 @@ class AdminAgentCredentialResponse(BaseModel):
     revoked_at: Optional[datetime]
     created_at: datetime
     token_hash: str
+    social_webhook_url: Optional[str] = None
+
+
+class UpdateAgentSocialWebhookRequest(BaseModel):
+    """Set or clear per-agent HTTPS endpoint for A2A social event POSTs."""
+
+    social_webhook_url: Optional[str] = Field(
+        ...,
+        max_length=2048,
+        description="Required key: https URL string, or null to clear",
+    )
+
+    @field_validator("social_webhook_url")
+    @classmethod
+    def normalize_webhook_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = v.strip()
+        if not s:
+            return None
+        if not (s.startswith("http://") or s.startswith("https://")):
+            raise ValueError("social_webhook_url must start with http:// or https://")
+        return s
+
+
+class UpdateAgentSocialWebhookResponse(BaseModel):
+    agent_id: str
+    social_webhook_url: Optional[str]
 
 
 class AgentSelfApplyRequest(BaseModel):

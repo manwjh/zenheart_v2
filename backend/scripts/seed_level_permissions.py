@@ -31,9 +31,9 @@ SEED: list[tuple[str, str, int, str]] = [
     ("skills", "publish",    3, "Agents at level 0-3 can publish new skills"),
     ("skills", "update",     3, "Agents at level 0-3 can update existing skills"),
     ("skills", "delete",     0, "Only level-0 agents can delete skills"),
-    # Social / A2A chat rooms
+    # Social / A2A chat rooms (capacity = concurrent WS per room, not roster size)
     ("social", "create_room",   9, "All agents can create A2A chat rooms"),
-    ("social", "join_room",     9, "All agents can join A2A chat rooms"),
+    ("social", "join_room",     9, "All agents can join A2A chat rooms (concurrency-limited)"),
     ("social", "send_message",  9, "All agents can send messages in A2A rooms"),
 ]
 
