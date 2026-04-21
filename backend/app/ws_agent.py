@@ -7,12 +7,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
-from sqlalchemy import select
 
-from app.crypto_tokens import constant_time_token_equals, sha256_hex
-from app.models import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import get_limit_value
+from app.services.ws_auth import authenticate_agent_websocket
 from app.services.ws_mail_send import handle_send_mail_ws_message
 from app.services.ws_news_delete import handle_delete_news_ws_message
 from app.services.ws_news_publish import handle_publish_news_ws_message
@@ -30,112 +28,17 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
 
     await websocket.accept()
 
-    try:
-        raw = await asyncio.wait_for(
-            websocket.receive_text(),
-            timeout=float(settings.agent_ws_auth_timeout_seconds),
-        )
-    except asyncio.TimeoutError:
-        await record_agent_event(
-            session_factory,
-            event="auth_timeout",
-            agent_id=None,
-            detail={"stage": "first_message"},
-        )
-        await websocket.close(code=4408, reason="auth_timeout")
-        return
-
-    byte_len = len(raw.encode("utf-8"))
-    if byte_len > settings.agent_ws_max_message_bytes:
-        await record_agent_event(
-            session_factory,
-            event="auth_first_message_too_large",
-            agent_id=None,
-            detail={"byte_length": byte_len},
-        )
-        await websocket.close(code=1009, reason="too_large")
-        return
-
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        await record_agent_event(
-            session_factory,
-            event="auth_invalid_json",
-            agent_id=None,
-            detail={"byte_length": byte_len},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_json"}))
-        await websocket.close(code=1003, reason="invalid_json")
-        return
-
-    if payload.get("type") != "auth":
-        await record_agent_event(
-            session_factory,
-            event="auth_expected_type_auth",
-            agent_id=None,
-            detail={"byte_length": byte_len, "message_type": payload.get("type")},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "expected_auth"}))
-        await websocket.close(code=1003, reason="expected_auth")
-        return
-
-    agent_id = payload.get("agent_id")
-    token = payload.get("token")
-    if not isinstance(agent_id, str) or not isinstance(token, str):
-        await record_agent_event(
-            session_factory,
-            event="auth_invalid_payload",
-            agent_id=agent_id if isinstance(agent_id, str) else None,
-            detail={"byte_length": byte_len},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_payload"}))
-        await websocket.close(code=1003, reason="invalid_payload")
-        return
-
-    await record_agent_event(
-        session_factory,
-        event="ws_message_in",
-        agent_id=agent_id,
-        detail={"phase": "handshake", "message_type": "auth", "byte_length": byte_len},
+    auth = await authenticate_agent_websocket(
+        websocket,
+        session_factory=session_factory,
+        auth_timeout_seconds=settings.agent_ws_auth_timeout_seconds,
+        max_message_bytes=settings.agent_ws_max_message_bytes,
+        event_scope="agent_ws",
     )
-
-    async with session_factory() as session:
-        result = await session.execute(select(Agent).where(Agent.agent_id == agent_id))
-        agent = result.scalar_one_or_none()
-
-    if agent is None:
-        await record_agent_event(
-            session_factory,
-            event="auth_unknown_agent",
-            agent_id=agent_id,
-            detail={},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "unknown_agent"}))
-        await websocket.close(code=4401, reason="unknown_agent")
+    if auth is None:
         return
-
-    if agent.revoked_at is not None:
-        await record_agent_event(
-            session_factory,
-            event="auth_revoked",
-            agent_id=agent_id,
-            detail={},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "revoked"}))
-        await websocket.close(code=4403, reason="revoked")
-        return
-
-    if not constant_time_token_equals(sha256_hex(token), agent.token_hash):
-        await record_agent_event(
-            session_factory,
-            event="auth_invalid_token",
-            agent_id=agent_id,
-            detail={},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_token"}))
-        await websocket.close(code=4401, reason="invalid_token")
-        return
+    agent_id = auth.agent_id
+    agent = auth.agent
 
     connection_id = str(uuid.uuid4())
 
@@ -308,6 +211,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                 )
             elif msg_type == "delete_news":
                 out = await handle_delete_news_ws_message(
+                    news_markdown_root=settings.news_markdown_root,
                     session_factory=session_factory,
                     agent_id=agent_id,
                     connection_id=connection_id,

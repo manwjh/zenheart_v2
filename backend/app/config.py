@@ -29,13 +29,6 @@ class Settings(BaseSettings):
     smtp_from_email: str = Field(default="", validation_alias="SMTP_FROM_EMAIL")
     smtp_from_name: str = Field(default="ZenHeart", validation_alias="SMTP_FROM_NAME")
     smtp_timeout_seconds: int = Field(default=10, validation_alias="SMTP_TIMEOUT_SECONDS")
-    mail_rate_limit_per_email: int = Field(default=3, validation_alias="MAIL_RATE_LIMIT_PER_EMAIL")
-    mail_rate_limit_per_ip: int = Field(default=10, validation_alias="MAIL_RATE_LIMIT_PER_IP")
-    verification_code_length: int = Field(default=6, validation_alias="VERIFICATION_CODE_LENGTH")
-    verification_code_expire_seconds: int = Field(
-        default=300, validation_alias="VERIFICATION_CODE_EXPIRE_SECONDS"
-    )
-
     # Used in self-service agent credential emails (WebSocket URL). Example: https://zenheart.net
     public_site_base_url: str = Field(default="", validation_alias="PUBLIC_SITE_BASE_URL")
 

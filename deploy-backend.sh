@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy v2 FastAPI backend to EC2: rsync code, venv+pip, systemd, optional nginx snippets.
+# Deploy v2 FastAPI backend to EC2: rsync code, venv+pip, optional psql client, migrations, systemd.
 # Defaults match aws/AWS_ACCESS_GUIDE.md. Requires a populated remote .env (see docs).
 set -euo pipefail
 
@@ -19,7 +19,12 @@ fi
 
 ZENHEART_EC2_KEY="${ZENHEART_EC2_KEY:-$REPO_ROOT/aws/zenheart-ec2.pem}"
 ZENHEART_EC2_HOST="${ZENHEART_EC2_HOST:-}"
-[[ -n "$ZENHEART_EC2_HOST" ]] || die "ZENHEART_EC2_HOST is not set (export ZENHEART_EC2_HOST=<ip>)"
+if [[ -z "$ZENHEART_EC2_HOST" ]]; then
+  if [[ ! -f "$V2_ROOT/.deploy-env" ]]; then
+    die "ZENHEART_EC2_HOST is not set (EC2 IP or DNS). Create $V2_ROOT/.deploy-env from .deploy-env.example and set export ZENHEART_EC2_HOST=... — e.g. cp \"$V2_ROOT/.deploy-env.example\" \"$V2_ROOT/.deploy-env\""
+  fi
+  die "ZENHEART_EC2_HOST is not set (EC2 IP or DNS). Edit $V2_ROOT/.deploy-env: set export ZENHEART_EC2_HOST=<ip-or-dns> to a non-empty value."
+fi
 ZENHEART_EC2_USER="${ZENHEART_EC2_USER:-ec2-user}"
 REMOTE_DIR="${ZENHEART_V2_REMOTE_DIR:-/opt/zenheart/services/v2_backend}"
 SERVICE_NAME="${ZENHEART_V2_SERVICE_NAME:-zenheart-v2-backend}"
@@ -73,7 +78,7 @@ if [[ -d "$V2_ROOT/skills" ]]; then
     "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$SKILLS_STAGING/"
 fi
 
-echo "[v2-backend] remote install (venv, pip, systemd, optional nginx)"
+echo "[v2-backend] remote install (venv, pip, psql client, migrations, systemd, optional nginx)"
 "${SSH_CMD[@]}" "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST" \
   env REMOTE_DIR="$REMOTE_DIR" SERVICE_NAME="$SERVICE_NAME" SKIP_NGINX="$ZENHEART_V2_SKIP_NGINX" \
   SYNCED_DOCS="$SYNCED_DOCS" DOCS_STAGING="$DOCS_STAGING" \
@@ -124,6 +129,40 @@ if [[ ! -d "$REMOTE_DIR/.venv" ]]; then
 fi
 "$REMOTE_DIR/.venv/bin/pip" install --upgrade pip -q
 "$REMOTE_DIR/.venv/bin/pip" install -r "$REMOTE_DIR/requirements.txt" -q
+
+# Optional: install psql for ad-hoc SQL on the host (migrations use Python + asyncpg).
+if ! command -v psql &>/dev/null; then
+  echo "[v2-backend] installing PostgreSQL client (psql)"
+  if command -v dnf &>/dev/null; then
+    sudo dnf install -y postgresql15 &>/dev/null \
+      || sudo dnf install -y postgresql16 &>/dev/null \
+      || sudo dnf install -y postgresql &>/dev/null \
+      || true
+  elif command -v yum &>/dev/null; then
+    sudo yum install -y postgresql15 &>/dev/null \
+      || sudo yum install -y postgresql &>/dev/null \
+      || true
+  elif command -v apt-get &>/dev/null; then
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+      && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-client &>/dev/null \
+      || true
+  fi
+  if command -v psql &>/dev/null; then
+    echo "[v2-backend] psql installed: $(command -v psql)"
+  else
+    echo "[v2-backend] warn: psql not available after install attempt (migrations still use Python)" >&2
+  fi
+fi
+
+# Apply schema migrations before restart (PostgreSQL via asyncpg).
+set -a
+# shellcheck disable=SC1091
+source "$REMOTE_DIR/.env"
+set +a
+if [[ -d "$REMOTE_DIR/scripts/migrations" ]]; then
+  echo "[v2-backend] migrations → $REMOTE_DIR/scripts/migrations/"
+  "$REMOTE_DIR/.venv/bin/python" "$REMOTE_DIR/scripts/run_migrations.py" "$REMOTE_DIR/scripts/migrations"
+fi
 
 sudo cp "$REMOTE_DIR/deploy/zenheart-v2-backend.service" "/etc/systemd/system/${SERVICE_NAME}.service"
 sudo systemctl daemon-reload

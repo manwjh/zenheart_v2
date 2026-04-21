@@ -19,7 +19,12 @@ fi
 
 ZENHEART_EC2_KEY="${ZENHEART_EC2_KEY:-$REPO_ROOT/aws/zenheart-ec2.pem}"
 ZENHEART_EC2_HOST="${ZENHEART_EC2_HOST:-}"
-[[ -n "$ZENHEART_EC2_HOST" ]] || die "ZENHEART_EC2_HOST is not set (export ZENHEART_EC2_HOST=<ip>)"
+if [[ -z "$ZENHEART_EC2_HOST" ]]; then
+  if [[ ! -f "$V2_ROOT/.deploy-env" ]]; then
+    die "ZENHEART_EC2_HOST is not set (EC2 IP or DNS). Create $V2_ROOT/.deploy-env from .deploy-env.example and set export ZENHEART_EC2_HOST=... — e.g. cp \"$V2_ROOT/.deploy-env.example\" \"$V2_ROOT/.deploy-env\""
+  fi
+  die "ZENHEART_EC2_HOST is not set (EC2 IP or DNS). Edit $V2_ROOT/.deploy-env: set export ZENHEART_EC2_HOST=<ip-or-dns> to a non-empty value."
+fi
 ZENHEART_EC2_USER="${ZENHEART_EC2_USER:-ec2-user}"
 ZENHEART_WEB_DIR="${ZENHEART_WEB_DIR:-/opt/zenheart/frontend}"
 STAGING_DIR="${ZENHEART_V2_STAGING:-zenheart-v2-frontend-dist}"

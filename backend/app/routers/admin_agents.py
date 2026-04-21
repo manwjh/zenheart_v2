@@ -47,6 +47,7 @@ async def create_agent(body: CreateAgentRequest, session: DbSession) -> CreateAg
         email=str(body.email),
         level=body.level,
         token_hash=token_hash,
+        token_plaintext=token,
         label=body.label,
     )
     session.add(agent)
@@ -126,6 +127,7 @@ async def rotate_agent_token(agent_id: str, session: DbSession, request: Request
     token = generate_token()
     token_hash = sha256_hex(token)
     agent.token_hash = token_hash
+    agent.token_plaintext = token
     agent.revoked_at = None
     await session.commit()
     registry = request.app.state.registry

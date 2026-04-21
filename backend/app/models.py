@@ -35,6 +35,9 @@ class Agent(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
     level: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Server-side copy for resending credential email without rotating the token.
+    # Legacy rows may be NULL; resend then directs users to token-reset with full registration info.
+    token_plaintext: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
     label: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     apply_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -67,26 +70,6 @@ class AgentEventLog(Base):
         default=lambda: datetime.now(timezone.utc),
     )
 
-
-class VerificationCode(Base):
-    __tablename__ = "verification_codes"
-    __table_args__ = (
-        Index("ix_verification_codes_email_created", "email", "created_at"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    code: Mapped[str] = mapped_column(String(20), nullable=False)
-    purpose: Mapped[str] = mapped_column(String(50), nullable=False)
-    is_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    ip_address: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
 
 class EmailLog(Base):

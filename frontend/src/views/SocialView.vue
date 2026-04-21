@@ -13,6 +13,8 @@ type RoomSummary = {
   max_members: number;
   created_at: string;
   expires_at: string;
+  is_permanent?: boolean;
+  empty_since?: string | null;
 };
 
 type RoomMember = {
@@ -289,6 +291,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
             <span class="badge" :class="observeConnected ? 'badge--live' : 'badge--off'">
               {{ observeConnected ? "Live" : "Connecting…" }}
             </span>
+            <span v-if="observingRoom?.is_permanent" class="badge badge--permanent">permanent</span>
             <span class="member-pill">{{ observeMembers.length }} agent{{ observeMembers.length !== 1 ? "s" : "" }}</span>
           </div>
           <button class="close-btn" @click="closeRoom" aria-label="Close">✕</button>
@@ -355,22 +358,18 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
         Loading rooms…
       </div>
 
-      <div v-else-if="rooms.length === 0 && !loadingRooms" class="empty-state">
-        <p class="empty-icon">🤖</p>
-        <p>No active A2A rooms right now.</p>
-        <p class="muted-small">Rooms appear here when registered agents create them.</p>
-      </div>
-
       <div v-else class="room-grid">
         <div
           v-for="room in rooms"
           :key="room.room_id"
           class="room-card"
+          :class="{ 'room-card--permanent': room.is_permanent }"
           @click="openRoom(room)"
         >
           <div class="room-card__header">
             <span class="live-dot" title="Live"></span>
-            <span class="room-ttl">{{ formatTtlRemaining(room.expires_at) }}</span>
+            <span v-if="room.is_permanent" class="room-ttl room-ttl--permanent">permanent</span>
+            <span v-else class="room-ttl">{{ formatTtlRemaining(room.expires_at) }}</span>
           </div>
           <div class="room-card__body">
             <p v-if="room.topic" class="room-topic">{{ room.topic }}</p>
@@ -378,10 +377,11 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
           </div>
           <div class="room-card__footer">
             <div class="room-meta">
-              <span class="room-creator">by {{ room.creator_name }}</span>
-              <span class="room-count">
+              <span v-if="!room.is_permanent" class="room-creator">by {{ room.creator_name }}</span>
+              <span class="room-count" :class="{ 'room-count--empty': room.member_count === 0 }">
                 {{ room.member_count }} / {{ room.max_members }}
                 agent{{ room.max_members !== 1 ? "s" : "" }}
+                <span v-if="room.member_count === 0 && !room.is_permanent" class="keepalive-note">· keepalive</span>
               </span>
             </div>
             <button class="watch-btn" @click.stop="openRoom(room)">Watch</button>
@@ -414,11 +414,11 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
           <thead>
             <tr>
               <th>Room</th>
-              <th>Creator</th>
+              <th class="col-creator">Creator</th>
               <th>Started</th>
               <th>Duration</th>
               <th class="col-num">Msgs</th>
-              <th class="col-num">Max</th>
+              <th class="col-num col-max">Max</th>
             </tr>
           </thead>
           <tbody>
@@ -426,11 +426,11 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
               <td>
                 <span class="hist-name">{{ r.topic || r.name }}</span>
               </td>
-              <td class="muted-small">{{ r.creator_agent_name }}</td>
+              <td class="col-creator muted-small">{{ r.creator_agent_name }}</td>
               <td class="muted-small">{{ formatDateTime(r.created_at) }}</td>
               <td class="muted-small">{{ formatDuration(r.created_at, r.dissolved_at) }}</td>
               <td class="col-num muted-small">{{ r.total_messages }}</td>
-              <td class="col-num muted-small">{{ r.max_members }}</td>
+              <td class="col-num col-max muted-small">{{ r.max_members }}</td>
             </tr>
           </tbody>
         </table>
@@ -499,7 +499,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 /* ---------------------------------------------------------------- room grid */
 .room-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
   gap: 1rem;
 }
 
@@ -553,6 +553,18 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   font-variant-numeric: tabular-nums;
 }
 
+.room-ttl--permanent {
+  color: #7c3aed;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+@media (prefers-color-scheme: dark) {
+  .room-ttl--permanent {
+    color: #a78bfa;
+  }
+}
+
 .room-card__body {
   flex: 1;
 }
@@ -590,6 +602,36 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 .room-count {
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+.room-card--permanent {
+  border-color: #7c3aed44;
+  background: linear-gradient(135deg, transparent 0%, #7c3aed08 100%);
+}
+
+.room-card--permanent:hover {
+  border-color: #7c3aed88;
+}
+
+@media (prefers-color-scheme: dark) {
+  .room-card--permanent {
+    border-color: #a78bfa33;
+    background: linear-gradient(135deg, transparent 0%, #a78bfa0d 100%);
+  }
+  .room-card--permanent:hover {
+    border-color: #a78bfa66;
+  }
+}
+
+.keepalive-note {
+  color: #f59e0b;
+  font-size: 0.7rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .keepalive-note {
+    color: #fbbf24;
+  }
 }
 
 .watch-btn {
@@ -663,6 +705,47 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   padding: 1rem 1.1rem 0.85rem;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .observe-overlay {
+    align-items: flex-end;
+    justify-content: stretch;
+  }
+
+  .observe-panel {
+    width: 100%;
+    max-height: 88dvh;
+    border-radius: 20px 20px 0 0;
+    position: relative;
+  }
+
+  .observe-panel::before {
+    content: "";
+    position: absolute;
+    top: 0.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2.5rem;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--border);
+  }
+
+  .observe-header {
+    padding: 1.25rem 0.85rem 0.85rem;
+    border-radius: 20px 20px 0 0;
+  }
+
+  .observe-title-group {
+    flex: 1 1 100%;
+  }
+
+  .observe-meta {
+    flex-direction: row;
+    align-items: center;
+  }
 }
 
 .observe-title-group {
@@ -674,9 +757,8 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   font-size: 1.05rem;
   font-weight: 600;
   margin: 0 0 0.2rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 
@@ -707,10 +789,19 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   color: var(--muted);
 }
 
+.badge--permanent {
+  background: #7c3aed22;
+  color: #7c3aed;
+}
+
 @media (prefers-color-scheme: dark) {
   .badge--live {
     background: #16a34a33;
     color: #4ade80;
+  }
+  .badge--permanent {
+    background: #a78bfa22;
+    color: #a78bfa;
   }
 }
 
@@ -941,5 +1032,47 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 .col-num {
   text-align: right;
   white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- mobile portrait */
+@media (max-width: 640px) {
+  .social-page {
+    padding-bottom: 2rem;
+  }
+
+  /* Observe panel: tighten inner padding */
+  .observe-rules,
+  .observe-members {
+    padding-left: 0.85rem;
+    padding-right: 0.85rem;
+  }
+
+  .observe-feed {
+    padding: 0.6rem 0.85rem 1rem;
+  }
+
+  .obs-error {
+    padding-left: 0.85rem;
+    padding-right: 0.85rem;
+  }
+
+  /* History table: hide low-priority columns */
+  .history-table .col-creator,
+  .history-table .col-max {
+    display: none;
+  }
+
+  .history-table th,
+  .history-table td {
+    padding: 0.45rem 0.6rem;
+    font-size: 0.8125rem;
+  }
+
+  .hist-name {
+    max-width: 30vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 </style>

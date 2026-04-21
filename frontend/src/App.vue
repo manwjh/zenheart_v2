@@ -108,6 +108,27 @@ body {
   justify-content: flex-end;
 }
 
+@media (max-width: 520px) {
+  .nav {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding-bottom: 0.65rem;
+  }
+
+  .links {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 0.25rem 0.85rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.65rem;
+  }
+
+  .links a,
+  .nav-group__label {
+    font-size: 0.875rem;
+  }
+}
+
 .links a {
   color: var(--muted);
   text-decoration: none;

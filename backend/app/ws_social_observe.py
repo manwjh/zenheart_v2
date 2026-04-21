@@ -8,6 +8,8 @@ messages into rooms.
 from __future__ import annotations
 
 import json
+import time
+from collections import deque
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -16,12 +18,31 @@ from app.social_registry import SocialRoomRegistry
 
 async def handle_social_observe_websocket(websocket: WebSocket) -> None:
     social: SocialRoomRegistry = websocket.app.state.social_registry
+    settings = websocket.app.state.settings
 
     await websocket.accept()
+
+    rate_limit: int = settings.agent_ws_rate_limit_per_minute
+    rate_window: deque[float] = deque(maxlen=rate_limit if rate_limit > 0 else None)
 
     try:
         while True:
             msg = await websocket.receive_text()
+
+            if len(msg.encode("utf-8")) > settings.agent_ws_max_message_bytes:
+                await websocket.close(code=1009, reason="too_large")
+                break
+
+            if rate_limit > 0:
+                now = time.monotonic()
+                rate_window.append(now)
+                if len(rate_window) == rate_limit and (now - rate_window[0]) < 60.0:
+                    await websocket.send_text(
+                        json.dumps({"type": "error", "reason": "rate_limit_exceeded"})
+                    )
+                    await websocket.close(code=4029, reason="rate_limit_exceeded")
+                    break
+
             try:
                 data = json.loads(msg)
             except json.JSONDecodeError:
@@ -78,7 +99,6 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                 }))
 
             else:
-                # Observers cannot send messages into rooms
                 if msg_type in ("send_message", "create_room", "join_room", "leave_room"):
                     await websocket.send_text(json.dumps({
                         "type": "error",

@@ -8,15 +8,29 @@ REPO_ROOT="$(cd "$V2_ROOT/.." && pwd)"
 BACKEND="$V2_ROOT/backend"
 FRONTEND="$V2_ROOT/frontend"
 
+die() { echo "error: $*" >&2; exit 1; }
+
+# Optional local deploy secrets (gitignored). Same as deploy-backend.sh / deploy-frontend.sh.
+if [[ -f "$V2_ROOT/.deploy-env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$V2_ROOT/.deploy-env"
+  set +a
+fi
+
 ZENHEART_EC2_KEY="${ZENHEART_EC2_KEY:-$REPO_ROOT/aws/zenheart-ec2.pem}"
-ZENHEART_EC2_HOST="${ZENHEART_EC2_HOST:-51.21.54.93}"
+ZENHEART_EC2_HOST="${ZENHEART_EC2_HOST:-}"
+if [[ -z "$ZENHEART_EC2_HOST" ]]; then
+  if [[ ! -f "$V2_ROOT/.deploy-env" ]]; then
+    die "ZENHEART_EC2_HOST is not set (EC2 IP or DNS). Create $V2_ROOT/.deploy-env from .deploy-env.example — e.g. cp \"$V2_ROOT/.deploy-env.example\" \"$V2_ROOT/.deploy-env\""
+  fi
+  die "ZENHEART_EC2_HOST is not set (EC2 IP or DNS). Edit $V2_ROOT/.deploy-env and set export ZENHEART_EC2_HOST=..."
+fi
 ZENHEART_EC2_USER="${ZENHEART_EC2_USER:-ec2-user}"
 REMOTE_BACKEND="${ZENHEART_V2_REMOTE_DIR:-/opt/zenheart/services/v2_backend}"
 REMOTE_WEB="${ZENHEART_WEB_DIR:-/opt/zenheart/frontend}"
 # Home-relative staging dir on EC2 for frontend push (same default as deploy-frontend.sh).
 FRONTEND_STAGING="${ZENHEART_V2_STAGING:-zenheart-v2-frontend-dist}"
-
-die() { echo "error: $*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
@@ -29,9 +43,9 @@ usage: remote-diff-sync.sh <diff|pull|push> <backend|frontend> [--checksum]
 
   --checksum   Use rsync -c (slower, compares file checksums, not only size/mtime).
 
-Environment (override any):
-  ZENHEART_EC2_KEY       SSH private key (default: ../aws/zenheart-ec2.pem)
-  ZENHEART_EC2_HOST      Host (default: 51.21.54.93)
+Environment (override any; or set in v2/.deploy-env):
+  ZENHEART_EC2_KEY       SSH private key (default: ../aws/zenheart-ec2.pem when parent layout exists)
+  ZENHEART_EC2_HOST      Host (required)
   ZENHEART_EC2_USER      SSH user (default: ec2-user)
   ZENHEART_V2_REMOTE_DIR Backend path on server (default: /opt/zenheart/services/v2_backend)
   ZENHEART_WEB_DIR       Static frontend path on server (default: /opt/zenheart/frontend)
@@ -40,8 +54,8 @@ Environment (override any):
 Notes:
   - Backend pull never overwrites your local .env (excluded). Remote .env stays on the server.
   - Backend push does not upload local .env (matches deploy-backend.sh).
-  - Full install (venv, pip, systemd) is still: ./v2/deploy-backend.sh
-  - Full frontend install + nginx: ./v2/deploy-frontend.sh
+  - Full install (venv, pip, systemd) is still: ./deploy-backend.sh
+  - Full frontend install + nginx: ./deploy-frontend.sh
 EOF
 }
 
@@ -139,7 +153,7 @@ if id nginx >/dev/null 2>&1; then U=nginx
 elif id www-data >/dev/null 2>&1; then U=www-data
 else U=root
 fi
-sudo rsync -a --delete "$STG/" "$WEB_DIR/"
+sudo rsync -a --delete --exclude='news/' "$STG/" "$WEB_DIR/"
 sudo chown -R "$U:$U" "$WEB_DIR"
 rm -rf "$STG"
 sudo nginx -t

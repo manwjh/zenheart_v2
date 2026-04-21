@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models import Agent, NewsArticle
 from app.schemas import UpdateNewsWsPayload
 from app.services.agent_event_log import record_agent_event
+from app.services.image_check import check_image_url
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.permission_service import check_permission
 
@@ -37,6 +38,15 @@ async def handle_update_news_ws_message(
             "reason": "invalid_update_news_payload",
             "detail": exc.errors(),
         }
+
+    if payload.cover_image_url is not None:
+        image_error = await check_image_url(payload.cover_image_url)
+        if image_error:
+            return {
+                "type": "error",
+                "reason": "invalid_update_news_payload",
+                "detail": [{"loc": ["cover_image_url"], "msg": image_error, "type": "value_error"}],
+            }
 
     try:
         article_id = uuid.UUID(payload.article_id)

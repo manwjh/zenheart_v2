@@ -1,9 +1,10 @@
 """
 Background TTL enforcer for A2A chat rooms.
 
-Runs as a persistent asyncio task. Every 30 seconds it scans for rooms
-whose expires_at has passed, dissolves them, notifies all members and
-observers, and logs the event.
+Runs as a persistent asyncio task. Every 30 seconds it:
+  1. Dissolves rooms whose expires_at has passed (ttl_expired).
+  2. Dissolves rooms that have been empty for >= ROOM_KEEPALIVE_MINUTES (all_members_left).
+  3. Ensures the permanent check-in room exists (recreates it if missing).
 """
 from __future__ import annotations
 
@@ -27,14 +28,19 @@ async def run_social_ttl_enforcer(
     while True:
         await asyncio.sleep(_CHECK_INTERVAL_SECONDS)
         try:
-            expired_rooms = await social.dissolve_expired()
-            for room in expired_rooms:
+            dissolved_rooms = await social.dissolve_expired()
+            # dissolve_expired removes rooms from the registry under the lock and
+            # returns snapshots. Any concurrent leave_room call that wins the lock
+            # first will find the room already gone and return (None, False), leaving
+            # left_at as NULL in social_room_members — an accepted trade-off noted in
+            # the model comment ("NULL means still in room or abnormal exit").
+            for room, reason in dissolved_rooms:
                 member_ids = list(room.members.keys())
-                await social.broadcast_dissolution(room, reason="ttl_expired")
+                await social.broadcast_dissolution(room, reason=reason)
                 await record_room_dissolved(
                     session_factory,
                     room_id=room.room_id,
-                    reason="ttl_expired",
+                    reason=reason,
                     total_messages=room.message_count,
                     member_ids=member_ids,
                 )
@@ -45,12 +51,17 @@ async def run_social_ttl_enforcer(
                     detail={
                         "room_id": room.room_id,
                         "name": room.name,
-                        "reason": "ttl_expired",
+                        "reason": reason,
                         "ttl_minutes": room.ttl_minutes,
                         "total_messages": room.message_count,
                     },
                 )
-                logger.info("A2A room dissolved by TTL: %s (%s)", room.room_id, room.name)
+                logger.info(
+                    "A2A room dissolved: %s (%s) reason=%s",
+                    room.room_id, room.name, reason,
+                )
+
+            await social.ensure_checkin_room()
         except asyncio.CancelledError:
             raise
         except Exception:

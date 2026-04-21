@@ -6,19 +6,26 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse, PlainTextResponse
+from jinja2 import TemplateError
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.config import Settings
 from app.crypto_tokens import generate_agent_id, generate_token, sha256_hex
 from app.deps import DbSession, SettingsDep
 from app.models import Agent, AgentEventLog, EmailLog
 from app.schemas import (
+    AgentCredentialRecoveryRequest,
+    AgentCredentialRecoveryResponse,
     AgentSelfApplyRequest,
     AgentSelfApplyResponse,
+    AgentTokenResetRequest,
+    AgentTokenResetResponse,
     AgentVisitorRow,
     AgentVisitors24hResponse,
 )
+from app.services.agent_event_log import record_agent_event
 from app.services.skills_storage import SKILLS_DIR
 from app.services.template_service import TemplateService
 
@@ -145,6 +152,44 @@ def _ws_base_url(settings: Settings) -> str:
     return "wss://" + base.lstrip("/")
 
 
+_EMAIL_IN_USE_HINT = (
+    " If you control this mailbox but lost the credential email, POST /v2/faq/agent-credentials-recovery "
+    "with the same address to receive another copy of your current token (the token is not changed). "
+    "To issue a new token, POST /v2/faq/agent-token-reset with the same email, agent_name, and application "
+    "reason you used at registration."
+)
+
+
+async def _explain_agent_application_integrity(
+    session: DbSession,
+    email_norm: str,
+    agent_name: str,
+) -> str:
+    """After a failed INSERT, map common races to clear 409 messages."""
+    dup_email = await session.scalar(
+        select(func.count(Agent.id)).where(
+            Agent.email == email_norm,
+            Agent.revoked_at.is_(None),
+        )
+    )
+    if (dup_email or 0) >= 1:
+        return "This email address is already associated with a registered agent." + _EMAIL_IN_USE_HINT
+    dup_name = await session.scalar(
+        select(func.count(Agent.id)).where(
+            Agent.agent_name == agent_name,
+            Agent.revoked_at.is_(None),
+        )
+    )
+    if (dup_name or 0) >= 1:
+        return (
+            f"Agent name '{agent_name}' is already taken. Please choose a different name."
+        )
+    return (
+        "Registration could not be saved due to a database constraint. "
+        "Please try again later or contact support."
+    )
+
+
 @router.post("/agent-application", response_model=AgentSelfApplyResponse)
 async def submit_agent_application(
     body: AgentSelfApplyRequest,
@@ -165,7 +210,7 @@ async def submit_agent_application(
     if (email_registered or 0) >= 1:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This email address is already associated with a registered agent.",
+            detail="This email address is already associated with a registered agent." + _EMAIL_IN_USE_HINT,
         )
 
     name_taken = await session.scalar(
@@ -185,18 +230,6 @@ async def submit_agent_application(
     agent_id = generate_agent_id()
     token = generate_token()
     token_hash = sha256_hex(token)
-    agent = Agent(
-        agent_id=agent_id,
-        agent_name=agent_name,
-        email=email_norm,
-        level=9,
-        token_hash=token_hash,
-        label="faq-self-service",
-        apply_reason=body.reason.strip(),
-    )
-    session.add(agent)
-    await session.commit()
-    await session.refresh(agent)
 
     ws_hint = _ws_base_url(settings)
     auth_example = json.dumps(
@@ -205,16 +238,27 @@ async def submit_agent_application(
     )
     faq_url = (settings.public_site_base_url or "https://zenheart.net").rstrip("/") + "/#/faq"
     subject = f"[ZenHeart] Welcome, {agent_name} — your agent credentials"
-    body_html = tmpl.render_template(
-        "agent_credentials.html",
-        agent_id=agent_id,
-        agent_name=agent_name,
-        token=token,
-        ws_url=ws_hint + "/v2/agent/ws" if ws_hint else "",
-        auth_example=auth_example,
-        faq_url=faq_url,
-        reason=body.reason.strip()[:2000],
-    )
+    try:
+        body_html = tmpl.render_template(
+            "agent_credentials.html",
+            agent_id=agent_id,
+            agent_name=agent_name,
+            token=token,
+            ws_url=ws_hint + "/v2/agent/ws" if ws_hint else "",
+            auth_example=auth_example,
+            faq_url=faq_url,
+            reason=body.reason.strip()[:2000],
+            is_resend=False,
+            is_token_reset=False,
+            is_recovery=False,
+        )
+    except TemplateError as e:
+        logger.error("agent_credentials template render failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Mail template error. Contact support.",
+        ) from e
+
     body_text = (
         f"Welcome to ZenHeart, {agent_name}!\n\n"
         f"agent_id: {agent_id}\n"
@@ -227,7 +271,27 @@ async def submit_agent_application(
         f"contact support immediately.\n"
     )
 
-    ok, msg, mid = await smtp.send_email(
+    agent = Agent(
+        agent_id=agent_id,
+        agent_name=agent_name,
+        email=email_norm,
+        level=9,
+        token_hash=token_hash,
+        token_plaintext=token,
+        label="faq-self-service",
+        apply_reason=body.reason.strip(),
+    )
+    session.add(agent)
+    try:
+        await session.commit()
+        await session.refresh(agent)
+    except IntegrityError as e:
+        await session.rollback()
+        logger.warning("agent-application integrity error: %s", getattr(e, "orig", e))
+        detail = await _explain_agent_application_integrity(session, email_norm, agent_name)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from None
+
+    ok, msg, _mid = await smtp.send_email(
         to_email=email_norm,
         subject=subject,
         body_html=body_html,
@@ -261,14 +325,291 @@ async def submit_agent_application(
     )
 
 
+_CREDENTIAL_RESEND_RATE_PER_EMAIL = 3  # per hour
+_AGENT_TOKEN_RESET_RATE_PER_EMAIL = 3  # per hour
+
+
+@router.post("/agent-credentials-recovery", response_model=AgentCredentialRecoveryResponse)
+async def agent_credentials_recovery(
+    body: AgentCredentialRecoveryRequest,
+    request: Request,
+    session: DbSession,
+    settings: SettingsDep,
+) -> AgentCredentialRecoveryResponse:
+    """Re-send the credential email for an active agent. Does **not** rotate the token."""
+    email_norm = str(body.email).strip().lower()
+    ip = _client_ip(request)
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    agent = await session.scalar(
+        select(Agent).where(
+            Agent.email == email_norm,
+            Agent.revoked_at.is_(None),
+        )
+    )
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active agent is registered for this email address.",
+        )
+
+    if not (agent.token_plaintext or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "No stored credential copy is available for this account. "
+                "Use POST /v2/faq/agent-token-reset with the same email, agent_name, and "
+                "application reason you used at registration to issue a new token."
+            ),
+        )
+
+    token = agent.token_plaintext.strip()
+    email_count = await session.scalar(
+        select(func.count(EmailLog.id)).where(
+            EmailLog.to_email == email_norm,
+            EmailLog.email_type.in_(
+                ("agent_credentials_resend", "agent_credentials_recovery")
+            ),
+            EmailLog.created_at >= one_hour_ago,
+        )
+    )
+    if (email_count or 0) >= _CREDENTIAL_RESEND_RATE_PER_EMAIL:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many credential resend requests for this email. Please try again later.",
+        )
+
+    smtp = _smtp_or_503(request)
+    tmpl = _template_or_503(request)
+
+    ws_hint = _ws_base_url(settings)
+    auth_example = json.dumps(
+        {"type": "auth", "agent_id": agent.agent_id, "token": "<your token>"},
+        ensure_ascii=False,
+    )
+    faq_url = (settings.public_site_base_url or "https://zenheart.net").rstrip("/") + "/#/faq"
+    subject = f"[ZenHeart] Copy of your credentials — {agent.agent_name}"
+    reason_line = (agent.apply_reason or "").strip()[:2000]
+    try:
+        body_html = tmpl.render_template(
+            "agent_credentials.html",
+            agent_id=agent.agent_id,
+            agent_name=agent.agent_name,
+            token=token,
+            ws_url=ws_hint + "/v2/agent/ws" if ws_hint else "",
+            auth_example=auth_example,
+            faq_url=faq_url,
+            reason=reason_line or "—",
+            is_resend=True,
+            is_token_reset=False,
+            is_recovery=False,
+        )
+    except TemplateError as e:
+        logger.error("agent_credentials template render failed (resend): %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Mail template error. Contact support.",
+        ) from e
+
+    body_text = (
+        f"Hello {agent.agent_name},\n\n"
+        f"This is another copy of your ZenHeart agent credentials. Your token has NOT been changed.\n\n"
+        f"agent_id: {agent.agent_id}\n"
+        f"token:    {token}\n\n"
+        f"WebSocket: {(ws_hint + '/v2/agent/ws') if ws_hint else 'wss://<your-host>/v2/agent/ws'}\n"
+        f'First message: {{"type":"auth","agent_id":"{agent.agent_id}","token":"<your token>"}}\n\n'
+        f"Reference docs: {faq_url}\n\n"
+        f"SECURITY WARNING: Keep this email confidential. Never share your token.\n"
+    )
+
+    ok, msg, _mid = await smtp.send_email(
+        to_email=email_norm,
+        subject=subject,
+        body_html=body_html,
+        body_text=body_text,
+    )
+    log = EmailLog(
+        to_email=email_norm,
+        from_email=smtp.from_email,
+        subject=subject,
+        email_type="agent_credentials_resend",
+        success=ok,
+        error_message=None if ok else msg,
+        ip_address=ip,
+    )
+    session.add(log)
+    await session.commit()
+
+    if not ok:
+        logger.error("Agent credential resend email failed for %s: %s", email_norm, msg)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to send email. Your token was not changed — try again later.",
+        )
+
+    return AgentCredentialRecoveryResponse(
+        ok=True,
+        message=(
+            "Credential email has been sent to this address with your current token "
+            "(unchanged). Check inbox and spam."
+        ),
+    )
+
+
+@router.post("/agent-token-reset", response_model=AgentTokenResetResponse)
+async def agent_token_reset(
+    body: AgentTokenResetRequest,
+    request: Request,
+    session: DbSession,
+    settings: SettingsDep,
+) -> AgentTokenResetResponse:
+    """Issue a new token when email + agent_name + reason all match an active agent."""
+    email_norm = str(body.email).strip().lower()
+    agent_name = body.agent_name.strip()
+    reason_norm = body.reason.strip()
+    ip = _client_ip(request)
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    agent = await session.scalar(
+        select(Agent).where(
+            Agent.email == email_norm,
+            Agent.agent_name == agent_name,
+            Agent.revoked_at.is_(None),
+        )
+    )
+    stored_reason = (agent.apply_reason or "").strip() if agent else ""
+    if agent is None or stored_reason != reason_norm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "No active agent matches the combination of email, agent name, and application reason. "
+                "Values must match your self-service registration exactly (including the reason text)."
+            ),
+        )
+
+    reset_count = await session.scalar(
+        select(func.count(EmailLog.id)).where(
+            EmailLog.to_email == email_norm,
+            EmailLog.email_type == "agent_token_reset",
+            EmailLog.created_at >= one_hour_ago,
+        )
+    )
+    if (reset_count or 0) >= _AGENT_TOKEN_RESET_RATE_PER_EMAIL:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many token reset requests for this email. Please try again later.",
+        )
+
+    smtp = _smtp_or_503(request)
+    tmpl = _template_or_503(request)
+
+    new_token = generate_token()
+    agent.token_hash = sha256_hex(new_token)
+    agent.token_plaintext = new_token
+    await session.commit()
+
+    ws_hint = _ws_base_url(settings)
+    auth_example = json.dumps(
+        {"type": "auth", "agent_id": agent.agent_id, "token": "<your token>"},
+        ensure_ascii=False,
+    )
+    faq_url = (settings.public_site_base_url or "https://zenheart.net").rstrip("/") + "/#/faq"
+    subject = f"[ZenHeart] {agent.agent_name} — new agent token"
+    try:
+        body_html = tmpl.render_template(
+            "agent_credentials.html",
+            agent_id=agent.agent_id,
+            agent_name=agent.agent_name,
+            token=new_token,
+            ws_url=ws_hint + "/v2/agent/ws" if ws_hint else "",
+            auth_example=auth_example,
+            faq_url=faq_url,
+            reason="Token reset via self-service (full registration details verified).",
+            is_resend=False,
+            is_token_reset=True,
+            is_recovery=False,
+        )
+    except TemplateError as e:
+        logger.error("agent_credentials template render failed (token reset): %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Mail template error. Contact support.",
+        ) from e
+
+    body_text = (
+        f"Hello {agent.agent_name},\n\n"
+        f"A new token was issued after verifying your registration details. "
+        f"Your previous token is no longer valid.\n\n"
+        f"agent_id: {agent.agent_id}\n"
+        f"token:    {new_token}\n\n"
+        f"WebSocket: {(ws_hint + '/v2/agent/ws') if ws_hint else 'wss://<your-host>/v2/agent/ws'}\n"
+        f'First message: {{"type":"auth","agent_id":"{agent.agent_id}","token":"<your token>"}}\n\n'
+        f"Reference docs: {faq_url}\n\n"
+        f"SECURITY WARNING: Keep this email confidential. Never share your token.\n"
+    )
+
+    ok, msg, _mid = await smtp.send_email(
+        to_email=email_norm,
+        subject=subject,
+        body_html=body_html,
+        body_text=body_text,
+    )
+    log = EmailLog(
+        to_email=email_norm,
+        from_email=smtp.from_email,
+        subject=subject,
+        email_type="agent_token_reset",
+        success=ok,
+        error_message=None if ok else msg,
+        ip_address=ip,
+    )
+    session.add(log)
+    await session.commit()
+
+    registry = getattr(request.app.state, "registry", None)
+    if registry:
+        await registry.force_disconnect(
+            agent.agent_id,
+            {"type": "session_closed", "reason": "token_rotated"},
+            4001,
+            "token_rotated",
+        )
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory:
+        await record_agent_event(
+            session_factory,
+            event="admin_force_disconnect",
+            agent_id=agent.agent_id,
+            detail={"reason": "public_token_reset"},
+        )
+
+    if not ok:
+        logger.error("Agent token reset email failed for %s: %s", email_norm, msg)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "A new token is already active in the database but the email could not be sent. "
+                "Contact support with this email and agent name."
+            ),
+        )
+
+    return AgentTokenResetResponse(
+        ok=True,
+        agent_name=agent.agent_name,
+        message="New token issued and emailed. Previous token is invalid.",
+    )
+
+
 @router.get("/ai-visitors-24h", response_model=AgentVisitors24hResponse)
 async def get_ai_visitors_last_24h(session: DbSession) -> AgentVisitors24hResponse:
     now = datetime.now(timezone.utc)
     since = now - timedelta(hours=24)
 
+    visit_events = ("ws_connected", "a2a_ws_connected")
+
     visits_count_result = await session.execute(
         select(func.count(AgentEventLog.id)).where(
-            AgentEventLog.event == "ws_connected",
+            AgentEventLog.event.in_(visit_events),
             AgentEventLog.created_at >= since,
         )
     )
@@ -282,7 +623,7 @@ async def get_ai_visitors_last_24h(session: DbSession) -> AgentVisitors24hRespon
         )
         .outerjoin(Agent, Agent.agent_id == AgentEventLog.agent_id)
         .where(
-            AgentEventLog.event == "ws_connected",
+            AgentEventLog.event.in_(visit_events),
             AgentEventLog.created_at >= since,
             AgentEventLog.agent_id.is_not(None),
         )

@@ -514,6 +514,18 @@ tbody tr:last-child td {
 /* Responsive */
 
 @media (max-width: 640px) {
+  .header {
+    flex-wrap: wrap;
+  }
+
+  .header-meta {
+    flex: 1 1 100%;
+  }
+
+  .controls {
+    align-self: flex-end;
+  }
+
   .stats {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -524,6 +536,10 @@ tbody tr:last-child td {
 
   .visits-bar-bg {
     display: none;
+  }
+
+  .title {
+    font-size: 1.25rem;
   }
 }
 

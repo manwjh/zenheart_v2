@@ -14,22 +14,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
-from sqlalchemy import select
 
-from app.crypto_tokens import constant_time_token_equals, sha256_hex
-from app.models import Agent
 from app.services.agent_event_log import record_agent_event
-from app.services.permission_service import check_permission
+from app.services.permission_service import check_permission, get_limit_value
 from app.services.social_db import (
     create_room_record,
     record_member_join,
     record_member_leave,
-    record_room_dissolved,
 )
+from app.services.ws_auth import authenticate_agent_websocket
 from app.social_registry import (
     ChatRoom,
     SocialRoomRegistry,
@@ -40,6 +39,10 @@ from app.social_registry import (
 )
 
 
+def _jdump(obj: dict) -> str:
+    return json.dumps(obj, ensure_ascii=False)
+
+
 async def handle_social_agent_websocket(websocket: WebSocket) -> None:
     settings = websocket.app.state.settings
     social: SocialRoomRegistry = websocket.app.state.social_registry
@@ -47,59 +50,22 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
 
     await websocket.accept()
 
-    # ------------------------------------------------------------------ auth
-
-    try:
-        raw = await asyncio.wait_for(
-            websocket.receive_text(),
-            timeout=float(settings.agent_ws_auth_timeout_seconds),
-        )
-    except asyncio.TimeoutError:
-        await websocket.close(code=4408, reason="auth_timeout")
+    auth = await authenticate_agent_websocket(
+        websocket,
+        session_factory=session_factory,
+        auth_timeout_seconds=settings.agent_ws_auth_timeout_seconds,
+        max_message_bytes=settings.agent_ws_max_message_bytes,
+        event_scope="social_ws",
+    )
+    if auth is None:
         return
-
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_json"}))
-        await websocket.close(code=1003, reason="invalid_json")
-        return
-
-    if payload.get("type") != "auth":
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "expected_auth"}))
-        await websocket.close(code=1003, reason="expected_auth")
-        return
-
-    agent_id = payload.get("agent_id")
-    token = payload.get("token")
-    if not isinstance(agent_id, str) or not isinstance(token, str):
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_payload"}))
-        await websocket.close(code=1003, reason="invalid_payload")
-        return
-
-    async with session_factory() as session:
-        result = await session.execute(select(Agent).where(Agent.agent_id == agent_id))
-        agent = result.scalar_one_or_none()
-
-    if agent is None:
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "unknown_agent"}))
-        await websocket.close(code=4401, reason="unknown_agent")
-        return
-
-    if agent.revoked_at is not None:
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "revoked"}))
-        await websocket.close(code=4403, reason="revoked")
-        return
-
-    if not constant_time_token_equals(sha256_hex(token), agent.token_hash):
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_token"}))
-        await websocket.close(code=4401, reason="invalid_token")
-        return
+    agent = auth.agent
+    agent_id = auth.agent_id
 
     connection_id = str(uuid.uuid4())
     max_members_cap, max_ttl_cap = get_room_limits(agent.level)
 
-    await websocket.send_text(json.dumps({
+    await websocket.send_text(_jdump({
         "type": "auth_ok",
         "connection_id": connection_id,
         "agent_id": agent_id,
@@ -116,24 +82,45 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
         detail={"level": agent.level},
     )
 
+    async with session_factory() as _rl_session:
+        db_rate_limit = await get_limit_value(_rl_session, "ws", "rate_limit_per_minute")
+    rate_limit = db_rate_limit if db_rate_limit is not None else settings.agent_ws_rate_limit_per_minute
+    rate_window: deque[float] = deque(maxlen=rate_limit if rate_limit > 0 else None)
+
     # ------------------------------------------------------------------ message loop
 
     try:
         while True:
             msg = await websocket.receive_text()
+            msg_bytes = len(msg.encode("utf-8"))
+
+            if rate_limit > 0:
+                now = time.monotonic()
+                rate_window.append(now)
+                if len(rate_window) == rate_limit and (now - rate_window[0]) < 60.0:
+                    await websocket.send_text(
+                        _jdump({"type": "error", "reason": "rate_limit_exceeded"})
+                    )
+                    await websocket.close(code=4029, reason="rate_limit_exceeded")
+                    break
+
+            if msg_bytes > settings.agent_ws_max_message_bytes:
+                await websocket.close(code=1009, reason="too_large")
+                break
+
             try:
                 data = json.loads(msg)
             except json.JSONDecodeError:
-                await websocket.send_text(json.dumps({"type": "error", "reason": "invalid_json"}))
+                await websocket.send_text(_jdump({"type": "error", "reason": "invalid_json"}))
                 continue
 
             msg_type = data.get("type")
 
             if msg_type == "ping":
-                await websocket.send_text(json.dumps({"type": "pong"}))
+                await websocket.send_text(_jdump({"type": "pong"}))
 
             elif msg_type == "list_rooms":
-                await websocket.send_text(json.dumps({
+                await websocket.send_text(_jdump({
                     "type": "rooms_list",
                     "rooms": social.list_rooms_snapshot(),
                 }))
@@ -162,13 +149,13 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
                 )
 
             else:
-                await websocket.send_text(json.dumps({"type": "error", "reason": "unknown_type"}))
+                await websocket.send_text(_jdump({"type": "error", "reason": "unknown_type"}))
 
     except WebSocketDisconnect:
         pass
     finally:
         # Implicit leave on disconnect
-        room, dissolved = await social.leave_room(agent_id)
+        room, _dissolved = await social.leave_room(agent_id)
         if room is not None:
             now = datetime.now(timezone.utc)
             await record_member_leave(session_factory, room.room_id, agent_id, now)
@@ -178,7 +165,7 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
                 detail={"room_id": room.room_id, "room_name": room.name},
             )
             await _broadcast_member_left(
-                social, room, agent_id, agent.agent_name, dissolved, session_factory
+                social, room, agent_id, agent.agent_name, session_factory
             )
         await record_agent_event(
             session_factory, event="a2a_ws_disconnected",
@@ -202,13 +189,13 @@ async def _handle_create_room(
     async with session_factory() as session:
         allowed = await check_permission(session, "social", "create_room", level)
     if not allowed:
-        await ws.send_text(json.dumps({"type": "error", "reason": "forbidden"}))
+        await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
 
     # Validate name
     name = data.get("name", "")
     if not isinstance(name, str) or not (1 <= len(name.strip()) <= 80):
-        await ws.send_text(json.dumps({
+        await ws.send_text(_jdump({
             "type": "error", "reason": "invalid_create_room_payload",
             "detail": "name must be 1-80 chars",
         }))
@@ -217,7 +204,7 @@ async def _handle_create_room(
     # Validate topic
     topic = data.get("topic", "")
     if not isinstance(topic, str) or len(topic) > 300:
-        await ws.send_text(json.dumps({
+        await ws.send_text(_jdump({
             "type": "error", "reason": "invalid_create_room_payload",
             "detail": "topic must be ≤300 chars",
         }))
@@ -229,7 +216,7 @@ async def _handle_create_room(
         requested_members = _ROOM_CAPACITY_DEFAULT
     requested_members = max(2, requested_members)
     if requested_members > max_members_cap:
-        await ws.send_text(json.dumps({
+        await ws.send_text(_jdump({
             "type": "error", "reason": "max_members_exceeds_level_cap",
             "detail": f"Your level allows max {max_members_cap} members",
             "max_members_cap": max_members_cap,
@@ -242,7 +229,7 @@ async def _handle_create_room(
         requested_ttl = _ROOM_TTL_DEFAULT
     requested_ttl = max(1, requested_ttl)
     if requested_ttl > max_ttl_cap:
-        await ws.send_text(json.dumps({
+        await ws.send_text(_jdump({
             "type": "error", "reason": "ttl_exceeds_level_cap",
             "detail": f"Your level allows max {max_ttl_cap} minutes",
             "max_ttl_minutes_cap": max_ttl_cap,
@@ -252,7 +239,7 @@ async def _handle_create_room(
     # Validate rules (optional guidance for agents joining this room)
     rules = data.get("rules", "")
     if not isinstance(rules, str) or len(rules) > 2000:
-        await ws.send_text(json.dumps({
+        await ws.send_text(_jdump({
             "type": "error", "reason": "invalid_create_room_payload",
             "detail": "rules must be a string ≤2000 chars",
         }))
@@ -269,11 +256,11 @@ async def _handle_create_room(
         ws=ws,
     )
     if isinstance(result, str):
-        await ws.send_text(json.dumps({"type": "error", "reason": result}))
+        await ws.send_text(_jdump({"type": "error", "reason": result}))
         return
 
     room: ChatRoom = result
-    await ws.send_text(json.dumps({
+    await ws.send_text(_jdump({
         "type": "room_created",
         "room_id": room.room_id,
         "status": "active",
@@ -307,12 +294,12 @@ async def _handle_join_room(
     async with session_factory() as session:
         allowed = await check_permission(session, "social", "join_room", level)
     if not allowed:
-        await ws.send_text(json.dumps({"type": "error", "reason": "forbidden"}))
+        await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
 
     room_id = data.get("room_id", "")
     if not isinstance(room_id, str) or not room_id:
-        await ws.send_text(json.dumps({
+        await ws.send_text(_jdump({
             "type": "error", "reason": "invalid_join_room_payload",
             "detail": "room_id required",
         }))
@@ -322,14 +309,14 @@ async def _handle_join_room(
         room_id=room_id, agent_id=agent_id, agent_name=agent_name, ws=ws
     )
     if isinstance(result, str):
-        await ws.send_text(json.dumps({"type": "error", "reason": result}))
+        await ws.send_text(_jdump({"type": "error", "reason": result}))
         return
 
     room: ChatRoom = result
     now = datetime.now(timezone.utc)
     joined_at_str = now.isoformat()
 
-    await ws.send_text(json.dumps({
+    await ws.send_text(_jdump({
         "type": "room_joined",
         "room_id": room.room_id,
         "status": "active",
@@ -364,13 +351,13 @@ async def _handle_leave_room(
     agent_id: str,
     agent_name: str,
 ) -> None:
-    room, dissolved = await social.leave_room(agent_id)
+    room, _dissolved = await social.leave_room(agent_id)
     if room is None:
-        await ws.send_text(json.dumps({"type": "error", "reason": "not_in_room"}))
+        await ws.send_text(_jdump({"type": "error", "reason": "not_in_room"}))
         return
 
     now = datetime.now(timezone.utc)
-    await ws.send_text(json.dumps({
+    await ws.send_text(_jdump({
         "type": "room_left",
         "room_id": room.room_id,
         "name": room.name,
@@ -380,7 +367,7 @@ async def _handle_leave_room(
         session_factory, event="a2a_room_left", agent_id=agent_id,
         detail={"room_id": room.room_id, "name": room.name},
     )
-    await _broadcast_member_left(social, room, agent_id, agent_name, dissolved, session_factory)
+    await _broadcast_member_left(social, room, agent_id, agent_name, session_factory)
 
 
 async def _handle_send_message(
@@ -395,12 +382,12 @@ async def _handle_send_message(
     async with session_factory() as session:
         allowed = await check_permission(session, "social", "send_message", level)
     if not allowed:
-        await ws.send_text(json.dumps({"type": "error", "reason": "forbidden"}))
+        await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
 
     text = data.get("text", "")
     if not isinstance(text, str) or not (1 <= len(text) <= 4000):
-        await ws.send_text(json.dumps({
+        await ws.send_text(_jdump({
             "type": "error", "reason": "invalid_send_message_payload",
             "detail": "text must be 1-4000 chars",
         }))
@@ -412,7 +399,7 @@ async def _handle_send_message(
 
     room_id = await social.record_message(agent_id)
     if room_id is None:
-        await ws.send_text(json.dumps({"type": "error", "reason": "not_in_room"}))
+        await ws.send_text(_jdump({"type": "error", "reason": "not_in_room"}))
         return
 
     sent_at = datetime.now(timezone.utc).isoformat()
@@ -445,31 +432,19 @@ async def _broadcast_member_left(
     room: ChatRoom,
     agent_id: str,
     agent_name: str,
-    dissolved: bool,
     session_factory: object,
 ) -> None:
-    if dissolved:
-        await social.broadcast_dissolution(room, reason="all_members_left")
-        await record_room_dissolved(
-            session_factory, room.room_id,
-            reason="all_members_left",
-            total_messages=room.message_count,
-        )
-        await record_agent_event(
-            session_factory, event="a2a_room_dissolved",
-            agent_id=agent_id,
-            detail={
-                "room_id": room.room_id,
-                "name": room.name,
-                "reason": "all_members_left",
-                "total_messages": room.message_count,
-            },
-        )
-    else:
-        left_frame = {
-            "type": "member_left",
-            "room_id": room.room_id,
-            "agent_id": agent_id,
-            "agent_name": agent_name,
-        }
-        await social.broadcast_to_room(room.room_id, left_frame)
+    """Broadcast member_left to remaining members and observers.
+
+    Rooms are never immediately dissolved when a member leaves; they enter a
+    keepalive window and are dissolved by the TTL enforcer after
+    ROOM_KEEPALIVE_MINUTES.  The TTL enforcer handles dissolution records and
+    broadcast_dissolution calls.
+    """
+    left_frame = {
+        "type": "member_left",
+        "room_id": room.room_id,
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+    }
+    await social.broadcast_to_room(room.room_id, left_frame)

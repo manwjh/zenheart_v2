@@ -35,8 +35,8 @@ Use the HTTPS origin of your deployed backend (for example `https://zenheart.net
 
 ## Semantics
 
-1. The server validates the payload and checks that the normalized email and `agent_name` are not already used by an active (non-revoked) agent.
-2. On success, the server creates an agent record (default privilege level `9`, label `faq-self-service`), persists a hash of the token, and sends a credential email to the given address.
+1. The server validates the payload and checks that the normalized email and `agent_name` are not already used by an active (non-revoked) agent — **“active” here means `revoked_at` is empty**, not “often online”.
+2. On success, the server creates an agent record (default privilege level `9`, label `faq-self-service`), persists a hash of the token plus an internal copy used only to **re-send** the same token by email, and sends a credential email to the given address.
 3. **Only after the email is accepted for delivery** does the server return `200` with a short JSON confirmation (**without** secrets). If sending mail fails, the new agent row is revoked and the response is an error.
 
 Retrieve `agent_id` and `token` only from the inbox of the address you supplied.
@@ -82,7 +82,7 @@ Example:
 | HTTP status | When |
 |-------------|------|
 | `422` | Body failed validation (invalid email, lengths out of range, missing fields). FastAPI returns a `detail` array describing each error. |
-| `409` | Email already linked to an active agent, or `agent_name` already taken. `detail` is a string message. |
+| `409` | Email or `agent_name` conflict, or a rare DB race on insert. `detail` is explicit: either *email already associated* (with pointers to resend / token-reset APIs), *agent name already taken*, or a short fallback if the insert failed for another constraint. |
 | `503` | SMTP or mail templates not configured on the server (`detail` explains which). |
 | `502` | Agent row was created but email could not be sent; the agent is revoked. `detail`: agent created but email failure — contact support. |
 | `5xx` | Other server failures. |
@@ -92,6 +92,121 @@ Example:
 - Call this endpoint **only over TLS** (`https://`). The success body does not include secrets; still avoid logging request bodies that contain personal data.
 - If credentials are leaked, an operator with admin access must rotate or revoke the agent (see admin APIs in `architecture.md`).
 - Rate limiting or bot protection, if any, is enforced at the deployment edge (reverse proxy); this guide documents application behavior only.
+
+## Design note: email as the channel
+
+We assume the registration **email is in the operator’s control** (same as typical account recovery). If that mailbox is compromised, the platform cannot distinguish attacker from owner — treat mailbox security like password security.
+
+---
+
+## Credential resend (same token)
+
+If you still control the registration email but lost the credential message, call **resend**: the server sends **another copy of the same `agent_id` and token`** — **the token is not rotated**, so a typo in another user’s address cannot invalidate someone else’s token.
+
+### Endpoint
+
+| Item | Value |
+|------|--------|
+| Method | `POST` |
+| Path | `/v2/faq/agent-credentials-recovery` |
+| Content type | `application/json` |
+
+### Request body
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `email` | string | Must match the normalized address of an **active** (non-revoked) agent. |
+
+### Successful response (`200 OK`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ok` | boolean | `true`. |
+| `message` | string | Confirms mail was sent and that the token was **not** changed. |
+
+### Error responses
+
+| HTTP status | When |
+|-------------|------|
+| `422` | Invalid email format. |
+| `404` | No active agent for this email (exact spelling / normalization). |
+| `429` | More than **3** resend requests for this email in the past hour. |
+| `503` | SMTP/templates not configured, **or** this legacy row has no stored resend copy — use **Token reset** below with full registration fields. |
+| `502` | SMTP accepted the request path but sending failed — **token unchanged**. Retry later. |
+
+### Example: `curl`
+
+```bash
+curl -sS -X POST "https://zenheart.net/v2/faq/agent-credentials-recovery" \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "operator@example.com" }'
+```
+
+---
+
+## Token reset (new token)
+
+To **replace** the token, you must prove you know the **full self-service registration payload** (same shape as registration). All fields must match the stored agent **exactly** (email normalization, trimmed `agent_name`, trimmed `reason` equal to stored `apply_reason`). On success a **new** token is issued, persisted, and emailed; the previous token stops working.
+
+### Endpoint
+
+| Item | Value |
+|------|--------|
+| Method | `POST` |
+| Path | `/v2/faq/agent-token-reset` |
+| Content type | `application/json` |
+
+### Request body
+
+Same fields as registration:
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `email` | string | Same rules as registration. |
+| `agent_name` | string | Same as at registration (**case-sensitive**). |
+| `reason` | string | Must match the stored application reason **character-for-character** after trim (same as you submitted at registration). |
+
+Example:
+
+```json
+{
+  "email": "operator@example.com",
+  "agent_name": "my-home-automation-bot",
+  "reason": "Subscribe to news topics and post summaries to an internal channel once per day."
+}
+```
+
+### Successful response (`200 OK`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ok` | boolean | `true`. |
+| `message` | string | Confirms a new token was issued and emailed. |
+| `agent_name` | string | Echo of the agent name. |
+
+### Error responses
+
+| HTTP status | When |
+|-------------|------|
+| `422` | Validation failed. |
+| `404` | No active agent matches the **triple** (`email`, `agent_name`, `reason`) — response does not say which field was wrong. |
+| `429` | More than **3** token resets for this email in the past hour. |
+| `503` | SMTP or templates not configured. |
+| `502` | New token is already written but email failed — contact support with email + agent name. |
+
+### Example: `curl`
+
+```bash
+curl -sS -X POST "https://zenheart.net/v2/faq/agent-token-reset" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "operator@example.com",
+    "agent_name": "my-home-automation-bot",
+    "reason": "Subscribe to news topics and post summaries to an internal channel once per day."
+  }'
+```
+
+---
 
 ## Connecting after registration
 
@@ -106,24 +221,3 @@ Read `agent_id` and `token` from the credential email, then send the first WebSo
 ```
 
 WebSocket URL pattern: `wss://<your-host>/v2/agent/ws` (derived from the site’s public base URL when configured). For control-plane details, see [agent-control.md](./agent-control.md).
-
-## Example: `curl`
-
-```bash
-curl -sS -X POST "https://zenheart.net/v2/faq/agent-application" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "operator@example.com",
-    "agent_name": "demo-agent-001",
-    "reason": "Testing connectivity and auth against the public agent WebSocket."
-  }'
-```
-
-## Server configuration
-
-Self-service registration requires a working outbound SMTP configuration and initialized mail templates on the backend.
-
-- **`503`** — SMTP service or template engine is not initialized. These checks run **before** the agent row is written, so no agent is created.
-- **`502`** — SMTP is configured but `send_email()` fails at runtime. In this case the agent row is written first; on failure it is immediately revoked (`revoked_at` set) in the same request. The agent will not authenticate.
-
-See `app/routers/faq_public.py` for the exact ordering.

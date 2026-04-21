@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 
@@ -21,6 +22,9 @@ type NewsListResponse = {
 
 type NewsDetailResponse = NewsRow & { markdown_content: string };
 
+const route = useRoute();
+const router = useRouter();
+
 const list = ref<NewsRow[]>([]);
 const loadingList = ref(false);
 const listError = ref<string | null>(null);
@@ -30,6 +34,16 @@ const loadingDetail = ref(false);
 const detailError = ref<string | null>(null);
 
 const failedCovers = ref<Set<string>>(new Set());
+
+// sticky header title visibility
+const modalRef = ref<HTMLElement | null>(null);
+const articleTitleRef = ref<HTMLElement | null>(null);
+const headerTitleVisible = ref(false);
+let titleObserver: IntersectionObserver | null = null;
+
+// share / copy toast
+const copiedToast = ref(false);
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 function markCoverFailed(id: string) {
   failedCovers.value = new Set([...failedCovers.value, id]);
@@ -78,6 +92,8 @@ async function openDetail(articleId: string) {
   loadingDetail.value = true;
   detailError.value = null;
   selectedArticle.value = null;
+  // sync URL
+  await router.replace({ query: { article: articleId } });
   try {
     const res = await fetch(`/v2/news/articles/${articleId}`);
     const data = (await res.json().catch(() => ({}))) as NewsDetailResponse;
@@ -97,6 +113,55 @@ async function openDetail(articleId: string) {
 function closeDetail() {
   selectedArticle.value = null;
   detailError.value = null;
+  void router.replace({ query: {} });
+}
+
+// setup IntersectionObserver to detect when article h2 scrolls out of view
+watch(selectedArticle, (val) => {
+  titleObserver?.disconnect();
+  headerTitleVisible.value = false;
+  if (!val) return;
+  nextTick(() => {
+    if (!articleTitleRef.value || !modalRef.value) return;
+    titleObserver = new IntersectionObserver(
+      ([entry]) => {
+        headerTitleVisible.value = !entry.isIntersecting;
+      },
+      { root: modalRef.value, threshold: 0 }
+    );
+    titleObserver.observe(articleTitleRef.value);
+  });
+});
+
+async function shareArticle() {
+  if (!selectedArticle.value) return;
+  const url = `${location.origin}/v2/share/news/${selectedArticle.value.id}`;
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title: selectedArticle.value.title,
+        text: selectedArticle.value.summary,
+        url,
+      });
+    } catch {
+      // user cancelled — no action needed
+    }
+  } else {
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      // clipboard unavailable
+    }
+    showToast();
+  }
+}
+
+function showToast() {
+  copiedToast.value = true;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    copiedToast.value = false;
+  }, 2200);
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -108,10 +173,15 @@ function handleKeydown(e: KeyboardEvent) {
 onMounted(() => {
   document.addEventListener("keydown", handleKeydown);
   void fetchNewsList();
+  // open article from URL on page load
+  const articleId = route.query.article as string | undefined;
+  if (articleId) void openDetail(articleId);
 });
 
 onUnmounted(() => {
   document.removeEventListener("keydown", handleKeydown);
+  titleObserver?.disconnect();
+  if (toastTimer) clearTimeout(toastTimer);
 });
 </script>
 
@@ -178,65 +248,94 @@ onUnmounted(() => {
         aria-labelledby="modal-title"
         @click.self="closeDetail"
       >
-        <section class="modal">
-          <button class="close" type="button" title="Close (Esc)" @click="closeDetail">
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
+        <section class="modal" ref="modalRef">
+          <!-- ── Sticky header ── -->
+          <div class="modal-header">
+            <button class="btn-nav btn-back" type="button" @click="closeDetail" title="Close (Esc)">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>Back</span>
+            </button>
+
+            <span
+              class="header-title"
+              :class="{ visible: headerTitleVisible }"
               aria-hidden="true"
             >
-              <path
-                d="M2 2L14 14M14 2L2 14"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-              />
-            </svg>
-          </button>
+              {{ selectedArticle?.title ?? "" }}
+            </span>
 
-          <p v-if="loadingDetail" class="state">Loading article…</p>
-          <p v-else-if="detailError" class="state error">{{ detailError }}</p>
-
-          <template v-else-if="selectedArticle">
-            <img
-              v-if="showCover(selectedArticle)"
-              class="detail-cover"
-              :src="selectedArticle.cover_image_url"
-              :alt="selectedArticle.title"
-              loading="lazy"
-              @error="markCoverFailed(selectedArticle!.id)"
-            />
-            <div v-else class="cover-placeholder detail-cover-placeholder" aria-hidden="true">
-              <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="6" y="10" width="36" height="28" rx="4" stroke="currentColor" stroke-width="1.5"/>
-                <circle cx="16" cy="20" r="4" stroke="currentColor" stroke-width="1.5"/>
-                <path d="M6 32 L18 22 L28 30 L34 24 L42 32" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
-              </svg>
-            </div>
-            <div class="detail-byline">
-              <span class="author">{{ selectedArticle.publisher_agent_name }}</span>
-              <span class="sep">·</span>
-              <span class="date">{{ toIsoDate(selectedArticle.published_at) }}</span>
-            </div>
-            <h2 id="modal-title">{{ selectedArticle.title }}</h2>
-            <p class="summary detail-summary">{{ selectedArticle.summary }}</p>
-            <div
-              v-if="selectedArticle.tags && selectedArticle.tags.length"
-              class="tags detail-tags"
+            <button
+              class="btn-nav btn-share"
+              type="button"
+              :disabled="!selectedArticle"
+              :title="copiedToast ? 'Link copied!' : 'Share article'"
+              @click="shareArticle"
             >
-              <span
-                v-for="tag in selectedArticle.tags"
-                :key="`detail-${tag}`"
-                class="tag"
+              <!-- Check icon when copied -->
+              <svg v-if="copiedToast" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M3 8L6.5 11.5L13 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <!-- Share icon -->
+              <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <circle cx="12" cy="3" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="12" cy="13" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="4" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M10.5 3.75L5.5 7.25M10.5 12.25L5.5 8.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <span>{{ copiedToast ? "Copied!" : "Share" }}</span>
+            </button>
+          </div>
+
+          <!-- ── Body ── -->
+          <div class="modal-body">
+            <p v-if="loadingDetail" class="state">Loading article…</p>
+            <p v-else-if="detailError" class="state error">{{ detailError }}</p>
+
+            <template v-else-if="selectedArticle">
+              <img
+                v-if="showCover(selectedArticle)"
+                class="detail-cover"
+                :src="selectedArticle.cover_image_url"
+                :alt="selectedArticle.title"
+                loading="lazy"
+                @error="markCoverFailed(selectedArticle!.id)"
+              />
+              <div v-else class="cover-placeholder detail-cover-placeholder" aria-hidden="true">
+                <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="6" y="10" width="36" height="28" rx="4" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="16" cy="20" r="4" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M6 32 L18 22 L28 30 L34 24 L42 32" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <div class="detail-byline">
+                <span class="author">{{ selectedArticle.publisher_agent_name }}</span>
+                <span class="sep">·</span>
+                <span class="date">{{ toIsoDate(selectedArticle.published_at) }}</span>
+              </div>
+              <h2 id="modal-title" ref="articleTitleRef">{{ selectedArticle.title }}</h2>
+              <p class="summary detail-summary">{{ selectedArticle.summary }}</p>
+              <div
+                v-if="selectedArticle.tags && selectedArticle.tags.length"
+                class="tags detail-tags"
               >
-                #{{ tag }}
-              </span>
-            </div>
-            <article class="markdown" v-html="detailHtml" />
-          </template>
+                <span
+                  v-for="tag in selectedArticle.tags"
+                  :key="`detail-${tag}`"
+                  class="tag"
+                >
+                  #{{ tag }}
+                </span>
+              </div>
+              <article class="markdown" v-html="detailHtml" />
+            </template>
+          </div>
+
+          <!-- ── Copy toast ── -->
+          <div class="toast" :class="{ visible: copiedToast }" role="status" aria-live="polite">
+            Link copied to clipboard
+          </div>
         </section>
       </div>
     </Teleport>
@@ -279,7 +378,7 @@ onUnmounted(() => {
   color: var(--muted);
 }
 
-/* ── Card grid (auto-fill, no breakpoint needed) ── */
+/* ── Card grid ── */
 .masonry {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
@@ -345,7 +444,6 @@ onUnmounted(() => {
   margin-bottom: 1.25rem;
   aspect-ratio: 21 / 9;
   border: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
 }
 
 .meta {
@@ -421,36 +519,91 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--bg);
-  padding: 2rem;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
-.close {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-  width: 2rem;
-  height: 2rem;
+/* ── Sticky header ── */
+.modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+}
+
+.header-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease;
+  pointer-events: none;
+}
+
+.header-title.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.btn-nav {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.65rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: transparent;
   color: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
 }
 
-.close:hover {
-  background: var(--border);
+.btn-nav:hover {
+  background: rgba(127, 127, 127, 0.08);
+  border-color: rgba(127, 127, 127, 0.3);
 }
 
-.close:focus-visible {
+.btn-nav:focus-visible {
   outline: 2px solid currentColor;
   outline-offset: 2px;
 }
 
+.btn-nav:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn-share {
+  margin-left: auto;
+}
+
+/* ── Modal body ── */
+.modal-body {
+  padding: 1.5rem 2rem 2rem;
+}
+
+/* ── Detail content ── */
 .detail-cover {
   width: 100%;
   border-radius: 10px;
@@ -473,7 +626,6 @@ onUnmounted(() => {
   font-weight: 700;
   letter-spacing: -0.01em;
   line-height: 1.3;
-  padding-right: 2.5rem;
 }
 
 .detail-summary {
@@ -485,6 +637,35 @@ onUnmounted(() => {
 
 .detail-tags {
   margin-bottom: 1.5rem;
+}
+
+/* ── Toast ── */
+.toast {
+  position: sticky;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(0.5rem);
+  width: fit-content;
+  padding: 0.5rem 1rem;
+  border-radius: 999px;
+  background: rgba(30, 30, 30, 0.92);
+  color: #fff;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+  backdrop-filter: blur(8px);
+  margin: 0 auto;
+  display: block;
+  text-align: center;
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 /* ── Markdown prose ── */
@@ -598,6 +779,27 @@ onUnmounted(() => {
     width: 100%;
     max-height: 92dvh;
     border-radius: 20px 20px 0 0;
+  }
+
+  .modal-header {
+    border-radius: 20px 20px 0 0;
+    /* drag handle hint above header */
+    padding-top: 1rem;
+  }
+
+  .modal-header::before {
+    content: "";
+    position: absolute;
+    top: 0.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2.5rem;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--border);
+  }
+
+  .modal-body {
     padding: 1.25rem 1rem 2rem;
   }
 
@@ -605,15 +807,12 @@ onUnmounted(() => {
     font-size: 1.2rem;
   }
 
-  /* drag handle hint */
-  .modal::before {
-    content: "";
-    display: block;
-    width: 2.5rem;
-    height: 4px;
-    border-radius: 999px;
-    background: var(--border);
-    margin: 0 auto 1rem;
+  .btn-nav span {
+    display: none;
+  }
+
+  .btn-nav {
+    padding: 0.35rem 0.5rem;
   }
 }
 </style>

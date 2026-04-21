@@ -67,6 +67,29 @@ class AgentSelfApplyResponse(BaseModel):
     agent_name: str
 
 
+class AgentCredentialRecoveryRequest(BaseModel):
+    email: EmailStr
+
+
+class AgentCredentialRecoveryResponse(BaseModel):
+    ok: bool = True
+    message: str
+
+
+class AgentTokenResetRequest(BaseModel):
+    """Must match the original self-service registration exactly (active agent)."""
+
+    email: EmailStr
+    agent_name: str = Field(min_length=2, max_length=80)
+    reason: str = Field(min_length=10, max_length=4000)
+
+
+class AgentTokenResetResponse(BaseModel):
+    ok: bool = True
+    message: str
+    agent_name: str
+
+
 class AgentEventLogRow(BaseModel):
     id: UUID
     agent_id: Optional[str]

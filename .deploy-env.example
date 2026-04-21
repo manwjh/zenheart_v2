@@ -18,3 +18,6 @@ export ZENHEART_EC2_HOST=
 
 # Set to 1 to skip nginx fragment install
 # export ZENHEART_V2_SKIP_NGINX=0
+
+# Deploy (from repo v2/): ./deploy-backend.sh
+# Remote steps: venv+pip, install psql when missing (dnf/yum/apt), run scripts/migrations/*.sql via Python, restart systemd.

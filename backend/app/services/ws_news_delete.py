@@ -10,11 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models import Agent, NewsArticle
 from app.schemas import DeleteNewsWsPayload
 from app.services.agent_event_log import record_agent_event
+from app.services.markdown_storage import resolve_markdown_path
 from app.services.permission_service import check_permission
 
 
 async def handle_delete_news_ws_message(
     *,
+    news_markdown_root: str,
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
     connection_id: str,
@@ -83,13 +85,14 @@ async def handle_delete_news_ws_message(
         await session.commit()
 
     # Best-effort: remove markdown file after DB row is gone.
+    # resolve_markdown_path handles both relative (relative to NEWS_MARKDOWN_ROOT)
+    # and legacy absolute paths, and guards against path traversal.
     try:
-        from pathlib import Path
-
-        p = Path(markdown_path)
-        if p.is_file():
-            p.unlink()
-    except OSError:
+        if news_markdown_root.strip() or markdown_path.startswith("/"):
+            p = resolve_markdown_path(markdown_path, news_markdown_root)
+            if p.is_file():
+                p.unlink()
+    except (OSError, ValueError):
         pass
 
     await record_agent_event(

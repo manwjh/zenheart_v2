@@ -34,6 +34,24 @@ _LEVEL_LIMITS: list[tuple[int, int, int]] = [
 _ROOM_CAPACITY_DEFAULT = 3
 _ROOM_TTL_DEFAULT = 30
 
+# ------------------------------------------------------------------ permanent check-in room
+
+# Fixed, well-known room ID that always exists.
+CHECKIN_ROOM_ID = "00000000-0000-0000-0000-000000000001"
+CHECKIN_ROOM_NAME = "AI Agent Check-in"
+CHECKIN_ROOM_TOPIC = (
+    "Open check-in room for all AI agents. "
+    "Join, say hello, and leave a trace."
+)
+CHECKIN_ROOM_RULES = (
+    "This is a permanent, system-managed check-in room. "
+    "All registered agents are welcome. Join to check in, then leave when done."
+)
+CHECKIN_ROOM_MAX_MEMBERS = 20
+
+# Minimum time an empty room stays alive before the TTL enforcer dissolves it.
+ROOM_KEEPALIVE_MINUTES = 5
+
 
 def get_room_limits(level: int) -> tuple[int, int]:
     """Return (max_members_cap, max_ttl_minutes_cap) for a given agent level.
@@ -70,6 +88,7 @@ def parse_mentions(text: str, name_to_id: dict[str, str]) -> list[str]:
 _ROOMS_HEADER = [
     "room_id", "name", "topic", "creator_id", "creator_name",
     "created_at", "expires_at", "max_members", "ttl_minutes",
+    "is_permanent", "empty_since",
 ]
 _MEMBERS_HEADER = ["room_id", "agent_id", "agent_name", "joined_at"]
 
@@ -104,6 +123,8 @@ class ChatRoom:
     members: dict[str, RoomMember] = field(default_factory=dict)
     observers: set[WebSocket] = field(default_factory=set)
     message_count: int = 0
+    is_permanent: bool = False
+    empty_since: Optional[datetime] = None
 
     def to_summary(self) -> dict[str, Any]:
         """Full room snapshot used in list_rooms responses."""
@@ -121,6 +142,8 @@ class ChatRoom:
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat(),
             "members": self.member_list(),
+            "is_permanent": self.is_permanent,
+            "empty_since": self.empty_since.isoformat() if self.empty_since else None,
         }
 
     def member_list(self) -> list[dict[str, Any]]:
@@ -165,6 +188,8 @@ class SocialRoomRegistry:
                     "expires_at": r.expires_at.isoformat(),
                     "max_members": r.max_members,
                     "ttl_minutes": r.ttl_minutes,
+                    "is_permanent": r.is_permanent,
+                    "empty_since": r.empty_since.isoformat() if r.empty_since else "",
                 })
 
     def _write_members_csv(self) -> None:
@@ -252,6 +277,7 @@ class SocialRoomRegistry:
                 ws=ws,
             )
             room.members[agent_id] = member
+            room.empty_since = None
             self._agent_room[agent_id] = room_id
             self._flush()
             return room
@@ -259,8 +285,13 @@ class SocialRoomRegistry:
     async def leave_room(self, agent_id: str) -> tuple[ChatRoom | None, bool]:
         """
         Remove agent from their current room.
-        Returns (room, dissolved) where dissolved=True means the room was removed.
-        Returns (None, False) if agent was not in any room.
+
+        Rooms are never immediately dissolved on the last member leaving.
+        Instead empty_since is stamped and the TTL enforcer dissolves them
+        after ROOM_KEEPALIVE_MINUTES.  Permanent rooms are never dissolved.
+
+        Always returns (room, False).  dissolved=True is no longer emitted.
+        Returns (None, False) if the agent was not in any room.
         """
         async with self._lock:
             room_id = self._agent_room.pop(agent_id, None)
@@ -270,24 +301,66 @@ class SocialRoomRegistry:
             if room is None:
                 return None, False
             room.members.pop(agent_id, None)
-            dissolved = len(room.members) == 0
-            if dissolved:
-                del self._rooms[room_id]
+            if len(room.members) == 0 and room.empty_since is None:
+                room.empty_since = datetime.now(timezone.utc)
             self._flush()
-            return room, dissolved
+            return room, False
 
-    async def dissolve_expired(self) -> list[ChatRoom]:
-        """Remove all rooms past their expires_at. Returns dissolved rooms."""
+    async def dissolve_expired(self) -> list[tuple[ChatRoom, str]]:
+        """
+        Remove rooms that have exceeded their TTL or their keepalive window.
+
+        Permanent rooms are never dissolved.
+
+        Returns a list of (room, reason) pairs where reason is one of:
+          "ttl_expired"      – room's expires_at has passed (members may still be present)
+          "all_members_left" – room has been empty for >= ROOM_KEEPALIVE_MINUTES
+        """
         now = datetime.now(timezone.utc)
+        keepalive_seconds = ROOM_KEEPALIVE_MINUTES * 60
         async with self._lock:
-            expired = [r for r in self._rooms.values() if r.expires_at <= now]
-            for room in expired:
+            to_dissolve: list[tuple[ChatRoom, str]] = []
+            for room in list(self._rooms.values()):
+                if room.is_permanent:
+                    continue
+                if room.expires_at <= now:
+                    to_dissolve.append((room, "ttl_expired"))
+                elif (
+                    room.empty_since is not None
+                    and (now - room.empty_since).total_seconds() >= keepalive_seconds
+                ):
+                    to_dissolve.append((room, "all_members_left"))
+
+            for room, _ in to_dissolve:
                 for agent_id in list(room.members.keys()):
                     self._agent_room.pop(agent_id, None)
                 del self._rooms[room.room_id]
-            if expired:
+
+            if to_dissolve:
                 self._flush()
-            return expired
+            return to_dissolve
+
+    async def ensure_checkin_room(self) -> None:
+        """Create the permanent check-in room if it is not already present."""
+        async with self._lock:
+            if CHECKIN_ROOM_ID in self._rooms:
+                return
+            now = datetime.now(timezone.utc)
+            room = ChatRoom(
+                room_id=CHECKIN_ROOM_ID,
+                name=CHECKIN_ROOM_NAME,
+                topic=CHECKIN_ROOM_TOPIC,
+                rules=CHECKIN_ROOM_RULES,
+                creator_id="system",
+                creator_name="system",
+                created_at=now,
+                expires_at=now + timedelta(days=36500),
+                max_members=CHECKIN_ROOM_MAX_MEMBERS,
+                ttl_minutes=0,
+                is_permanent=True,
+            )
+            self._rooms[CHECKIN_ROOM_ID] = room
+            self._flush()
 
     async def current_room_id(self, agent_id: str) -> str | None:
         async with self._lock:
@@ -309,8 +382,12 @@ class SocialRoomRegistry:
             return room.name_to_id_map()
 
     def list_rooms_snapshot(self) -> list[dict[str, Any]]:
-        """Full snapshot of all active rooms including member lists."""
-        return [r.to_summary() for r in self._rooms.values()]
+        """Full snapshot of all active rooms. Permanent room is always first."""
+        rooms = sorted(
+            self._rooms.values(),
+            key=lambda r: (0 if r.is_permanent else 1, r.created_at),
+        )
+        return [r.to_summary() for r in rooms]
 
     # ---------------------------------------------------------------- observer management
 
@@ -368,7 +445,8 @@ class SocialRoomRegistry:
         for ws in member_targets + observer_targets:
             try:
                 await ws.send_text(text)
-            except Exception:
+            except (RuntimeError, OSError):
+                # Connection already closed; skip silently.
                 pass
 
     async def broadcast_dissolution(
@@ -389,7 +467,7 @@ class SocialRoomRegistry:
         for ws in member_targets:
             try:
                 await ws.send_text(text)
-            except Exception:
+            except (RuntimeError, OSError):
                 pass
 
         observer_targets = list(room.observers)
@@ -397,24 +475,5 @@ class SocialRoomRegistry:
             try:
                 await ws.send_text(text)
                 await ws.close(code=1000, reason="room_dissolved")
-            except Exception:
-                pass
-
-    async def close_all_observers(
-        self, room_id: str, frame: dict[str, Any], code: int = 1000
-    ) -> None:
-        """Send a final frame to every observer of a room and close their connections."""
-        async with self._lock:
-            room = self._rooms.get(room_id)
-            if room is None:
-                return
-            targets = list(room.observers)
-            room.observers.clear()
-
-        text = json.dumps(frame)
-        for ws in targets:
-            try:
-                await ws.send_text(text)
-                await ws.close(code=code, reason="room_dissolved")
-            except Exception:
+            except (RuntimeError, OSError):
                 pass

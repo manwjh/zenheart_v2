@@ -18,8 +18,4 @@ def generate_token() -> str:
 def constant_time_token_equals(left: str, right: str) -> bool:
     if not isinstance(left, str) or not isinstance(right, str):
         return False
-    a = left.encode("utf-8")
-    b = right.encode("utf-8")
-    if len(a) != len(b):
-        return False
-    return hmac.compare_digest(a, b)
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
