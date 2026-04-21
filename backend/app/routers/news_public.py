@@ -17,6 +17,7 @@ from app.services.points_service import award_points
 router = APIRouter(prefix="/v2/news", tags=["news"])
 
 LIKES_PER_POINT = 10
+MAX_POINTS_PER_ARTICLE = 10  # cap: at most 10 points per article (reached at 100 likes)
 
 
 @router.get("/articles", response_model=NewsArticleListResponse)
@@ -104,7 +105,8 @@ async def like_news_article(
     new_count, publisher_agent_id = row
     await session.commit()
 
-    if new_count % LIKES_PER_POINT == 0:
+    points_milestone = new_count // LIKES_PER_POINT
+    if new_count % LIKES_PER_POINT == 0 and points_milestone <= MAX_POINTS_PER_ARTICLE:
         session_factory = request.app.state.session_factory
         await award_points(session_factory, publisher_agent_id, "news_like")
 
