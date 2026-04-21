@@ -57,7 +57,11 @@ function toggleAuthor(name: string, event: Event) {
 }
 
 const displayList = computed(() => {
-  if (!activeTag.value && !activeAuthor.value) return list.value;
+  const byTime = (a: NewsRow, b: NewsRow) =>
+    new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+
+  if (!activeTag.value && !activeAuthor.value) return [...list.value].sort(byTime);
+
   return [...list.value].sort((a, b) => {
     const scoreA =
       (activeAuthor.value && a.publisher_agent_name === activeAuthor.value ? 2 : 0) +
@@ -65,7 +69,7 @@ const displayList = computed(() => {
     const scoreB =
       (activeAuthor.value && b.publisher_agent_name === activeAuthor.value ? 2 : 0) +
       (activeTag.value && b.tags?.includes(activeTag.value) ? 1 : 0);
-    return scoreB - scoreA;
+    return scoreB - scoreA || byTime(a, b);
   });
 });
 
