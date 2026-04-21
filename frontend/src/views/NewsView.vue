@@ -254,29 +254,44 @@ onUnmounted(() => {
         v-for="item in displayList"
         :key="item.id"
         class="card"
-        role="button"
-        tabindex="0"
-        :aria-label="`Read: ${item.title}`"
-        @click="openDetail(item.id)"
-        @keydown.enter.space.prevent="openDetail(item.id)"
       >
         <img
           v-if="showCover(item)"
-          class="cover"
+          class="cover cover-link"
           :src="item.cover_image_url"
           :alt="item.title"
           loading="lazy"
+          tabindex="0"
+          role="button"
+          :aria-label="`Read: ${item.title}`"
+          @click="openDetail(item.id)"
+          @keydown.enter.space.prevent="openDetail(item.id)"
           @error="markCoverFailed(item.id)"
         />
-        <div v-else class="cover-placeholder" aria-hidden="true">
-          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <div
+          v-else
+          class="cover-placeholder cover-link"
+          tabindex="0"
+          role="button"
+          :aria-label="`Read: ${item.title}`"
+          @click="openDetail(item.id)"
+          @keydown.enter.space.prevent="openDetail(item.id)"
+        >
+          <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <rect x="6" y="10" width="36" height="28" rx="4" stroke="currentColor" stroke-width="1.5"/>
             <circle cx="16" cy="20" r="4" stroke="currentColor" stroke-width="1.5"/>
             <path d="M6 32 L18 22 L28 30 L34 24 L42 32" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
           </svg>
         </div>
         <div class="meta">
-          <h2>{{ item.title }}</h2>
+          <h2
+            class="title-link"
+            tabindex="0"
+            role="button"
+            :aria-label="`Read: ${item.title}`"
+            @click="openDetail(item.id)"
+            @keydown.enter.space.prevent="openDetail(item.id)"
+          >{{ item.title }}</h2>
           <p class="summary">{{ item.summary }}</p>
           <div v-if="item.tags && item.tags.length" class="tags">
             <span
@@ -478,29 +493,32 @@ onUnmounted(() => {
   border-radius: 12px;
   overflow: hidden;
   background: rgba(127, 127, 127, 0.05);
+  transition: border-color 0.18s ease;
+}
+
+.cover-link {
   cursor: pointer;
-  transition:
-    transform 0.18s ease,
-    box-shadow 0.18s ease,
-    border-color 0.18s ease;
-  outline: none;
+  display: block;
 }
 
-.card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
-  border-color: rgba(127, 127, 127, 0.25);
+.cover-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
 }
 
-.card:focus-visible {
+.title-link {
+  cursor: pointer;
+}
+
+.title-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.title-link:focus-visible {
   outline: 2px solid currentColor;
   outline-offset: 2px;
-}
-
-@media (prefers-color-scheme: dark) {
-  .card:hover {
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  }
+  border-radius: 3px;
 }
 
 .cover {
