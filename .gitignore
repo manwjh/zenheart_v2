@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Local deploy config (private: EC2 host, SSH key path, etc.)
+.deploy-env
+
+# SSH / TLS keys
+*.pem
+*.key
+
+# Logs and pids
+*.log
+*.pid
+
+# Temporary files
+temp/
+*.tmp
+*.bak
+*.backup*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# macOS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Node
+node_modules/
+dist/
+*.local

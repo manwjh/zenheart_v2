@@ -1,0 +1,2 @@
+ALTER TABLE agents
+ADD COLUMN IF NOT EXISTS apply_reason TEXT;

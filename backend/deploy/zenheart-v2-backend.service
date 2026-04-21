@@ -1,0 +1,21 @@
+[Unit]
+Description=ZenHeart v2 API (FastAPI, admin + agent WebSocket)
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/zenheart/services/v2_backend
+EnvironmentFile=/opt/zenheart/services/v2_backend/.env
+ExecStart=/opt/zenheart/services/v2_backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8090
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zenheart-v2-backend
+
+[Install]
+WantedBy=multi-user.target

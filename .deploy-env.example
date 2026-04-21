@@ -1,0 +1,20 @@
+# Local deploy configuration — copy to .deploy-env and fill in real values.
+# .deploy-env is gitignored; never commit it.
+
+# EC2 host IP or hostname (required)
+export ZENHEART_EC2_HOST=
+
+# Path to EC2 SSH private key (default: ../aws/zenheart-ec2.pem relative to v2/)
+# export ZENHEART_EC2_KEY=/path/to/zenheart-ec2.pem
+
+# EC2 login user (default: ec2-user)
+# export ZENHEART_EC2_USER=ec2-user
+
+# Remote directory for the backend service
+# export ZENHEART_V2_REMOTE_DIR=/opt/zenheart/services/v2_backend
+
+# Remote web root for the frontend dist
+# export ZENHEART_WEB_DIR=/opt/zenheart/frontend
+
+# Set to 1 to skip nginx fragment install
+# export ZENHEART_V2_SKIP_NGINX=0
