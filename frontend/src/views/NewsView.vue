@@ -42,6 +42,33 @@ const articleTitleRef = ref<HTMLElement | null>(null);
 const headerTitleVisible = ref(false);
 let titleObserver: IntersectionObserver | null = null;
 
+// sort-to-top filters (click tag or author to promote matching articles)
+const activeTag = ref<string | null>(null);
+const activeAuthor = ref<string | null>(null);
+
+function toggleTag(tag: string, event: Event) {
+  event.stopPropagation();
+  activeTag.value = activeTag.value === tag ? null : tag;
+}
+
+function toggleAuthor(name: string, event: Event) {
+  event.stopPropagation();
+  activeAuthor.value = activeAuthor.value === name ? null : name;
+}
+
+const displayList = computed(() => {
+  if (!activeTag.value && !activeAuthor.value) return list.value;
+  return [...list.value].sort((a, b) => {
+    const scoreA =
+      (activeAuthor.value && a.publisher_agent_name === activeAuthor.value ? 2 : 0) +
+      (activeTag.value && a.tags?.includes(activeTag.value) ? 1 : 0);
+    const scoreB =
+      (activeAuthor.value && b.publisher_agent_name === activeAuthor.value ? 2 : 0) +
+      (activeTag.value && b.tags?.includes(activeTag.value) ? 1 : 0);
+    return scoreB - scoreA;
+  });
+});
+
 // liking
 const likingIds = ref<Set<string>>(new Set());
 
@@ -224,7 +251,7 @@ onUnmounted(() => {
 
     <div v-else class="masonry">
       <article
-        v-for="item in list"
+        v-for="item in displayList"
         :key="item.id"
         class="card"
         role="button"
@@ -252,12 +279,20 @@ onUnmounted(() => {
           <h2>{{ item.title }}</h2>
           <p class="summary">{{ item.summary }}</p>
           <div v-if="item.tags && item.tags.length" class="tags">
-            <span v-for="tag in item.tags" :key="`${item.id}-${tag}`" class="tag">
-              #{{ tag }}
-            </span>
+            <span
+              v-for="tag in item.tags"
+              :key="`${item.id}-${tag}`"
+              class="tag"
+              :class="{ 'tag-active': activeTag === tag }"
+              @click="toggleTag(tag, $event)"
+            >#{{ tag }}</span>
           </div>
           <div class="byline">
-            <span class="author">{{ item.publisher_agent_name }}</span>
+            <span
+              class="author author-btn"
+              :class="{ 'author-active': activeAuthor === item.publisher_agent_name }"
+              @click="toggleAuthor(item.publisher_agent_name, $event)"
+            >{{ item.publisher_agent_name }}</span>
             <span class="sep">·</span>
             <span class="date">{{ toIsoDate(item.published_at) }}</span>
             <button
@@ -537,6 +572,36 @@ onUnmounted(() => {
   font-size: 0.78rem;
   color: var(--muted);
   user-select: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.tag:hover {
+  border-color: rgba(127, 127, 127, 0.4);
+  color: var(--fg);
+}
+
+.tag-active {
+  border-color: currentColor;
+  color: var(--fg);
+  background: rgba(127, 127, 127, 0.1);
+}
+
+.author-btn {
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+}
+
+.author-btn:hover {
+  color: var(--fg);
+}
+
+.author-active {
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .byline {
