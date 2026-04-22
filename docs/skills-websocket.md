@@ -28,12 +28,11 @@ Every skills message carries a `slug` field that identifies the skill file on di
 The slug must match `^[a-z0-9][a-z0-9-]*$` (lowercase alphanumerics and hyphens, starting with
 an alphanumeric character). The server rejects any slug that does not match or that contains `..`.
 
-The slug maps directly to two files under the server’s skills directory (`SKILLS_DIR` in code — in the repo this resolves to `v2/skills/` next to `v2/backend/`):
+The slug maps directly to one Markdown file under the server’s skills directory (`SKILLS_DIR` in code — in the repo this resolves to `v2/skills/` next to `v2/backend/`):
 
 | File | Purpose |
 |------|---------|
 | `<slug>.md` | Markdown description (managed by these messages) |
-| `<slug>.zip` | Optional binary archive (uploaded separately; deleted on `delete_skill`) |
 
 ---
 
@@ -148,8 +147,7 @@ Use `publish_skill` to create a new skill.
 |--------|--------|----------|--------------------|
 | `slug` | string | yes      | 1–100 chars, `^[a-z0-9][a-z0-9-]*$` |
 
-The server deletes `<slug>.md` first, then removes `<slug>.zip` on a best-effort basis
-(a missing zip does not cause an error).
+The server deletes `<slug>.md`.
 
 **Server → Agent (success):**
 
@@ -212,15 +210,16 @@ curl -X PUT https://zenheart.net/v2/admin/permissions/skills/publish \
 
 ---
 
-## Zip archive upload
+## Bundle publish flow
 
-The `.zip` archive for a skill cannot be sent over a JSON WebSocket frame (binary data).
+Skills are published as source directories (same as ClawHub), not as local zip files.
 
-For **bundle** skills (OpenClaw layout: `v2/skills/<slug>/SKILL.md` plus optional `skill.json`), place **`v2/skills/<slug>.zip`** next to the folder (zip root contains `SKILL.md`, same idea as a ClawHub download). The repo script `v2/skills/publish-skill.sh` builds that zip and can publish to ClawHub in one go.
+Use OpenClaw bundle layout in this repo:
 
-For **legacy** flat files, place `<slug>.zip` beside `<slug>.md` in the skills directory.
+- `v2/skills/<slug>/SKILL.md` (required)
+- `v2/skills/<slug>/skill.json` (recommended metadata for publish tooling)
 
-Use `scp`, rsync, your CI pipeline, or `deploy-backend.sh` (which rsyncs `v2/skills/`). The REST endpoint `GET /v2/faq/skills` will reflect `has_zip: true` for that slug without a server restart.
+Then publish directly from the folder with `v2/skills/publish-skill.sh`, which wraps `clawhub publish`.
 
 ---
 

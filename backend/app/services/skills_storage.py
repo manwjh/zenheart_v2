@@ -28,11 +28,6 @@ def skill_markdown_path(slug: str) -> Path | None:
     return None
 
 
-def skill_zip_path(slug: str) -> Path:
-    """Published archive path (sibling of bundle dir or flat .md)."""
-    return SKILLS_DIR / f"{slug}.zip"
-
-
 def iter_skill_slugs() -> list[str]:
     """
     Slugs for public FAQ listing: bundle dirs with SKILL.md, plus root *.md

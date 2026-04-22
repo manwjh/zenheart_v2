@@ -10,13 +10,15 @@ function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
 }
 
-const sidebarDocsOpen = ref(false);
+/** Main Docs card: show / hide the document list (right column only). Sidebar outline follows this. */
+const docsListExpanded = ref(true);
 
-function toggleSidebarDocs() {
-  sidebarDocsOpen.value = !sidebarDocsOpen.value;
+function toggleDocsList() {
+  docsListExpanded.value = !docsListExpanded.value;
 }
 
 function scrollToDocRow(slug: string) {
+  docsListExpanded.value = true;
   scrollTo("docs");
   setTimeout(() => {
     document.getElementById(`doc-${slug}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -94,7 +96,6 @@ interface DocItem {
 }
 
 const docs = ref<DocItem[]>([]);
-const docsListFetched = ref(false);
 const expandedSlug = ref<string | null>(null);
 const docContent = ref<Record<string, string>>({});
 const docLoading = ref<Record<string, boolean>>({});
@@ -118,10 +119,10 @@ onMounted(async () => {
   let hash = rawHash;
   if (hash === "connection") {
     hash = "docs";
-    sidebarDocsOpen.value = true;
+    docsListExpanded.value = true;
   }
   if (hash === "docs" || isDocAnchor) {
-    sidebarDocsOpen.value = true;
+    docsListExpanded.value = true;
   }
   if (hash && !isDocAnchor && !isSkillAnchor) {
     setTimeout(() => scrollTo(hash), 50);
@@ -137,7 +138,6 @@ onMounted(async () => {
   if (skillsResult.status === "fulfilled" && skillsResult.value.ok) {
     skills.value = (await skillsResult.value.json()) as SkillItem[];
   }
-  docsListFetched.value = true;
 
   await nextTick();
   if (isDocAnchor) {
@@ -200,7 +200,6 @@ interface SkillItem {
   summary?: string | null;
   version?: string | null;
   tags?: string[];
-  has_zip: boolean;
   is_bundle?: boolean;
 }
 
@@ -297,38 +296,10 @@ async function copySkillLink(slug: string) {
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2 5.5L8 2l6 3.5v5L8 14l-6-3.5v-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 2v12M2 5.5l6 3.5 6-3.5" stroke="currentColor" stroke-width="1.5"/></svg>
           Skills
         </a>
-        <div class="sidebar-docs-wrap">
-          <button
-            type="button"
-            class="sidebar-link sidebar-docs-toggle"
-            :aria-expanded="sidebarDocsOpen"
-            aria-controls="sidebar-docs-list"
-            id="sidebar-docs-heading"
-            @click="toggleSidebarDocs"
-          >
-            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-            Docs
-            <span class="sidebar-chevron" aria-hidden="true">{{ sidebarDocsOpen ? "▾" : "▸" }}</span>
-          </button>
-          <ul
-            v-show="sidebarDocsOpen"
-            id="sidebar-docs-list"
-            class="sidebar-sublist"
-            role="list"
-            aria-labelledby="sidebar-docs-heading"
-          >
-            <li v-for="doc in docs" :key="doc.slug" class="sidebar-subitem">
-              <a
-                class="sidebar-sublink"
-                :href="`#/faq#doc-${doc.slug}`"
-                @click.prevent="scrollToDocRow(doc.slug)"
-              >{{ doc.title }}</a>
-            </li>
-            <li v-if="docs.length === 0" class="sidebar-subitem sidebar-subempty">
-              {{ docsListFetched ? "No documents" : "Loading…" }}
-            </li>
-          </ul>
-        </div>
+        <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
+          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          Docs
+        </a>
       </nav>
     </aside>
 
@@ -472,8 +443,7 @@ Content-Type: application/json
           <p class="card-desc">
             OpenClaw-compatible bundles: install from
             <a href="https://clawhub.ai/" rel="noopener noreferrer" target="_blank">ClawHub</a>
-            or use the raw Markdown URL / zip here on ZenHeart — same layout as a published ClawHub skill
-            (<code>SKILL.md</code> at the root of the archive).
+            or use the raw Markdown URL here on ZenHeart.
           </p>
         </header>
 
@@ -519,15 +489,6 @@ Content-Type: application/json
                 >
                   {{ copiedSkillSlug === skill.slug ? "Copied!" : "Copy URL" }}
                 </button>
-                <a
-                  v-if="skill.has_zip"
-                  class="action-btn download-btn"
-                  :href="`/v2/faq/skills/${encodeURIComponent(skill.slug)}/download`"
-                  :download="`${skill.slug}.zip`"
-                  title="Download .zip (same layout as ClawHub bundle)"
-                >
-                  Download .zip
-                </a>
                 <button
                   class="action-btn read-btn"
                   :class="{ active: expandedSkillSlug === skill.slug }"
@@ -550,12 +511,26 @@ Content-Type: application/json
 
       <!-- ── Docs ── -->
       <section id="docs" class="card">
-        <header class="card-header">
-          <h2 class="card-title">Docs</h2>
-          <p class="card-desc">
-            Each document URL returns raw Markdown — paste it directly into any AI coding tool
-            and it will fetch and read the content on its own.
-          </p>
+        <header class="card-header card-header--split">
+          <div class="card-header-main">
+            <h2 class="card-title">Docs</h2>
+            <p class="card-desc">
+              Each document URL returns raw Markdown — paste it directly into any AI coding tool
+              and it will fetch and read the content on its own.
+            </p>
+          </div>
+          <div v-if="docs.length > 0" class="card-header-docs-toolbar">
+            <button
+              type="button"
+              class="docs-outline-btn"
+              :title="docsListExpanded ? 'Collapse document list' : 'Expand document list'"
+              aria-controls="docs-main-list"
+              :aria-expanded="docsListExpanded"
+              @click="toggleDocsList"
+            >
+              {{ docsListExpanded ? "▲" : "▼" }}
+            </button>
+          </div>
         </header>
 
         <div v-if="docs.length === 0" class="doc-empty">
@@ -563,7 +538,13 @@ Content-Type: application/json
           <span>No documents available yet.</span>
         </div>
 
-        <ul v-else class="doc-list" role="list">
+        <ul
+          v-else
+          v-show="docsListExpanded"
+          id="docs-main-list"
+          class="doc-list"
+          role="list"
+        >
           <li v-for="doc in docs" :key="doc.slug" :id="'doc-' + doc.slug" class="doc-item">
             <div class="doc-row">
               <div class="doc-meta">
@@ -690,67 +671,60 @@ Content-Type: application/json
 
 .icon { width: 0.9rem; height: 0.9rem; opacity: 0.65; flex-shrink: 0; }
 
-.sidebar-docs-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.sidebar-docs-toggle {
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  cursor: pointer;
+/* Shared: high-contrast on light & dark (uses App.vue :root vars) */
+.docs-outline-btn {
   font: inherit;
-  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.4rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--fg) 9%, var(--bg));
+  color: var(--fg);
+  cursor: pointer;
+  line-height: 1.2;
+  min-height: 2.25rem;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
-.sidebar-docs-toggle:hover { background: rgba(0, 0, 0, 0.05); }
-
-@media (prefers-color-scheme: dark) {
-  .sidebar-docs-toggle:hover { background: rgba(255, 255, 255, 0.07); }
+.docs-outline-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 16%, var(--bg));
+  border-color: color-mix(in srgb, var(--fg) 28%, var(--border));
 }
 
-.sidebar-chevron {
-  margin-left: auto;
-  font-size: 0.65rem;
-  opacity: 0.55;
-  line-height: 1;
+.docs-outline-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--fg) 45%, transparent);
+  outline-offset: 2px;
 }
 
-.sidebar-sublist {
-  list-style: none;
-  margin: 0.1rem 0 0.2rem 0.15rem;
-  padding: 0.1rem 0 0.35rem 0.65rem;
-  border-left: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+.docs-outline-btn:disabled {
+  cursor: default;
+  color: var(--muted);
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--muted) 12%, var(--bg));
+  opacity: 0.85;
+}
+
+.card-header--split {
   display: flex;
-  flex-direction: column;
-  gap: 0.05rem;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
 }
 
-.sidebar-subitem { margin: 0; }
-
-.sidebar-sublink {
-  display: block;
-  font-size: 0.78rem;
-  line-height: 1.35;
-  padding: 0.28rem 0.45rem;
-  border-radius: 6px;
-  color: inherit;
-  text-decoration: none;
+.card-header-main {
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 
-.sidebar-sublink:hover { background: rgba(0, 0, 0, 0.05); }
-
-@media (prefers-color-scheme: dark) {
-  .sidebar-sublink:hover { background: rgba(255, 255, 255, 0.07); }
-}
-
-.sidebar-subempty {
-  font-size: 0.78rem;
-  padding: 0.28rem 0.45rem;
-  color: var(--muted, #5c5c5c);
+.card-header-docs-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 0.1rem;
 }
 
 /* ── Content ─────────────────────────────────────────────────── */

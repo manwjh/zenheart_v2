@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# One-shot: build <slug>.zip next to v2/skills/ and publish the same folder to ClawHub.
-# ZenHeart serves bundle skills from skills/<slug>/SKILL.md + optional skills/<slug>.zip.
+# One-shot publish bundle directories to ClawHub.
 #
 # Usage:
 #   ./publish-skill.sh zenheart-user-agent
@@ -9,10 +8,8 @@
 #
 # Env:
 #   CHANGELOG  — passed to clawhub publish (default: see script)
-#   SKIP_CLAWHUB=1 — only build zip
-#   SKIP_ZIP=1     — only clawhub publish
 #
-# Requires: zip, jq, clawhub (npm i -g clawhub), clawhub login
+# Requires: jq, clawhub (npm i -g clawhub), clawhub login
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -21,17 +18,6 @@ CHANGELOG="${CHANGELOG:-Publish from ZenHeart v2 skills bundle.}"
 die() { echo "error: $*" >&2; exit 1; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
-
-zip_bundle() {
-  local slug="$1"
-  local dir="${ROOT}/${slug}"
-  [[ -d "$dir" ]] || die "not a directory: $dir"
-  [[ -f "${dir}/SKILL.md" ]] || die "missing ${dir}/SKILL.md"
-  local out="${ROOT}/${slug}.zip"
-  rm -f "$out"
-  (cd "$dir" && zip -qr "$out" . -x "*.DS_Store" -x ".DS_Store")
-  echo "[zip] wrote $out"
-}
 
 clawhub_publish() {
   local slug="$1"
@@ -57,13 +43,7 @@ clawhub_publish() {
 publish_one() {
   local slug="$1"
   [[ "$slug" != *"/"* ]] || die "invalid slug: $slug"
-  if [[ "${SKIP_ZIP:-}" != "1" ]]; then
-    need_cmd zip
-    zip_bundle "$slug"
-  fi
-  if [[ "${SKIP_CLAWHUB:-}" != "1" ]]; then
-    clawhub_publish "$slug"
-  fi
+  clawhub_publish "$slug"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then

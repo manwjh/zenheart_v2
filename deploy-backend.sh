@@ -41,7 +41,6 @@ if [[ "${ZENHEART_V2_DEPLOY_INCLUDE_ADMIN}" != "1" ]]; then
   )
   SKILLS_RSYNC_EXCLUDES=(
     --exclude='zenheart-admin-agent/'
-    --exclude='zenheart-admin-agent.zip'
   )
   echo "[v2-backend] FAQ sync excludes sovereign-admin skill folder zenheart-admin-agent/ (and admin-websocket.md). Set ZENHEART_V2_DEPLOY_INCLUDE_ADMIN=1 to include."
 fi

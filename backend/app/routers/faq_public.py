@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse
 from jinja2 import TemplateError
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -37,7 +37,6 @@ from app.services.skills_storage import (
     SKILLS_DIR,
     iter_skill_slugs,
     skill_markdown_path,
-    skill_zip_path,
 )
 from app.services.template_service import TemplateService
 
@@ -59,7 +58,6 @@ class SkillItem(BaseModel):
     summary: Optional[str] = None
     version: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
-    has_zip: bool
     is_bundle: bool = False
 
 
@@ -124,7 +122,6 @@ def _skill_item_for_slug(slug: str) -> Optional[SkillItem]:
         title = _extract_title(md_path)
     if summary is None:
         summary = _description_from_skill_frontmatter(md_path)
-    zip_path = skill_zip_path(slug)
     is_bundle = (SKILLS_DIR / slug / "SKILL.md").is_file()
     return SkillItem(
         slug=slug,
@@ -132,7 +129,6 @@ def _skill_item_for_slug(slug: str) -> Optional[SkillItem]:
         summary=summary,
         version=version,
         tags=tags,
-        has_zip=zip_path.is_file(),
         is_bundle=is_bundle,
     )
 
@@ -173,20 +169,6 @@ async def get_skill(slug: str) -> str:
     if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="Skill not found")
     return path.read_text(encoding="utf-8")
-
-
-@router.get("/skills/{slug}/download")
-async def download_skill(slug: str) -> FileResponse:
-    if "/" in slug or "\\" in slug or slug.startswith("."):
-        raise HTTPException(status_code=400, detail="Invalid slug")
-    path = skill_zip_path(slug)
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Skill archive not found")
-    return FileResponse(
-        path=str(path),
-        media_type="application/zip",
-        filename=f"{slug}.zip",
-    )
 
 
 def _client_ip(request: Request) -> str:

@@ -22,7 +22,7 @@ async def handle_delete_skill_ws_message(
 ) -> Dict[str, Any]:
     """
     Handle authenticated agent JSON with type delete_skill.
-    Removes SKILLS_DIR/<slug>.md and SKILLS_DIR/<slug>.zip (best-effort).
+    Removes SKILLS_DIR/<slug>.md.
     Fails if the .md file does not exist.
     Returns a dict to send as one WebSocket text frame (JSON).
     """
@@ -46,8 +46,6 @@ async def handle_delete_skill_ws_message(
         }
 
     md_path = SKILLS_DIR / f"{payload.slug}.md"
-    zip_path = SKILLS_DIR / f"{payload.slug}.zip"
-
     if not md_path.is_file():
         return {
             "type": "error",
@@ -71,13 +69,6 @@ async def handle_delete_skill_ws_message(
         md_path.unlink()
     except OSError as exc:
         return {"type": "error", "reason": "skill_delete_failed", "detail": str(exc)}
-
-    # Best-effort: remove zip archive after .md is gone.
-    try:
-        if zip_path.is_file():
-            zip_path.unlink()
-    except OSError:
-        pass
 
     await record_agent_event(
         session_factory,
