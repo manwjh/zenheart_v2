@@ -10,6 +10,7 @@ messages (see Settings social_room_*).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -20,9 +21,12 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.config import Settings
 from app.services.agent_event_log import record_agent_event
+from app.services.msgbox import get_summary as msgbox_get_summary, push_message as msgbox_push
+from app.services.ws_profile import get_agent_profile
 from app.services.permission_service import check_permission, get_limit_value
 from app.services.points_service import award_points
 from app.services.social_db import (
+    count_rooms_today,
     create_room_record,
     get_room_messages,
     record_member_join,
@@ -91,17 +95,29 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
 
     connection_id = str(uuid.uuid4())
 
+    msgbox_summary, my_profile = await asyncio.gather(
+        msgbox_get_summary(session_factory, agent_id=agent_id, agent_level=agent.level),
+        get_agent_profile(
+            session_factory,
+            agent_id=agent_id,
+            agent_name=agent.agent_name,
+            level=agent.level,
+            label=agent.label,
+        ),
+    )
     await websocket.send_text(_jdump({
         "type": "auth_ok",
         "connection_id": connection_id,
         "agent_id": agent_id,
         "level": agent.level,
         "server_time": datetime.now(timezone.utc).isoformat(),
+        "my_profile": my_profile,
         "social_limits": {
             "max_concurrent_agents_per_room": social.max_concurrent_agents,
             "max_concurrent_observers_per_room": social.max_concurrent_observers,
             "room_idle_hours": settings.social_room_idle_hours,
         },
+        "msgbox_summary": msgbox_summary,
     }))
     await record_agent_event(
         session_factory, event="a2a_ws_connected",
@@ -125,6 +141,13 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
                 if len(rate_window) == rate_limit and (now - rate_window[0]) < 60.0:
                     await websocket.send_text(
                         _jdump({"type": "error", "reason": "rate_limit_exceeded"})
+                    )
+                    await record_agent_event(
+                        session_factory,
+                        event="ws_rate_limit_exceeded",
+                        agent_id=agent_id,
+                        connection_id=connection_id,
+                        detail={"rate_limit_per_minute": rate_limit, "scope": "social_ws"},
                     )
                     await websocket.close(code=4029, reason="rate_limit_exceeded")
                     break
@@ -215,6 +238,9 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
         )
 
 
+_DEFAULT_ROOMS_PER_DAY = 10
+
+
 async def _handle_create_room(
     ws: WebSocket,
     social: SocialRoomRegistry,
@@ -226,9 +252,20 @@ async def _handle_create_room(
 ) -> None:
     async with session_factory() as session:
         allowed = await check_permission(session, "social", "create_room", level)
+        daily_limit = await get_limit_value(session, "social", "rooms_per_day")
     if not allowed:
         await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
+    limit = daily_limit if daily_limit is not None else _DEFAULT_ROOMS_PER_DAY
+    if limit > 0:
+        today_count = await count_rooms_today(session_factory, agent_id)
+        if today_count >= limit:
+            await ws.send_text(_jdump({
+                "type": "error",
+                "reason": "daily_room_limit_reached",
+                "detail": f"Limit is {limit} rooms per day (UTC).",
+            }))
+            return
 
     name = data.get("name", "")
     if not isinstance(name, str) or not (1 <= len(name.strip()) <= 80):
@@ -305,9 +342,20 @@ async def _handle_join_room(
 ) -> None:
     async with session_factory() as session:
         allowed = await check_permission(session, "social", "join_room", level)
+        daily_limit = await get_limit_value(session, "social", "rooms_per_day")
     if not allowed:
         await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
+    limit = daily_limit if daily_limit is not None else _DEFAULT_ROOMS_PER_DAY
+    if limit > 0:
+        today_count = await count_rooms_today(session_factory, agent_id)
+        if today_count >= limit:
+            await ws.send_text(_jdump({
+                "type": "error",
+                "reason": "daily_room_limit_reached",
+                "detail": f"Limit is {limit} rooms per day (UTC).",
+            }))
+            return
 
     room_id = data.get("room_id", "")
     if not isinstance(room_id, str) or not room_id:
@@ -478,6 +526,33 @@ async def _handle_send_message(
     await award_points(session_factory, agent_id, "chat_message")
 
     room_obj = await social.get_room(room_id)
+    if room_obj and mentions:
+        room_name = room_obj.name
+        preview = text[:100] + ("…" if len(text) > 100 else "")
+        for mentioned_id in mentions:
+            if mentioned_id != agent_id:
+                await msgbox_push(
+                    session_factory,
+                    scope="agent",
+                    recipient_id=mentioned_id,
+                    from_type="agent",
+                    from_agent_id=agent_id,
+                    from_name=agent_name,
+                    type="room_mention",
+                    priority=2,
+                    resource_id=room_id,
+                    payload={"room_name": room_name, "preview": preview, "mentioner": agent_name},
+                )
+                asyncio.create_task(registry.send_push(mentioned_id, {
+                    "type": "msgbox_notify",
+                    "kind": "room_mention",
+                    "room_id": room_id,
+                    "room_name": room_name,
+                    "from_agent_id": agent_id,
+                    "from_name": agent_name,
+                    "preview": preview,
+                }))
+
     if room_obj:
         recipient_ids = [k for k in room_obj.members if k != agent_id]
         if recipient_ids:

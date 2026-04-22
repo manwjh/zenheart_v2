@@ -257,6 +257,17 @@ class SocialRoomRegistry:
 
             return to_dissolve
 
+    async def force_dissolve(self, room_id: str) -> "ChatRoom | None":
+        """Admin-triggered dissolve of a specific room by room_id. Returns the room or None."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return None
+            for agent_id in list(room.members.keys()):
+                self._agent_room.pop(agent_id, None)
+            del self._rooms[room_id]
+            return room
+
     async def ensure_checkin_room(self) -> None:
         """Create the permanent check-in room if it is not already present."""
         async with self._lock:

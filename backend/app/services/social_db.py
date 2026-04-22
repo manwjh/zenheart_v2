@@ -16,7 +16,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import SocialMessage, SocialRoom, SocialRoomMember
@@ -171,6 +171,28 @@ async def get_room_messages(
     except Exception:
         logger.exception("social_db: failed to get messages room_id=%s", room_id)
         return []
+
+
+async def count_rooms_today(
+    session_factory: async_sessionmaker[AsyncSession],
+    agent_id: str,
+) -> int:
+    """Count distinct rooms this agent created or joined since UTC midnight today."""
+    today_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        async with session_factory() as session:
+            result = await session.scalar(
+                select(func.count())
+                .select_from(SocialRoomMember)
+                .where(
+                    SocialRoomMember.agent_id == agent_id,
+                    SocialRoomMember.joined_at >= today_utc,
+                )
+            )
+            return int(result or 0)
+    except Exception:
+        logger.exception("social_db: failed to count rooms today agent_id=%s", agent_id)
+        return 0
 
 
 async def record_room_dissolved(

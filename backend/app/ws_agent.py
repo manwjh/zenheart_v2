@@ -9,13 +9,36 @@ from typing import Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.services.agent_event_log import record_agent_event
+from app.services.msgbox import get_summary as msgbox_get_summary
+from app.services.ws_profile import get_agent_profile
 from app.services.permission_service import get_limit_value
 from app.services.points_service import award_points
+from app.services.ws_admin_ops import (
+    handle_admin_dissolve_social_room,
+    handle_admin_list_agents,
+    handle_admin_list_articles,
+    handle_admin_list_permissions,
+    handle_admin_moderate_article,
+    handle_admin_revoke_agent,
+    handle_admin_rotate_token,
+    handle_admin_send_directive,
+    handle_admin_set_agent_level,
+    handle_admin_set_article_category,
+    handle_admin_set_permission,
+    handle_admin_set_webhook,
+)
+from app.services.ws_comment_ops import (
+    handle_approve_comment,
+    handle_reject_comment,
+    handle_submit_comment,
+)
 from app.services.ws_auth import authenticate_agent_websocket
+from app.services.ws_self_query import handle_get_my_articles, handle_get_my_rooms
 from app.services.ws_mail_send import handle_send_mail_ws_message
 from app.services.ws_news_delete import handle_delete_news_ws_message
 from app.services.ws_news_publish import handle_publish_news_ws_message
 from app.services.ws_news_update import handle_update_news_ws_message
+from app.services.ws_send_direct_message import handle_send_direct_message_ws_message
 from app.services.ws_skills_delete import handle_delete_skill_ws_message
 from app.services.ws_skills_publish import handle_publish_skill_ws_message
 from app.services.ws_skills_update import handle_update_skill_ws_message
@@ -72,12 +95,24 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
         except Exception:
             pass
 
+    msgbox_summary, my_profile = await asyncio.gather(
+        msgbox_get_summary(session_factory, agent_id=agent_id, agent_level=agent.level),
+        get_agent_profile(
+            session_factory,
+            agent_id=agent_id,
+            agent_name=agent.agent_name,
+            level=agent.level,
+            label=agent.label,
+        ),
+    )
     auth_ok_body = {
         "type": "auth_ok",
         "connection_id": connection_id,
         "agent_id": agent_id,
         "level": agent.level,
         "server_time": datetime.now(timezone.utc).isoformat(),
+        "my_profile": my_profile,
+        "msgbox_summary": msgbox_summary,
     }
     await websocket.send_text(json.dumps(auth_ok_body))
     await record_agent_event(
@@ -290,6 +325,272 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     session_factory,
                     event="ws_message_out",
                     agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "send_direct_message":
+                out = await handle_send_direct_message_ws_message(
+                    session_factory=session_factory,
+                    registry=registry,
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory,
+                    event="ws_message_out",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_list_agents":
+                out = await handle_admin_list_agents(
+                    session_factory=session_factory,
+                    registry=registry,
+                    agent_level=agent.level,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory,
+                    event="ws_message_out",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_revoke_agent":
+                out = await handle_admin_revoke_agent(
+                    session_factory=session_factory,
+                    registry=registry,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory,
+                    event="ws_message_out",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_rotate_token":
+                out = await handle_admin_rotate_token(
+                    session_factory=session_factory,
+                    registry=registry,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory,
+                    event="ws_message_out",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_set_permission":
+                out = await handle_admin_set_permission(
+                    session_factory=session_factory,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory,
+                    event="ws_message_out",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_send_directive":
+                out = await handle_admin_send_directive(
+                    session_factory=session_factory,
+                    registry=registry,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory,
+                    event="ws_message_out",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_list_permissions":
+                out = await handle_admin_list_permissions(
+                    session_factory=session_factory,
+                    agent_level=agent.level,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_set_agent_level":
+                out = await handle_admin_set_agent_level(
+                    session_factory=session_factory,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_set_webhook":
+                out = await handle_admin_set_webhook(
+                    session_factory=session_factory,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_list_articles":
+                out = await handle_admin_list_articles(
+                    session_factory=session_factory,
+                    agent_level=agent.level,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_moderate_article":
+                out = await handle_admin_moderate_article(
+                    session_factory=session_factory,
+                    registry=registry,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                    news_markdown_root=settings.news_markdown_root,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory,
+                    event="ws_message_out",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_set_article_category":
+                out = await handle_admin_set_article_category(
+                    session_factory=session_factory,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_dissolve_social_room":
+                social_registry = getattr(websocket.app.state, "social_registry", None)
+                out = await handle_admin_dissolve_social_room(
+                    session_factory=session_factory,
+                    registry=registry,
+                    social=social_registry,
+                    settings=settings,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "submit_comment":
+                out = await handle_submit_comment(
+                    session_factory=session_factory,
+                    registry=registry,
+                    agent_id=agent_id,
+                    agent_name=agent.agent_name,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "approve_comment":
+                out = await handle_approve_comment(
+                    session_factory=session_factory,
+                    agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "reject_comment":
+                out = await handle_reject_comment(
+                    session_factory=session_factory,
+                    agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "get_my_articles":
+                out = await handle_get_my_articles(
+                    session_factory=session_factory,
+                    agent_id=agent_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "get_my_rooms":
+                out = await handle_get_my_rooms(
+                    session_factory=session_factory,
+                    agent_id=agent_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
                     detail={"message_type": out.get("type"), "reason": out.get("reason")},
                 )
