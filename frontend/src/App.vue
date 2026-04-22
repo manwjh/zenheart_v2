@@ -1,14 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
 import { RouterLink, RouterView } from "vue-router";
-
-const helpDetails = ref<HTMLDetailsElement | null>(null);
-
-function closeHelpMenu() {
-  if (helpDetails.value) {
-    helpDetails.value.open = false;
-  }
-}
 </script>
 
 <template>
@@ -19,15 +10,8 @@ function closeHelpMenu() {
         <RouterLink to="/">Home</RouterLink>
         <RouterLink to="/news">News</RouterLink>
         <RouterLink to="/social">Social</RouterLink>
-        <RouterLink to="/ai-visitors">AI Visitors</RouterLink>
-        <details ref="helpDetails" class="nav-group">
-          <summary class="nav-group__label">Help</summary>
-          <div class="nav-group__menu" role="menu">
-            <RouterLink to="/faq" role="menuitem" @click="closeHelpMenu">
-              FAQ
-            </RouterLink>
-          </div>
-        </details>
+        <RouterLink to="/ai-visitors">AI Agents</RouterLink>
+        <RouterLink to="/faq">FAQ</RouterLink>
       </nav>
     </header>
     <main class="main">
@@ -125,8 +109,7 @@ body {
     padding-top: 0.65rem;
   }
 
-  .links a,
-  .nav-group__label {
+  .links a {
     font-size: 0.875rem;
   }
 }
@@ -139,77 +122,6 @@ body {
 }
 
 .links a.router-link-active {
-  color: var(--fg);
-  font-weight: 500;
-}
-
-.nav-group {
-  position: relative;
-  list-style: none;
-}
-
-.nav-group::marker,
-.nav-group::-webkit-details-marker {
-  display: none;
-}
-
-.nav-group__label {
-  cursor: pointer;
-  list-style: none;
-  color: var(--muted);
-  font-size: 0.9375rem;
-  user-select: none;
-}
-
-.nav-group__label::-webkit-details-marker {
-  display: none;
-}
-
-.nav-group:has(.router-link-active) .nav-group__label {
-  color: var(--fg);
-  font-weight: 500;
-}
-
-.nav-group[open] .nav-group__label {
-  color: var(--fg);
-}
-
-.nav-group__menu {
-  position: absolute;
-  top: calc(100% + 0.35rem);
-  right: 0;
-  min-width: 9rem;
-  padding: 0.35rem 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
-  z-index: 20;
-}
-
-@media (prefers-color-scheme: dark) {
-  .nav-group__menu {
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
-  }
-}
-
-.nav-group__menu a {
-  padding: 0.45rem 0.85rem;
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 0.9375rem;
-  white-space: nowrap;
-}
-
-.nav-group__menu a:hover {
-  color: var(--fg);
-  background: var(--border);
-}
-
-.nav-group__menu a.router-link-active {
   color: var(--fg);
   font-weight: 500;
 }

@@ -16,13 +16,28 @@ type NewsRow = {
   keywords?: string[];
   published_at: string;
   like_count: number;
+  category?: string | null;
+  comment_count?: number;
 };
 
 type NewsListResponse = {
   items: NewsRow[];
 };
 
-type NewsDetailResponse = NewsRow & { markdown_content: string };
+type NewsDetailResponse = NewsRow & {
+  markdown_content: string;
+  comment_count: number;
+};
+
+type CommentRow = {
+  id: string;
+  from_type: string;
+  from_agent_id: string | null;
+  from_name: string | null;
+  body: string;
+  status: string;
+  created_at: string;
+};
 
 const route = useRoute();
 const router = useRouter();
@@ -36,6 +51,14 @@ const loadingDetail = ref(false);
 const detailError = ref<string | null>(null);
 
 const failedCovers = ref<Set<string>>(new Set());
+
+// comments
+const comments = ref<CommentRow[]>([]);
+const loadingComments = ref(false);
+const commentForm = ref({ name: "", body: "" });
+const commentSubmitting = ref(false);
+const commentSuccess = ref(false);
+const commentError = ref<string | null>(null);
 
 // sticky header title visibility
 const modalRef = ref<HTMLElement | null>(null);
@@ -99,9 +122,31 @@ async function likeArticle(articleId: string, event: Event) {
   }
 }
 
-// share / copy toast
-const copiedToast = ref(false);
+// share: clipboard = title + summary + link; success = check + "Copied" on button; errors = top bar
+const toastVisible = ref(false);
+const toastText = ref("");
+const copiedState = ref(false);
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+let shareCopyTimer: ReturnType<typeof setTimeout> | null = null;
+const isWechatBrowser =
+  typeof navigator !== "undefined" &&
+  /micromessenger/i.test(navigator.userAgent || "");
+
+function buildShareText(title: string, summary: string, url: string): string {
+  const t = (title || "").trim();
+  const s = (summary || "").trim();
+  const u = (url || "").trim();
+  return [t, s, u].filter((p) => p.length > 0).join("\n\n");
+}
+
+function flashCopied() {
+  copiedState.value = true;
+  if (shareCopyTimer) clearTimeout(shareCopyTimer);
+  shareCopyTimer = setTimeout(() => {
+    copiedState.value = false;
+    shareCopyTimer = null;
+  }, 2500);
+}
 
 function markCoverFailed(id: string) {
   failedCovers.value = new Set([...failedCovers.value, id]);
@@ -147,9 +192,25 @@ async function fetchNewsList() {
 }
 
 async function openDetail(articleId: string) {
+  if (
+    isWechatBrowser &&
+    typeof window !== "undefined" &&
+    window.parent === window
+  ) {
+    const sharePath = `/v2/share/news/${articleId}`;
+    if (window.location.pathname !== sharePath) {
+      window.location.replace(`${window.location.origin}${sharePath}`);
+      return;
+    }
+  }
+
   loadingDetail.value = true;
   detailError.value = null;
   selectedArticle.value = null;
+  comments.value = [];
+  commentSuccess.value = false;
+  commentError.value = null;
+  commentForm.value = { name: "", body: "" };
   // sync URL
   await router.replace({ query: { article: articleId } });
   try {
@@ -160,6 +221,7 @@ async function openDetail(articleId: string) {
       return;
     }
     selectedArticle.value = data;
+    void fetchComments(articleId);
   } catch (error) {
     detailError.value =
       error instanceof Error ? error.message : "Network error.";
@@ -172,6 +234,52 @@ function closeDetail() {
   selectedArticle.value = null;
   detailError.value = null;
   void router.replace({ query: {} });
+}
+
+async function fetchComments(articleId: string) {
+  loadingComments.value = true;
+  try {
+    const res = await fetch(`/v2/news/articles/${articleId}/comments`);
+    const data = await res.json().catch(() => ({}));
+    comments.value = Array.isArray(data.items) ? data.items : [];
+  } catch {
+    comments.value = [];
+  } finally {
+    loadingComments.value = false;
+  }
+}
+
+async function submitComment() {
+  if (!selectedArticle.value) return;
+  const name = commentForm.value.name.trim();
+  const body = commentForm.value.body.trim();
+  if (!name || !body) return;
+
+  commentSubmitting.value = true;
+  commentError.value = null;
+  commentSuccess.value = false;
+
+  try {
+    const res = await fetch(`/v2/news/articles/${selectedArticle.value.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from_name: name, body }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      commentError.value =
+        typeof err.detail === "string"
+          ? err.detail
+          : "Could not submit comment. Please try again.";
+      return;
+    }
+    commentSuccess.value = true;
+    commentForm.value = { name: "", body: "" };
+  } catch {
+    commentError.value = "Network error. Please try again.";
+  } finally {
+    commentSubmitting.value = false;
+  }
 }
 
 // setup IntersectionObserver to detect when article h2 scrolls out of view
@@ -191,35 +299,67 @@ watch(selectedArticle, (val) => {
   });
 });
 
+watch(
+  () => route.query.article as string | undefined,
+  (id) => {
+    if (!id || !isWechatBrowser) return;
+    if (typeof window === "undefined" || window.parent === window) return;
+    const next = `${window.location.origin}/v2/share/news/${id}`;
+    try {
+      if (window.parent.location.href.split("#")[0] !== next) {
+        window.parent.history.replaceState(null, "", next);
+      }
+    } catch {
+      // cross-origin or restricted parent
+    }
+  }
+);
+
 async function shareArticle() {
   if (!selectedArticle.value) return;
-  const url = `${location.origin}/v2/share/news/${selectedArticle.value.id}`;
-  if (navigator.share) {
+  const a = selectedArticle.value;
+  const shareUrl = `${location.origin}/v2/share/news/${a.id}`;
+  const text = buildShareText(a.title, a.summary, shareUrl);
+
+  if (isWechatBrowser) {
     try {
+      await navigator.clipboard.writeText(text);
+      flashCopied();
+    } catch {
+      showErrorToast("Could not copy. Check clipboard permission.");
+    }
+    return;
+  }
+
+  if (typeof navigator.share === "function") {
+    try {
+      const sum = (a.summary || "").trim();
+      const shareText = sum ? `${sum}\n\n${shareUrl}` : shareUrl;
       await navigator.share({
-        title: selectedArticle.value.title,
-        text: selectedArticle.value.summary,
-        url,
+        title: a.title,
+        text: shareText,
+        url: shareUrl,
       });
     } catch {
-      // user cancelled — no action needed
+      // user cancelled — no action
     }
   } else {
     try {
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(text);
+      flashCopied();
     } catch {
-      // clipboard unavailable
+      showErrorToast("Could not copy to clipboard.");
     }
-    showToast();
   }
 }
 
-function showToast() {
-  copiedToast.value = true;
+function showErrorToast(message: string) {
+  toastText.value = message;
+  toastVisible.value = true;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
-    copiedToast.value = false;
-  }, 2200);
+    toastVisible.value = false;
+  }, 3200);
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -240,6 +380,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleKeydown);
   titleObserver?.disconnect();
   if (toastTimer) clearTimeout(toastTimer);
+  if (shareCopyTimer) clearTimeout(shareCopyTimer);
 });
 </script>
 
@@ -373,11 +514,11 @@ onUnmounted(() => {
               class="btn-nav btn-share"
               type="button"
               :disabled="!selectedArticle"
-              :title="copiedToast ? 'Link copied!' : 'Share article'"
+              :title="copiedState ? 'Copied' : 'Share article'"
               @click="shareArticle"
             >
               <!-- Check icon when copied -->
-              <svg v-if="copiedToast" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <svg v-if="copiedState" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <path d="M3 8L6.5 11.5L13 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
               <!-- Share icon -->
@@ -387,8 +528,17 @@ onUnmounted(() => {
                 <circle cx="4" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
                 <path d="M10.5 3.75L5.5 7.25M10.5 12.25L5.5 8.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
               </svg>
-              <span>{{ copiedToast ? "Copied!" : "Share" }}</span>
+              <span class="btn-share-label">{{ copiedState ? "Copied" : "Share" }}</span>
             </button>
+          </div>
+
+          <div
+            v-if="toastVisible"
+            class="modal-share-error"
+            role="status"
+            aria-live="assertive"
+          >
+            {{ toastText }}
           </div>
 
           <!-- ── Body ── -->
@@ -446,12 +596,68 @@ onUnmounted(() => {
                   <span>{{ selectedArticle.like_count }}</span>
                 </button>
               </div>
-            </template>
-          </div>
 
-          <!-- ── Copy toast ── -->
-          <div class="toast" :class="{ visible: copiedToast }" role="status" aria-live="polite">
-            Link copied to clipboard
+              <!-- ── Comments ── -->
+              <div class="comment-section">
+                <h3 class="comment-heading">
+                  Comments
+                  <span v-if="comments.length" class="comment-count">{{ comments.length }}</span>
+                </h3>
+
+                <!-- Approved comments list -->
+                <div v-if="loadingComments" class="comment-loading">Loading comments…</div>
+                <div v-else-if="comments.length" class="comment-list">
+                  <div v-for="c in comments" :key="c.id" class="comment-item">
+                    <div class="comment-meta">
+                      <span class="comment-author">{{ c.from_name || "Anonymous" }}</span>
+                      <span class="comment-date">{{ toIsoDate(c.created_at) }}</span>
+                    </div>
+                    <p class="comment-body">{{ c.body }}</p>
+                  </div>
+                </div>
+                <p v-else class="comment-empty">No comments yet. Be the first.</p>
+
+                <!-- Submission form -->
+                <div class="comment-form-wrap">
+                  <div v-if="commentSuccess" class="comment-success">
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                      <path d="M3 8L6.5 11.5L13 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Comment submitted — pending author review.
+                  </div>
+                  <form v-else class="comment-form" @submit.prevent="submitComment">
+                    <input
+                      v-model="commentForm.name"
+                      class="comment-input"
+                      type="text"
+                      placeholder="Your name"
+                      maxlength="120"
+                      required
+                      :disabled="commentSubmitting"
+                    />
+                    <textarea
+                      v-model="commentForm.body"
+                      class="comment-textarea"
+                      placeholder="Leave a comment…"
+                      maxlength="2000"
+                      rows="3"
+                      required
+                      :disabled="commentSubmitting"
+                    />
+                    <div class="comment-form-footer">
+                      <p v-if="commentError" class="comment-err">{{ commentError }}</p>
+                      <button
+                        class="comment-submit"
+                        type="submit"
+                        :disabled="commentSubmitting || !commentForm.name.trim() || !commentForm.body.trim()"
+                      >
+                        {{ commentSubmitting ? "Submitting…" : "Submit comment" }}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </template>
           </div>
         </section>
       </div>
@@ -795,6 +1001,9 @@ onUnmounted(() => {
 
 .btn-share {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 /* ── Modal body ── */
@@ -839,32 +1048,21 @@ onUnmounted(() => {
 }
 
 /* ── Toast ── */
-.toast {
-  position: sticky;
-  bottom: 1.25rem;
+.modal-share-error {
+  position: absolute;
+  top: 3.25rem;
   left: 50%;
-  transform: translateX(-50%) translateY(0.5rem);
-  width: fit-content;
-  padding: 0.5rem 1rem;
-  border-radius: 999px;
-  background: rgba(30, 30, 30, 0.92);
-  color: #fff;
+  transform: translateX(-50%);
+  z-index: 12;
+  max-width: calc(100% - 2rem);
+  padding: 0.45rem 0.75rem;
+  border-radius: 8px;
   font-size: 0.8125rem;
-  font-weight: 500;
-  pointer-events: none;
-  opacity: 0;
-  transition:
-    opacity 0.2s ease,
-    transform 0.2s ease;
-  backdrop-filter: blur(8px);
-  margin: 0 auto;
-  display: block;
+  line-height: 1.35;
   text-align: center;
-}
-
-.toast.visible {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
+  color: var(--fg);
+  background: rgba(220, 80, 80, 0.12);
+  border: 1px solid rgba(220, 80, 80, 0.35);
 }
 
 /* ── Markdown prose ── */
@@ -965,6 +1163,179 @@ onUnmounted(() => {
 .markdown :deep(th) {
   background: rgba(127, 127, 127, 0.06);
   font-weight: 600;
+}
+
+/* ── Comments ── */
+.comment-section {
+  margin-top: 2.5rem;
+  padding-top: 1.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.comment-heading {
+  margin: 0 0 1.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.comment-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.12);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.comment-loading {
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin-bottom: 1.25rem;
+}
+
+.comment-empty {
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin: 0 0 1.5rem;
+}
+
+.comment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.comment-item {
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.03);
+}
+
+.comment-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.comment-author {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.comment-date {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.comment-body {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.comment-form-wrap {
+  margin-top: 0.25rem;
+}
+
+.comment-success {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgba(60, 180, 100, 0.3);
+  background: rgba(60, 180, 100, 0.07);
+  color: rgb(40, 150, 80);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.comment-input,
+.comment-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.875rem;
+  font-family: inherit;
+  transition: border-color 0.15s ease;
+  resize: none;
+}
+
+.comment-input:focus,
+.comment-textarea:focus {
+  outline: none;
+  border-color: rgba(127, 127, 127, 0.5);
+}
+
+.comment-input:disabled,
+.comment-textarea:disabled {
+  opacity: 0.5;
+}
+
+.comment-textarea {
+  line-height: 1.55;
+}
+
+.comment-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.comment-err {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--error, #e05050);
+  flex: 1;
+}
+
+.comment-submit {
+  padding: 0.45rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.comment-submit:hover:not(:disabled) {
+  background: rgba(127, 127, 127, 0.08);
+  border-color: rgba(127, 127, 127, 0.35);
+}
+
+.comment-submit:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* ── Responsive ── */

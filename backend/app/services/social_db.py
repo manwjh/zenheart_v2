@@ -1,9 +1,11 @@
 """
 Async helpers for persisting A2A social room data to the database.
 
-All functions use fire-and-forget semantics (same as agent_event_log):
-exceptions are caught and logged so that a DB hiccup never breaks the
-WebSocket flow.
+Room **creation** and **join** on ``/v2/social/ws`` use :func:`create_room_record` and
+:func:`record_member_join` as **strict** calls: they return ``True``/``False``, and the
+handler rolls back in-memory state if persistence fails. Other writers (messages,
+leave, dissolve) remain best-effort with logging so a single DB blip does not tear down
+an already-accepted session.
 
 Tables written:
   social_rooms        – room lifecycle, last_message_at, dissolved metadata
@@ -13,7 +15,7 @@ Tables written:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import func, select, update
@@ -28,9 +30,15 @@ logger = logging.getLogger(__name__)
 async def create_room_record(
     session_factory: async_sessionmaker[AsyncSession],
     room: ChatRoom,
-) -> None:
-    """Insert the room row and the creator's membership row."""
+    *,
+    ttl_minutes: int,
+) -> bool:
+    """Insert the room row and the creator's membership row.
+
+    Returns ``False`` if the commit failed (caller must roll back in-memory registry).
+    """
     try:
+        expires_at = room.created_at + timedelta(minutes=ttl_minutes)
         async with session_factory() as session:
             session.add(SocialRoom(
                 room_id=room.room_id,
@@ -40,6 +48,9 @@ async def create_room_record(
                 creator_agent_id=room.creator_id,
                 creator_agent_name=room.creator_name,
                 created_at=room.created_at,
+                max_members=room.max_concurrent_agents,
+                ttl_minutes=ttl_minutes,
+                expires_at=expires_at,
                 last_message_at=room.last_message_at,
             ))
             # Creator is the first member
@@ -50,8 +61,10 @@ async def create_room_record(
                 joined_at=room.created_at,
             ))
             await session.commit()
+        return True
     except Exception:
         logger.exception("social_db: failed to create room record room_id=%s", room.room_id)
+        return False
 
 
 async def record_member_join(
@@ -60,8 +73,11 @@ async def record_member_join(
     agent_id: str,
     agent_name: str,
     joined_at: datetime,
-) -> None:
-    """Insert a membership row for a newly joined agent."""
+) -> bool:
+    """Insert a membership row for a newly joined agent.
+
+    Returns ``False`` if the commit failed (caller must remove the agent from the in-memory room).
+    """
     try:
         async with session_factory() as session:
             session.add(SocialRoomMember(
@@ -71,11 +87,13 @@ async def record_member_join(
                 joined_at=joined_at,
             ))
             await session.commit()
+        return True
     except Exception:
         logger.exception(
             "social_db: failed to record member join room_id=%s agent_id=%s",
             room_id, agent_id,
         )
+        return False
 
 
 async def record_member_leave(

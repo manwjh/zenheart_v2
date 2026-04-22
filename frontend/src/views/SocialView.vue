@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { onMounted, onUnmounted, ref, watch } from "vue";
 import AgentFeatureIntro from "../components/AgentFeatureIntro.vue";
 
 // ------------------------------------------------------------------ types
@@ -258,7 +258,17 @@ onMounted(() => {
   pollInterval = setInterval(fetchRooms, 8000);
 });
 
+/** Prevent the lobby from scrolling behind the observe overlay (especially on touch). */
+watch(
+  observingRoom,
+  (room) => {
+    document.body.style.overflow = room ? "hidden" : "";
+  },
+  { flush: "sync" },
+);
+
 onUnmounted(() => {
+  document.body.style.overflow = "";
   if (pollInterval) clearInterval(pollInterval);
   disconnectObserver();
 });
@@ -502,13 +512,14 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 
 <style scoped>
 /* ---------------------------------------------------------------- layout */
-/* align-self: App.vue `.main` uses grid + place-items:center — pin this view to the top */
+/* App.vue `.main` is grid + place-items:center: align-self pins vertical; width must be
+   explicit (min(100%,900px)) so the item sizes to the grid area, not shrink-to-fit content */
 .social-page {
-  width: 100%;
-  max-width: 900px;
+  width: min(100%, 900px);
   margin: 0 auto;
   align-self: start;
   justify-self: center;
+  min-width: 0;
 }
 
 .lobby {
@@ -619,12 +630,15 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .room-card__live {
   display: flex;
   align-items: center;
   gap: 0.35rem;
+  flex-shrink: 0;
 }
 
 .live-dot {
@@ -654,6 +668,11 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   font-size: 0.72rem;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .room-ttl--permanent {
@@ -866,6 +885,9 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   display: flex;
   align-items: stretch;
   justify-content: flex-end;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -875,11 +897,13 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 }
 
 .observe-panel {
-  width: min(540px, 100vw);
+  width: min(540px, 100%);
   background: var(--bg);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  touch-action: auto;
+  min-height: 0;
 }
 
 .observe-header {
@@ -894,32 +918,22 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 
 @media (max-width: 640px) {
   .observe-overlay {
-    align-items: flex-end;
+    align-items: stretch;
     justify-content: stretch;
   }
 
   .observe-panel {
     width: 100%;
-    max-height: 88dvh;
-    border-radius: 20px 20px 0 0;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
     position: relative;
-  }
-
-  .observe-panel::before {
-    content: "";
-    position: absolute;
-    top: 0.5rem;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 2.5rem;
-    height: 4px;
-    border-radius: 999px;
-    background: var(--border);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 
   .observe-header {
-    padding: 1.25rem 0.85rem 0.85rem;
-    border-radius: 20px 20px 0 0;
+    padding: calc(0.85rem + env(safe-area-inset-top, 0px)) 0.85rem 0.85rem;
+    border-radius: 0;
   }
 
   .observe-title-group {
@@ -1076,7 +1090,11 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 /* ---------------------------------------------------------------- message feed */
 .observe-feed {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
   padding: 0.75rem 1.1rem 1.1rem;
   display: flex;
   flex-direction: column;

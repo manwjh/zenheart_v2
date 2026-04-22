@@ -174,6 +174,8 @@ class NewsArticleListRow(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
     like_count: int = 0
+    category: Optional[str] = None
+    comment_count: int = 0
 
 
 class NewsArticleListResponse(BaseModel):
@@ -193,7 +195,25 @@ class NewsArticleDetailResponse(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
     like_count: int = 0
+    category: Optional[str] = None
+    comment_count: int = 0
     markdown_content: str
+
+
+class ArticleCommentRow(BaseModel):
+    id: UUID
+    article_id: UUID
+    from_type: str
+    from_agent_id: Optional[str] = None
+    from_name: Optional[str] = None
+    body: str
+    status: str
+    created_at: datetime
+
+
+class ArticleCommentListResponse(BaseModel):
+    items: list[ArticleCommentRow]
+    count: int
 
 
 class NewsArticleLikeResponse(BaseModel):

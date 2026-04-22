@@ -21,3 +21,6 @@ export ZENHEART_EC2_HOST=
 
 # Deploy (from repo v2/): ./deploy-backend.sh
 # Remote steps: venv+pip, install psql when missing (dnf/yum/apt), run scripts/migrations/*.sql via Python, restart systemd.
+
+# Default: FAQ rsync omits sovereign-admin markdown and zenheart-admin-agent skill folder (see deploy-backend.sh).
+# export ZENHEART_V2_DEPLOY_INCLUDE_ADMIN=1

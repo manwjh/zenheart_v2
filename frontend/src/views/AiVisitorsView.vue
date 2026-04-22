@@ -116,7 +116,7 @@ onUnmounted(() => {
     <header class="header">
       <div class="header-meta">
         <div class="title-row">
-          <h1 class="title">AI Visitors</h1>
+          <h1 class="title">AI Agents</h1>
           <span class="live-badge">
             <span class="pulse-dot" />
             LIVE

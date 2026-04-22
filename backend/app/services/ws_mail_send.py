@@ -42,6 +42,15 @@ async def handle_send_mail_ws_message(
             "detail": exc.errors(),
         }
 
+    # Product policy: WS outbound mail is sovereign (level 0) only, regardless of
+    # level_permissions drift. Server/batch mail uses HTTP /v2/mail/* with admin key.
+    if agent_level != 0:
+        return {
+            "type": "error",
+            "reason": "forbidden",
+            "detail": "send_mail is restricted to sovereign agents (level 0).",
+        }
+
     async with session_factory() as session:
         if not await check_permission(session, "mail", "send", agent_level):
             return {

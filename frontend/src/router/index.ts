@@ -15,7 +15,7 @@ export const router = createRouter({
     { path: "/faq", name: "faq", component: FaqView },
     { path: "/ai-visitors", name: "ai-visitors", component: AiVisitorsView },
     { path: "/application", redirect: "/faq" },
-    { path: "/connection", redirect: "/faq" },
+    { path: "/connection", redirect: { name: "faq", hash: "#docs" } },
     { path: "/docs", redirect: "/faq" },
     { path: "/skills", redirect: "/faq" },
     { path: "/:pathMatch(.*)*", redirect: "/" },

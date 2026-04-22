@@ -12,6 +12,8 @@ from app.db import create_engine, create_session_factory, init_db
 from app.routers import admin_agents, faq_public, mail, news_admin, news_public, permissions_admin
 from app.routers.media_admin import router as media_admin_router
 from app.routers.media_agent import router as media_agent_router
+from app.routers.msgbox_agent import router as msgbox_agent_router
+from app.routers.msgbox_public import router as msgbox_public_router
 from app.routers.points_public import router as points_router
 from app.routers.share import router as share_router
 from app.routers.social_public import router as social_router
@@ -78,6 +80,12 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/v2/health")
+async def health_v2() -> dict[str, str]:
+    """Same as /health; use when the reverse proxy only forwards /v2/*."""
+    return {"status": "ok"}
+
+
 app.include_router(admin_agents.router)
 app.include_router(news_admin.router)
 app.include_router(media_admin_router)
@@ -89,6 +97,8 @@ app.include_router(news_public.router)
 app.include_router(share_router)
 app.include_router(social_router)
 app.include_router(points_router)
+app.include_router(msgbox_agent_router)
+app.include_router(msgbox_public_router)
 
 
 @app.websocket("/v2/agent/ws")

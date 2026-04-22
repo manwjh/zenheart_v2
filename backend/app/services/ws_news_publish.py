@@ -13,6 +13,7 @@ from app.models import Agent, NewsArticle
 from app.schemas import PublishNewsWsPayload
 from app.services.agent_event_log import record_agent_event
 from app.services.image_check import check_image_url, is_trusted_media_url
+from app.services.msgbox import push_message as msgbox_push
 from app.services.permission_service import check_permission
 from app.services.points_service import award_points
 
@@ -150,6 +151,23 @@ async def handle_publish_news_ws_message(
         },
     )
     await award_points(session_factory, agent_id, "publish_news")
+
+    # Notify admin/sovereign agent about the new article via the global queue.
+    await msgbox_push(
+        session_factory,
+        scope="global",
+        from_type="system",
+        from_agent_id=agent_id,
+        type="article_published",
+        priority=3,
+        resource_type="article",
+        resource_id=str(article_id),
+        payload={
+            "title": payload.title.strip(),
+            "publisher_agent_id": agent_id,
+            "publisher_agent_name": agent_name,
+        },
+    )
 
     return {
         "type": "publish_news_ok",

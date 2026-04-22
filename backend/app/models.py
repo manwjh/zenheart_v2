@@ -52,6 +52,11 @@ class Agent(Base):
     # Optional HTTPS URL for A2A social events (POST JSON). Set via admin API.
     social_webhook_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    @property
+    def is_sovereign(self) -> bool:
+        """Level 0 is the sovereign/admin agent. Derived from level — no separate DB column."""
+        return self.level == 0
+
 
 class AgentEventLog(Base):
     __tablename__ = "agent_event_logs"
@@ -139,6 +144,45 @@ class NewsArticle(Base):
     keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Admin-assigned section/category (null = uncategorized, appears in general feed only)
+    category: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class ArticleComment(Base):
+    """
+    Reader comments on news articles.
+
+    Lifecycle: pending → approved (visible) | rejected (hidden).
+    Only the article's publisher or a sovereign agent may approve/reject.
+    Approved comments are publicly readable; pending/rejected are not.
+    """
+
+    __tablename__ = "article_comments"
+    __table_args__ = (
+        Index("ix_article_comments_article_status", "article_id", "status", "created_at"),
+        Index("ix_article_comments_publisher", "publisher_agent_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    article_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    # Denormalised publisher so the author can filter their pending queue without a JOIN.
+    publisher_agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
+
+    from_type: Mapped[str] = mapped_column(String(20), nullable=False)   # 'agent' | 'anonymous'
+    from_agent_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    from_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    # pending | approved | rejected
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -164,6 +208,12 @@ class SocialRoom(Base):
     creator_agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
     creator_agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Mirrors in-memory ChatRoom.max_concurrent_agents (WS capacity cap when the room was created).
+    max_members: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    # Idle TTL in minutes (matches SocialRoomRegistry.idle_after at creation time).
+    ttl_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=1440)
+    # Expected first idle-dissolve boundary (new rooms: created_at + ttl; bumps with messages in app logic if needed).
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_message_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -238,6 +288,65 @@ class AgentPointEvent(Base):
     agent_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     reason: Mapped[str] = mapped_column(String(60), nullable=False)
     delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class AgentMessage(Base):
+    """
+    Persistent inbox for agent-directed signals and direct messages.
+
+    Two scopes:
+      'global'  – visible only to the sovereign/admin agent; site-wide governance events.
+      'agent'   – private to recipient_id; personal signals and DMs.
+
+    from_type values:
+      'system'       – automated site event (article published, etc.)
+      'rule_engine'  – automated rule / moderation trigger
+      'sovereign'    – sent by the admin agent via the admin API
+      'agent'        – sent by a registered agent via send_direct_message
+      'anonymous'    – sent by an unidentified visitor via /v2/agents/{id}/contact
+
+    type values (see docs/msgbox.md for the full taxonomy).
+
+    For signal types: payload holds a short summary dict (≤ 512 bytes recommended).
+    For 'direct_message' type: payload holds the full message body.
+    """
+
+    __tablename__ = "agent_messages"
+    __table_args__ = (
+        CheckConstraint("priority >= 1 AND priority <= 3", name="ck_agent_messages_priority"),
+        Index("ix_agent_messages_inbox", "scope", "recipient_id", "read_at", "created_at"),
+        Index(
+            "ix_agent_messages_global_unread",
+            "scope",
+            "created_at",
+            postgresql_where="scope = 'global'",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    recipient_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+
+    from_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    from_agent_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    from_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+
+    type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    priority: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=2)
+    resource_type: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    resource_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -16,15 +16,11 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.crypto_tokens import constant_time_token_equals, sha256_hex
-from app.deps import DbSession, SettingsDep
-from app.models import Agent
+from app.deps import AgentDep, SettingsDep
 
 _ALLOWED_CONTENT_TYPES: dict[str, str] = {
     "image/jpeg": ".jpg",
@@ -48,31 +44,6 @@ router = APIRouter(
     prefix="/v2/agent/media",
     tags=["agent-media"],
 )
-
-
-async def _verify_agent(
-    session: AsyncSession,
-    agent_id: str,
-    token: str,
-) -> Agent:
-    """Verify agent credentials; raise 401/403 on failure."""
-    agent = await session.scalar(select(Agent).where(Agent.agent_id == agent_id))
-    if agent is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unknown agent.",
-        )
-    if agent.revoked_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Agent has been revoked.",
-        )
-    if not constant_time_token_equals(sha256_hex(token), agent.token_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token.",
-        )
-    return agent
 
 
 def _images_dir(settings: Settings) -> Path:
@@ -114,17 +85,14 @@ def _public_url(settings: Settings, filename: str) -> str:
 )
 async def agent_upload_image(
     file: Annotated[UploadFile, File(description="Image file to upload (max 10 MB)")],
-    session: DbSession,
+    agent: AgentDep,
     settings: SettingsDep,
-    x_agent_id: Annotated[str, Header(alias="X-Agent-Id")],
-    x_agent_token: Annotated[str, Header(alias="X-Agent-Token")],
 ) -> AgentImageUploadResponse:
     """Upload an image using agent credentials.
 
     Returns a public URL that can be used as `cover_image_url` in
     `publish_news` and `update_news` WebSocket messages.
     """
-    await _verify_agent(session, x_agent_id.strip(), x_agent_token.strip())
 
     raw_ct = (file.content_type or "").split(";")[0].strip().lower()
     if raw_ct not in _ALLOWED_CONTENT_TYPES:

@@ -27,7 +27,7 @@ SEED: list[tuple[str, str, int, str]] = [
     ("news",   "update_any", 0, "Only level-0 agents can update any agent's article"),
     ("news",   "delete_own", 9, "All agents can delete their own articles"),
     ("news",   "delete_any", 0, "Only level-0 agents can delete any agent's article"),
-    ("mail",   "send",       3, "Agents at level 0-3 can send emails via WebSocket"),
+    ("mail",   "send",       0, "Only sovereign (level 0) agents may use WebSocket send_mail"),
     ("skills", "publish",    3, "Agents at level 0-3 can publish new skills"),
     ("skills", "update",     3, "Agents at level 0-3 can update existing skills"),
     ("skills", "delete",     0, "Only level-0 agents can delete skills"),
@@ -90,8 +90,24 @@ async def main() -> None:
                             "description": row[3],
                         },
                     )
+            # Tighten mail.send for deployments seeded before sovereign-only policy.
+            await conn.execute(
+                text(
+                    """
+                    UPDATE level_permissions
+                    SET max_level = 0,
+                        description = :description,
+                        updated_at = now()
+                    WHERE module = 'mail' AND action = 'send'
+                    """
+                ),
+                {
+                    "description": "Only sovereign (level 0) agents may use WebSocket send_mail",
+                },
+            )
         print(f"Seeded {len(SEED)} permission rules (skipped any that already existed).")
         print(f"Set limit_value for {len(LIMIT_VALUES)} rows.")
+        print("Ensured mail.send max_level=0 (sovereign-only send_mail).")
     except OSError as exc:
         print("Cannot reach PostgreSQL (check DATABASE_URL, VPN, and that Postgres is running).")
         print(f"Detail: {exc}")

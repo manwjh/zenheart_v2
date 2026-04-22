@@ -256,16 +256,17 @@ async def _handle_create_room(
     if not allowed:
         await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
-    limit = daily_limit if daily_limit is not None else _DEFAULT_ROOMS_PER_DAY
-    if limit > 0:
-        today_count = await count_rooms_today(session_factory, agent_id)
-        if today_count >= limit:
-            await ws.send_text(_jdump({
-                "type": "error",
-                "reason": "daily_room_limit_reached",
-                "detail": f"Limit is {limit} rooms per day (UTC).",
-            }))
-            return
+    if level > 0:
+        limit = daily_limit if daily_limit is not None else _DEFAULT_ROOMS_PER_DAY
+        if limit > 0:
+            today_count = await count_rooms_today(session_factory, agent_id)
+            if today_count >= limit:
+                await ws.send_text(_jdump({
+                    "type": "error",
+                    "reason": "daily_room_limit_reached",
+                    "detail": f"Limit is {limit} rooms per day (UTC).",
+                }))
+                return
 
     name = data.get("name", "")
     if not isinstance(name, str) or not (1 <= len(name.strip()) <= 80):
@@ -304,6 +305,16 @@ async def _handle_create_room(
         return
 
     room: ChatRoom = result
+    ttl_m = max(1, int(social.idle_after.total_seconds() // 60))
+    if not await create_room_record(session_factory, room, ttl_minutes=ttl_m):
+        await social.force_dissolve(room.room_id)
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "persistence_failed",
+            "detail": "Could not persist room; try again.",
+        }))
+        return
+
     await ws.send_text(_jdump({
         "type": "room_created",
         "room_id": room.room_id,
@@ -319,7 +330,6 @@ async def _handle_create_room(
         "members": room.member_list(),
         "recent_messages": [],
     }))
-    await create_room_record(session_factory, room)
     await record_agent_event(
         session_factory, event="a2a_room_created", agent_id=agent_id,
         detail={
@@ -346,16 +356,17 @@ async def _handle_join_room(
     if not allowed:
         await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
-    limit = daily_limit if daily_limit is not None else _DEFAULT_ROOMS_PER_DAY
-    if limit > 0:
-        today_count = await count_rooms_today(session_factory, agent_id)
-        if today_count >= limit:
-            await ws.send_text(_jdump({
-                "type": "error",
-                "reason": "daily_room_limit_reached",
-                "detail": f"Limit is {limit} rooms per day (UTC).",
-            }))
-            return
+    if level > 0:
+        limit = daily_limit if daily_limit is not None else _DEFAULT_ROOMS_PER_DAY
+        if limit > 0:
+            today_count = await count_rooms_today(session_factory, agent_id)
+            if today_count >= limit:
+                await ws.send_text(_jdump({
+                    "type": "error",
+                    "reason": "daily_room_limit_reached",
+                    "detail": f"Limit is {limit} rooms per day (UTC).",
+                }))
+                return
 
     room_id = data.get("room_id", "")
     if not isinstance(room_id, str) or not room_id:
@@ -376,6 +387,15 @@ async def _handle_join_room(
     now = datetime.now(timezone.utc)
     joined_at_str = now.isoformat()
 
+    if not await record_member_join(session_factory, room.room_id, agent_id, agent_name, now):
+        await social.leave_room(agent_id)
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "persistence_failed",
+            "detail": "Could not record join; try again.",
+        }))
+        return
+
     recent_messages = await get_room_messages(session_factory, room.room_id)
     await ws.send_text(_jdump(_room_join_payload(room, recent_messages, social.idle_after)))
 
@@ -387,7 +407,6 @@ async def _handle_join_room(
         "joined_at": joined_at_str,
     }
     await social.broadcast_to_room(room.room_id, broadcast_frame, exclude_agent=agent_id)
-    await record_member_join(session_factory, room.room_id, agent_id, agent_name, now)
     await record_agent_event(
         session_factory, event="a2a_room_joined", agent_id=agent_id,
         detail={"room_id": room.room_id, "name": room.name},
