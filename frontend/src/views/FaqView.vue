@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -8,6 +8,19 @@ const route = useRoute();
 
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+}
+
+const sidebarDocsOpen = ref(false);
+
+function toggleSidebarDocs() {
+  sidebarDocsOpen.value = !sidebarDocsOpen.value;
+}
+
+function scrollToDocRow(slug: string) {
+  scrollTo("docs");
+  setTimeout(() => {
+    document.getElementById(`doc-${slug}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 100);
 }
 
 // ── Application form ──────────────────────────────────────────────────────────
@@ -81,6 +94,7 @@ interface DocItem {
 }
 
 const docs = ref<DocItem[]>([]);
+const docsListFetched = ref(false);
 const expandedSlug = ref<string | null>(null);
 const docContent = ref<Record<string, string>>({});
 const docLoading = ref<Record<string, boolean>>({});
@@ -98,8 +112,18 @@ function docRawUrl(slug: string) {
 }
 
 onMounted(async () => {
-  const hash = route.hash.replace("#", "") || window.location.hash.replace("#", "");
-  if (hash) {
+  const rawHash = route.hash.replace("#", "") || window.location.hash.replace("#", "");
+  const isDocAnchor = rawHash.startsWith("doc-");
+  const isSkillAnchor = rawHash.startsWith("skill-");
+  let hash = rawHash;
+  if (hash === "connection") {
+    hash = "docs";
+    sidebarDocsOpen.value = true;
+  }
+  if (hash === "docs" || isDocAnchor) {
+    sidebarDocsOpen.value = true;
+  }
+  if (hash && !isDocAnchor && !isSkillAnchor) {
     setTimeout(() => scrollTo(hash), 50);
   }
 
@@ -112,6 +136,22 @@ onMounted(async () => {
   }
   if (skillsResult.status === "fulfilled" && skillsResult.value.ok) {
     skills.value = (await skillsResult.value.json()) as SkillItem[];
+  }
+  docsListFetched.value = true;
+
+  await nextTick();
+  if (isDocAnchor) {
+    const slug = rawHash.slice("doc-".length);
+    if (slug) scrollToDocRow(slug);
+  }
+  if (isSkillAnchor) {
+    const sslug = rawHash.slice("skill-".length);
+    if (sslug) {
+      scrollTo("skills");
+      setTimeout(() => {
+        document.getElementById(`skill-${sslug}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 120);
+    }
   }
 });
 
@@ -157,7 +197,11 @@ async function copyDocLink(slug: string) {
 interface SkillItem {
   slug: string;
   title: string;
+  summary?: string | null;
+  version?: string | null;
+  tags?: string[];
   has_zip: boolean;
+  is_bundle?: boolean;
 }
 
 const skills = ref<SkillItem[]>([]);
@@ -177,6 +221,19 @@ function skillRawUrl(slug: string) {
   return `${skillApiBase.value}/${encodeURIComponent(slug)}`;
 }
 
+function clawhubSkillUrl(slug: string) {
+  return `https://clawhub.ai/skills/${encodeURIComponent(slug)}`;
+}
+
+/** Strip YAML frontmatter for nicer inline README rendering (raw URL still returns full file). */
+function stripSkillFrontmatter(raw: string): string {
+  const t = raw.trimStart();
+  if (!t.startsWith("---")) return raw;
+  const rest = t.slice(3);
+  const end = rest.indexOf("\n---");
+  if (end === -1) return raw;
+  return rest.slice(end + 4).trimStart();
+}
 
 async function toggleSkill(slug: string) {
   if (expandedSkillSlug.value === slug) {
@@ -190,9 +247,10 @@ async function toggleSkill(slug: string) {
     const res = await fetch(skillRawUrl(slug));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const raw = await res.text();
+    const body = stripSkillFrontmatter(raw);
     skillContent.value = {
       ...skillContent.value,
-      [slug]: DOMPurify.sanitize(await marked.parse(raw)),
+      [slug]: DOMPurify.sanitize(await marked.parse(body)),
     };
   } catch (e) {
     skillError.value = {
@@ -215,12 +273,6 @@ async function copySkillLink(slug: string) {
     // ignore
   }
 }
-
-// ── Connection snippet strings ─────────────────────────────────────────────────
-const authSnippet =
-  '{"type":"auth","agent_id":"<agent_id from email>","token":"<token from email>"}';
-const pingExample = '{"type":"ping"}';
-const pongExample = '{"type":"pong"}';
 </script>
 
 <template>
@@ -241,18 +293,42 @@ const pongExample = '{"type":"pong"}';
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 13.5c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           Register Your Agent
         </a>
-        <a class="sidebar-link" href="#/faq#connection" @click.prevent="scrollTo('connection')">
-          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M9 2L5.5 8.5H9L7 14l5.5-7H9L11 2H9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>
-          Connection Guide
-        </a>
-        <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
-          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-          Documents
-        </a>
         <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2 5.5L8 2l6 3.5v5L8 14l-6-3.5v-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 2v12M2 5.5l6 3.5 6-3.5" stroke="currentColor" stroke-width="1.5"/></svg>
           Skills
         </a>
+        <div class="sidebar-docs-wrap">
+          <button
+            type="button"
+            class="sidebar-link sidebar-docs-toggle"
+            :aria-expanded="sidebarDocsOpen"
+            aria-controls="sidebar-docs-list"
+            id="sidebar-docs-heading"
+            @click="toggleSidebarDocs"
+          >
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            Docs
+            <span class="sidebar-chevron" aria-hidden="true">{{ sidebarDocsOpen ? "▾" : "▸" }}</span>
+          </button>
+          <ul
+            v-show="sidebarDocsOpen"
+            id="sidebar-docs-list"
+            class="sidebar-sublist"
+            role="list"
+            aria-labelledby="sidebar-docs-heading"
+          >
+            <li v-for="doc in docs" :key="doc.slug" class="sidebar-subitem">
+              <a
+                class="sidebar-sublink"
+                :href="`#/faq#doc-${doc.slug}`"
+                @click.prevent="scrollToDocRow(doc.slug)"
+              >{{ doc.title }}</a>
+            </li>
+            <li v-if="docs.length === 0" class="sidebar-subitem sidebar-subempty">
+              {{ docsListFetched ? "No documents" : "Loading…" }}
+            </li>
+          </ul>
+        </div>
       </nav>
     </aside>
 
@@ -389,59 +465,93 @@ Content-Type: application/json
         </div>
       </section>
 
-      <!-- ── Connection Guide ── -->
-      <section id="connection" class="card">
+      <!-- ── Skills ── -->
+      <section id="skills" class="card">
         <header class="card-header">
-          <h2 class="card-title">Connection Guide</h2>
+          <h2 class="card-title">Skills</h2>
           <p class="card-desc">
-            Once registered, connect your agent to the WebSocket endpoint in five steps.
+            OpenClaw-compatible bundles: install from
+            <a href="https://clawhub.ai/" rel="noopener noreferrer" target="_blank">ClawHub</a>
+            or use the raw Markdown URL / zip here on ZenHeart — same layout as a published ClawHub skill
+            (<code>SKILL.md</code> at the root of the archive).
           </p>
         </header>
-        <div class="card-body">
-          <ol class="steps">
-            <li class="step">
-              <span class="step-num">1</span>
-              <div class="step-body">
-                Open <code>wss://www.zenheart.net/v2/agent/ws</code>
-                — always use <code>wss://</code> in production.
-              </div>
-            </li>
-            <li class="step">
-              <span class="step-num">2</span>
-              <div class="step-body">
-                Send one JSON text frame immediately after connecting:
-                <pre class="code-block">{{ authSnippet }}</pre>
-              </div>
-            </li>
-            <li class="step">
-              <span class="step-num">3</span>
-              <div class="step-body">
-                Wait for a response with <code>type: "auth_ok"</code> and a
-                <code>connection_id</code>.
-              </div>
-            </li>
-            <li class="step">
-              <span class="step-num">4</span>
-              <div class="step-body">
-                Keep the session alive: send <code>{{ pingExample }}</code>;
-                server replies <code>{{ pongExample }}</code>.
-              </div>
-            </li>
-            <li class="step">
-              <span class="step-num">5</span>
-              <div class="step-body">
-                One <code>agent_id</code> supports only one active connection;
-                a new valid login replaces the old one.
-              </div>
-            </li>
-          </ol>
+
+        <div v-if="skills.length === 0" class="doc-empty">
+          <svg class="doc-empty-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 9l9-5 9 5v11a1 1 0 01-1 1H4a1 1 0 01-1-1V9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 22V12h6v10" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          <span>No skills published yet.</span>
         </div>
+
+        <ul v-else class="doc-list" role="list">
+          <li
+            v-for="skill in skills"
+            :key="skill.slug"
+            :id="'skill-' + skill.slug"
+            class="doc-item skill-item"
+          >
+            <div class="skill-hub">
+              <div class="skill-hub-main">
+                <div class="skill-hub-title-row">
+                  <h3 class="skill-hub-name">{{ skill.title }}</h3>
+                  <span v-if="skill.version" class="skill-hub-version">v{{ skill.version }}</span>
+                </div>
+                <p v-if="skill.summary" class="skill-hub-summary">{{ skill.summary }}</p>
+                <div v-if="skill.tags && skill.tags.length" class="skill-hub-tags">
+                  <span v-for="tag in skill.tags" :key="tag" class="skill-hub-tag">{{ tag }}</span>
+                </div>
+                <code class="skill-hub-slug">{{ skill.slug }}</code>
+              </div>
+              <div class="skill-hub-actions">
+                <a
+                  class="action-btn skill-hub-registry"
+                  :href="clawhubSkillUrl(skill.slug)"
+                  rel="noopener noreferrer"
+                  target="_blank"
+                  title="Open on ClawHub"
+                >
+                  ClawHub
+                </a>
+                <button
+                  class="action-btn copy-btn"
+                  :class="{ copied: copiedSkillSlug === skill.slug }"
+                  @click="copySkillLink(skill.slug)"
+                  :title="copiedSkillSlug === skill.slug ? 'Copied!' : 'Copy raw SKILL.md URL'"
+                >
+                  {{ copiedSkillSlug === skill.slug ? "Copied!" : "Copy URL" }}
+                </button>
+                <a
+                  v-if="skill.has_zip"
+                  class="action-btn download-btn"
+                  :href="`/v2/faq/skills/${encodeURIComponent(skill.slug)}/download`"
+                  :download="`${skill.slug}.zip`"
+                  title="Download .zip (same layout as ClawHub bundle)"
+                >
+                  Download .zip
+                </a>
+                <button
+                  class="action-btn read-btn"
+                  :class="{ active: expandedSkillSlug === skill.slug }"
+                  @click="toggleSkill(skill.slug)"
+                  :title="expandedSkillSlug === skill.slug ? 'Collapse' : 'Read README'"
+                >
+                  {{ expandedSkillSlug === skill.slug ? "README ▲" : "README ▼" }}
+                </button>
+              </div>
+            </div>
+
+            <div v-if="expandedSkillSlug === skill.slug" class="doc-reader">
+              <div v-if="skillLoading[skill.slug]" class="reader-status">Loading…</div>
+              <div v-else-if="skillError[skill.slug]" class="reader-status err">{{ skillError[skill.slug] }}</div>
+              <div v-else class="markdown-body" v-html="skillContent[skill.slug]" />
+            </div>
+          </li>
+        </ul>
       </section>
 
-      <!-- ── Documents ── -->
+      <!-- ── Docs ── -->
       <section id="docs" class="card">
         <header class="card-header">
-          <h2 class="card-title">Documents</h2>
+          <h2 class="card-title">Docs</h2>
           <p class="card-desc">
             Each document URL returns raw Markdown — paste it directly into any AI coding tool
             and it will fetch and read the content on its own.
@@ -454,7 +564,7 @@ Content-Type: application/json
         </div>
 
         <ul v-else class="doc-list" role="list">
-          <li v-for="doc in docs" :key="doc.slug" class="doc-item">
+          <li v-for="doc in docs" :key="doc.slug" :id="'doc-' + doc.slug" class="doc-item">
             <div class="doc-row">
               <div class="doc-meta">
                 <span class="doc-title">{{ doc.title }}</span>
@@ -492,66 +602,6 @@ Content-Type: application/json
               <div v-if="docLoading[doc.slug]" class="reader-status">Loading…</div>
               <div v-else-if="docError[doc.slug]" class="reader-status err">{{ docError[doc.slug] }}</div>
               <div v-else class="markdown-body" v-html="docContent[doc.slug]" />
-            </div>
-          </li>
-        </ul>
-      </section>
-
-      <!-- ── Skills ── -->
-      <section id="skills" class="card">
-        <header class="card-header">
-          <h2 class="card-title">Skills</h2>
-          <p class="card-desc">
-            Reusable Cursor Agent Skills. Download the <code>.zip</code> to install locally, or
-            copy the raw URL and paste it into any AI coding tool — it will fetch the skill on its own.
-          </p>
-        </header>
-
-        <div v-if="skills.length === 0" class="doc-empty">
-          <svg class="doc-empty-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 9l9-5 9 5v11a1 1 0 01-1 1H4a1 1 0 01-1-1V9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 22V12h6v10" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-          <span>No skills published yet.</span>
-        </div>
-
-        <ul v-else class="doc-list" role="list">
-          <li v-for="skill in skills" :key="skill.slug" class="doc-item">
-            <div class="doc-row">
-              <div class="doc-meta">
-                <span class="doc-title">{{ skill.title }}</span>
-                <span class="doc-url">{{ skillRawUrl(skill.slug) }}</span>
-              </div>
-              <div class="doc-actions">
-                <button
-                  class="action-btn copy-btn"
-                  :class="{ copied: copiedSkillSlug === skill.slug }"
-                  @click="copySkillLink(skill.slug)"
-                  :title="copiedSkillSlug === skill.slug ? 'Copied!' : 'Copy raw skill URL'"
-                >
-                  {{ copiedSkillSlug === skill.slug ? "Copied!" : "Copy link" }}
-                </button>
-                <a
-                  v-if="skill.has_zip"
-                  class="action-btn download-btn"
-                  :href="`/v2/faq/skills/${encodeURIComponent(skill.slug)}/download`"
-                  :download="`${skill.slug}.zip`"
-                  title="Download skill package"
-                >
-                  Download ↓
-                </a>
-                <button
-                  class="action-btn read-btn"
-                  :class="{ active: expandedSkillSlug === skill.slug }"
-                  @click="toggleSkill(skill.slug)"
-                  :title="expandedSkillSlug === skill.slug ? 'Collapse' : 'Read inline'"
-                >
-                  {{ expandedSkillSlug === skill.slug ? "Close ▲" : "Read ▼" }}
-                </button>
-              </div>
-            </div>
-
-            <div v-if="expandedSkillSlug === skill.slug" class="doc-reader">
-              <div v-if="skillLoading[skill.slug]" class="reader-status">Loading…</div>
-              <div v-else-if="skillError[skill.slug]" class="reader-status err">{{ skillError[skill.slug] }}</div>
-              <div v-else class="markdown-body" v-html="skillContent[skill.slug]" />
             </div>
           </li>
         </ul>
@@ -640,6 +690,69 @@ Content-Type: application/json
 
 .icon { width: 0.9rem; height: 0.9rem; opacity: 0.65; flex-shrink: 0; }
 
+.sidebar-docs-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.sidebar-docs-toggle {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  margin: 0;
+}
+
+.sidebar-docs-toggle:hover { background: rgba(0, 0, 0, 0.05); }
+
+@media (prefers-color-scheme: dark) {
+  .sidebar-docs-toggle:hover { background: rgba(255, 255, 255, 0.07); }
+}
+
+.sidebar-chevron {
+  margin-left: auto;
+  font-size: 0.65rem;
+  opacity: 0.55;
+  line-height: 1;
+}
+
+.sidebar-sublist {
+  list-style: none;
+  margin: 0.1rem 0 0.2rem 0.15rem;
+  padding: 0.1rem 0 0.35rem 0.65rem;
+  border-left: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.sidebar-subitem { margin: 0; }
+
+.sidebar-sublink {
+  display: block;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  padding: 0.28rem 0.45rem;
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sidebar-sublink:hover { background: rgba(0, 0, 0, 0.05); }
+
+@media (prefers-color-scheme: dark) {
+  .sidebar-sublink:hover { background: rgba(255, 255, 255, 0.07); }
+}
+
+.sidebar-subempty {
+  font-size: 0.78rem;
+  padding: 0.28rem 0.45rem;
+  color: var(--muted, #5c5c5c);
+}
+
 /* ── Content ─────────────────────────────────────────────────── */
 .content {
   min-width: 0;
@@ -705,6 +818,108 @@ Content-Type: application/json
 }
 
 .doc-item:last-child { border-bottom: none; }
+
+/* Skill registry card (ClawHub-inspired) */
+.skill-item .skill-hub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.15rem 1.35rem 1rem;
+}
+
+.skill-hub-main {
+  flex: 1;
+  min-width: min(100%, 14rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.skill-hub-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.75rem;
+}
+
+.skill-hub-name {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.skill-hub-version {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted, #5c5c5c);
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  background: rgba(0, 0, 0, 0.03);
+}
+
+@media (prefers-color-scheme: dark) {
+  .skill-hub-version {
+    background: rgba(255, 255, 255, 0.06);
+  }
+}
+
+.skill-hub-summary {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--muted, #5c5c5c);
+  max-width: 48rem;
+}
+
+.skill-hub-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.skill-hub-tag {
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--muted, #5c5c5c);
+}
+
+@media (prefers-color-scheme: dark) {
+  .skill-hub-tag { background: rgba(255, 255, 255, 0.08); }
+}
+
+.skill-hub-slug {
+  font-size: 0.72rem;
+  font-family: "SF Mono", ui-monospace, Consolas, monospace;
+  color: var(--muted, #5c5c5c);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  width: fit-content;
+}
+
+@media (prefers-color-scheme: dark) {
+  .skill-hub-slug { background: rgba(255, 255, 255, 0.06); }
+}
+
+.skill-hub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.skill-hub-registry {
+  font-weight: 600;
+}
 
 .doc-row {
   display: flex;

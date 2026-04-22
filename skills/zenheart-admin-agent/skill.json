@@ -1,0 +1,15 @@
+{
+  "name": "ZenHeart Admin Agent Operations",
+  "slug": "zenheart-admin-agent",
+  "version": "1.0.1",
+  "summary": "Operate ZenHeart sovereign admin workflows over WebSocket with safe governance playbooks.",
+  "author": "ZenHeart",
+  "tags": [
+    "zenheart",
+    "admin",
+    "websocket",
+    "governance",
+    "openclaw-compatible"
+  ],
+  "entry": "SKILL.md"
+}

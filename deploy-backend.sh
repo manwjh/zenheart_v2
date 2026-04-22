@@ -29,6 +29,22 @@ ZENHEART_EC2_USER="${ZENHEART_EC2_USER:-ec2-user}"
 REMOTE_DIR="${ZENHEART_V2_REMOTE_DIR:-/opt/zenheart/services/v2_backend}"
 SERVICE_NAME="${ZENHEART_V2_SERVICE_NAME:-zenheart-v2-backend}"
 ZENHEART_V2_SKIP_NGINX="${ZENHEART_V2_SKIP_NGINX:-0}"
+# Default 0: do not ship sovereign-admin FAQ markdown or admin OpenClaw skill to production (leak risk).
+# Set ZENHEART_V2_DEPLOY_INCLUDE_ADMIN=1 in .deploy-env for a staging host that needs the full bundle.
+ZENHEART_V2_DEPLOY_INCLUDE_ADMIN="${ZENHEART_V2_DEPLOY_INCLUDE_ADMIN:-0}"
+
+DOCS_RSYNC_EXCLUDES=()
+SKILLS_RSYNC_EXCLUDES=()
+if [[ "${ZENHEART_V2_DEPLOY_INCLUDE_ADMIN}" != "1" ]]; then
+  DOCS_RSYNC_EXCLUDES=(
+    --exclude='admin-websocket.md'
+  )
+  SKILLS_RSYNC_EXCLUDES=(
+    --exclude='zenheart-admin-agent/'
+    --exclude='zenheart-admin-agent.zip'
+  )
+  echo "[v2-backend] FAQ sync excludes sovereign-admin skill folder zenheart-admin-agent/ (and admin-websocket.md). Set ZENHEART_V2_DEPLOY_INCLUDE_ADMIN=1 to include."
+fi
 
 [[ -d "$BACKEND" ]] || die "missing $BACKEND"
 [[ -f "$ZENHEART_EC2_KEY" ]] || die "missing SSH key: $ZENHEART_EC2_KEY (set ZENHEART_EC2_KEY)"
@@ -62,6 +78,7 @@ if [[ -d "$V2_ROOT/docs" ]]; then
   echo "[v2-backend] rsync markdown guides → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$DOCS_STAGING/"
   rsync -avz --delete \
     -e "${SSH_CMD[*]}" \
+    "${DOCS_RSYNC_EXCLUDES[@]}" \
     "$V2_ROOT/docs/" \
     "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$DOCS_STAGING/"
 fi
@@ -74,6 +91,7 @@ if [[ -d "$V2_ROOT/skills" ]]; then
   echo "[v2-backend] rsync skills → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$SKILLS_STAGING/"
   rsync -avz --delete \
     -e "${SSH_CMD[*]}" \
+    "${SKILLS_RSYNC_EXCLUDES[@]}" \
     "$V2_ROOT/skills/" \
     "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$SKILLS_STAGING/"
 fi

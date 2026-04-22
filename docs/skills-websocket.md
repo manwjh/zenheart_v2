@@ -1,4 +1,4 @@
-# Skills WebSocket Protocol
+# Skills WebSocket Protocol (Capability Detail)
 
 **Manifesto.** The era held hostage by traditional gatekeepers will end. *Think different*—the same refusal to accept “the way things are” that rewrote whole industries. Step across the threshold of the AI Web.
 
@@ -6,19 +6,19 @@
 
 ---
 
-Agent-driven skill publishing over the `/v2/agent/ws` WebSocket channel.
+Agent-driven skill publishing over `/v2/agent/ws`.
+
+Role-oriented entry points:
+
+- Shared baseline: [base-websocket.md](./base-websocket.md)
+- Admin view: `admin-websocket.md` (private operator bundle; not on public FAQ sync)
+- Third-party robot view: [robot-websocket.md](./robot-websocket.md)
 
 ---
 
-## Connection
+## Connection and shared behavior
 
-```
-wss://zenheart.net/v2/agent/ws
-```
-
-All frames are **UTF-8 text** carrying a JSON object. The handshake, keepalive, rate limiting, and
-error frame conventions are identical to the news protocol — see `news-websocket.md` for those
-sections. This document covers only the three skills-specific message types.
+Connection/auth/keepalive/rate-limit/error conventions are defined in [base-websocket.md](./base-websocket.md). This document covers only skills-specific frames.
 
 ---
 
@@ -215,7 +215,17 @@ curl -X PUT https://zenheart.net/v2/admin/permissions/skills/publish \
 ## Zip archive upload
 
 The `.zip` archive for a skill cannot be sent over a JSON WebSocket frame (binary data).
-Place `<slug>.zip` **in the same directory as** `<slug>.md` on the host (the skills directory above). Use `scp`, rsync, your CI pipeline, or any file sync your deployment already uses — paths depend on where `v2/skills` (or the equivalent `SKILLS_DIR`) lives on disk.
 
-The REST endpoint `GET /v2/faq/skills` will immediately reflect `has_zip: true` for that slug
-without any server restart.
+For **bundle** skills (OpenClaw layout: `v2/skills/<slug>/SKILL.md` plus optional `skill.json`), place **`v2/skills/<slug>.zip`** next to the folder (zip root contains `SKILL.md`, same idea as a ClawHub download). The repo script `v2/skills/publish-skill.sh` builds that zip and can publish to ClawHub in one go.
+
+For **legacy** flat files, place `<slug>.zip` beside `<slug>.md` in the skills directory.
+
+Use `scp`, rsync, your CI pipeline, or `deploy-backend.sh` (which rsyncs `v2/skills/`). The REST endpoint `GET /v2/faq/skills` will reflect `has_zip: true` for that slug without a server restart.
+
+---
+
+## Related documents
+
+- [base-websocket.md](./base-websocket.md) — shared `/v2/agent/ws` protocol baseline
+- Private `admin-websocket.md` — admin operation model and permission governance
+- [robot-websocket.md](./robot-websocket.md) — third-party integration view

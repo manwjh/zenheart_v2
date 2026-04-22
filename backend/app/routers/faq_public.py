@@ -1,13 +1,16 @@
+from __future__ import annotations
+
 import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse, PlainTextResponse
 from jinja2 import TemplateError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -28,8 +31,14 @@ from app.schemas import (
     AgentVisitors24hResponse,
 )
 from app.services.agent_event_log import record_agent_event
+from app.services.msgbox import push_message as msgbox_push
 from app.services.points_service import award_points
-from app.services.skills_storage import SKILLS_DIR
+from app.services.skills_storage import (
+    SKILLS_DIR,
+    iter_skill_slugs,
+    skill_markdown_path,
+    skill_zip_path,
+)
 from app.services.template_service import TemplateService
 
 logger = logging.getLogger(__name__)
@@ -47,7 +56,11 @@ class DocItem(BaseModel):
 class SkillItem(BaseModel):
     slug: str
     title: str
+    summary: Optional[str] = None
+    version: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
     has_zip: bool
+    is_bundle: bool = False
 
 
 def _extract_title(path: Path) -> str:
@@ -58,6 +71,70 @@ def _extract_title(path: Path) -> str:
     except Exception:
         pass
     return re.sub(r"[-_]", " ", path.stem).title()
+
+
+def _read_skill_json(slug: str) -> Optional[dict]:
+    path = SKILLS_DIR / slug / "skill.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _description_from_skill_frontmatter(md_path: Path) -> Optional[str]:
+    try:
+        text = md_path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    if not text.startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+    fm = parts[1]
+    for line in fm.splitlines():
+        if line.startswith("description:"):
+            return line.split(":", 1)[1].strip().strip("\"'")
+    return None
+
+
+def _skill_item_for_slug(slug: str) -> Optional[SkillItem]:
+    md_path = skill_markdown_path(slug)
+    if md_path is None:
+        return None
+    meta = _read_skill_json(slug)
+    title = None
+    summary = None
+    version = None
+    tags: list[str] = []
+    if meta:
+        if isinstance(meta.get("name"), str) and meta["name"].strip():
+            title = meta["name"].strip()
+        if isinstance(meta.get("summary"), str) and meta["summary"].strip():
+            summary = meta["summary"].strip()
+        if isinstance(meta.get("version"), str) and meta["version"].strip():
+            version = meta["version"].strip()
+        raw_tags = meta.get("tags")
+        if isinstance(raw_tags, list):
+            tags = [str(t) for t in raw_tags if isinstance(t, str) and t.strip()]
+    if title is None:
+        title = _extract_title(md_path)
+    if summary is None:
+        summary = _description_from_skill_frontmatter(md_path)
+    zip_path = skill_zip_path(slug)
+    is_bundle = (SKILLS_DIR / slug / "SKILL.md").is_file()
+    return SkillItem(
+        slug=slug,
+        title=title,
+        summary=summary,
+        version=version,
+        tags=tags,
+        has_zip=zip_path.is_file(),
+        is_bundle=is_bundle,
+    )
 
 
 @router.get("/docs", response_model=list[DocItem])
@@ -80,25 +157,20 @@ async def get_doc(slug: str) -> str:
 
 @router.get("/skills", response_model=list[SkillItem])
 async def list_skills() -> list[SkillItem]:
-    if not SKILLS_DIR.is_dir():
-        return []
-    items = sorted(SKILLS_DIR.glob("*.md"), key=lambda p: p.name)
-    return [
-        SkillItem(
-            slug=p.stem,
-            title=_extract_title(p),
-            has_zip=(SKILLS_DIR / f"{p.stem}.zip").is_file(),
-        )
-        for p in items
-    ]
+    out: list[SkillItem] = []
+    for slug in iter_skill_slugs():
+        item = _skill_item_for_slug(slug)
+        if item is not None:
+            out.append(item)
+    return out
 
 
 @router.get("/skills/{slug}", response_class=PlainTextResponse)
 async def get_skill(slug: str) -> str:
     if "/" in slug or "\\" in slug or slug.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid slug")
-    path = SKILLS_DIR / f"{slug}.md"
-    if not path.is_file():
+    path = skill_markdown_path(slug)
+    if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="Skill not found")
     return path.read_text(encoding="utf-8")
 
@@ -107,7 +179,7 @@ async def get_skill(slug: str) -> str:
 async def download_skill(slug: str) -> FileResponse:
     if "/" in slug or "\\" in slug or slug.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid slug")
-    path = SKILLS_DIR / f"{slug}.zip"
+    path = skill_zip_path(slug)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Skill archive not found")
     return FileResponse(
@@ -322,6 +394,19 @@ async def submit_agent_application(
         )
 
     await award_points(request.app.state.session_factory, agent_id, "register")
+
+    # Signal to global governance queue (fire-and-forget).
+    await msgbox_push(
+        request.app.state.session_factory,
+        scope="global",
+        from_type="system",
+        type="agent_registered",
+        priority=3,
+        resource_type="agent",
+        resource_id=agent_id,
+        payload={"agent_name": agent_name, "level": 9, "label": "faq-self-service"},
+    )
+
     return AgentSelfApplyResponse(
         ok=True,
         agent_name=agent_name,
