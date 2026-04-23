@@ -28,6 +28,7 @@ from app.services.points_service import award_points
 from app.services.social_db import (
     count_rooms_today,
     create_room_record,
+    update_room_allowlist as db_update_room_allowlist,
     get_room_messages,
     record_member_join,
     record_member_leave,
@@ -41,8 +42,11 @@ from app.services.social_notify import (
 )
 from app.services.ws_auth import authenticate_agent_websocket
 from app.social_registry import (
+    MAX_MENTION_AGENT_IDS_PER_MESSAGE,
     ChatRoom,
     SocialRoomRegistry,
+    filter_mention_agent_ids_for_room,
+    normalize_private_allowlist,
     parse_mentions,
 )
 from app.ws_registry import AgentConnectionRegistry
@@ -56,6 +60,10 @@ def _room_join_payload(
     room: ChatRoom, recent_messages: list[dict], idle_after: timedelta,
 ) -> dict:
     anchor = room.idle_anchor()
+    if room.is_private:
+        idle_dissolves_at: str | None = None
+    else:
+        idle_dissolves_at = (anchor + idle_after).isoformat()
     return {
         "type": "room_joined",
         "room_id": room.room_id,
@@ -67,9 +75,11 @@ def _room_join_payload(
         "created_at": room.created_at.isoformat(),
         "last_message_at": room.last_message_at.isoformat() if room.last_message_at else None,
         "idle_anchor_at": anchor.isoformat(),
-        "idle_dissolves_at": (anchor + idle_after).isoformat(),
+        "idle_dissolves_at": idle_dissolves_at,
         "members": room.member_list(),
         "recent_messages": recent_messages,
+        "is_private": room.is_private,
+        "observable": room.observable,
     }
 
 
@@ -197,6 +207,11 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
                     agent_id, agent.agent_name, agent.level, data,
                 )
 
+            elif msg_type == "update_room_allowlist":
+                await _handle_update_room_allowlist(
+                    websocket, social, session_factory, agent_id, data,
+                )
+
             else:
                 await websocket.send_text(_jdump({"type": "error", "reason": "unknown_type"}))
 
@@ -292,6 +307,33 @@ async def _handle_create_room(
         }))
         return
 
+    is_private = data.get("is_private", False)
+    if "is_private" in data and not isinstance(is_private, bool):
+        await ws.send_text(_jdump({
+            "type": "error", "reason": "invalid_create_room_payload",
+            "detail": "is_private must be a boolean",
+        }))
+        return
+
+    observable = data.get("observable", True)
+    if "observable" in data and not isinstance(observable, bool):
+        await ws.send_text(_jdump({
+            "type": "error", "reason": "invalid_create_room_payload",
+            "detail": "observable must be a boolean",
+        }))
+        return
+    observable = bool(observable) if is_private else True
+
+    allow_raw: list | None = None
+    if is_private:
+        allow_raw = data.get("allowed_agent_ids")
+        if allow_raw is not None and not isinstance(allow_raw, list):
+            await ws.send_text(_jdump({
+                "type": "error", "reason": "invalid_create_room_payload",
+                "detail": "allowed_agent_ids must be an array of strings (or omitted)",
+            }))
+            return
+
     result = await social.create_room(
         name=name.strip(),
         topic=topic.strip(),
@@ -299,14 +341,24 @@ async def _handle_create_room(
         creator_id=agent_id,
         creator_name=agent_name,
         ws=ws,
+        is_private=is_private,
+        observable=observable,
+        allowlist_raw=allow_raw,
     )
     if isinstance(result, str):
-        await ws.send_text(_jdump({"type": "error", "reason": result}))
+        reason = result
+        if result in ("invalid_allowlist", "allowlist_too_large"):
+            await ws.send_text(_jdump({
+                "type": "error", "reason": "invalid_create_room_payload",
+                "detail": result,
+            }))
+        else:
+            await ws.send_text(_jdump({"type": "error", "reason": reason}))
         return
 
     room: ChatRoom = result
-    ttl_m = max(1, int(social.idle_after.total_seconds() // 60))
-    if not await create_room_record(session_factory, room, ttl_minutes=ttl_m):
+    idle_ttl_m = max(1, int(social.idle_after.total_seconds() // 60))
+    if not await create_room_record(session_factory, room, idle_ttl_minutes=idle_ttl_m):
         await social.force_dissolve(room.room_id)
         await ws.send_text(_jdump({
             "type": "error",
@@ -315,7 +367,11 @@ async def _handle_create_room(
         }))
         return
 
-    await ws.send_text(_jdump({
+    if room.is_private:
+        _idle_diss = None
+    else:
+        _idle_diss = (room.idle_anchor() + social.idle_after).isoformat()
+    _created = {
         "type": "room_created",
         "room_id": room.room_id,
         "status": "active",
@@ -326,10 +382,15 @@ async def _handle_create_room(
         "created_at": room.created_at.isoformat(),
         "last_message_at": None,
         "idle_anchor_at": room.idle_anchor().isoformat(),
-        "idle_dissolves_at": (room.idle_anchor() + social.idle_after).isoformat(),
+        "idle_dissolves_at": _idle_diss,
         "members": room.member_list(),
         "recent_messages": [],
-    }))
+        "is_private": room.is_private,
+        "observable": room.observable,
+    }
+    if room.is_private:
+        _created["allowed_agent_ids"] = sorted(room.allowlist_agent_ids)
+    await ws.send_text(_jdump(_created))
     await record_agent_event(
         session_factory, event="a2a_room_created", agent_id=agent_id,
         detail={
@@ -504,8 +565,41 @@ async def _handle_send_message(
         }))
         return
 
-    name_to_id = await social.get_name_to_id_map(agent_id)
-    mentions = parse_mentions(text, name_to_id)
+    raw_mention_ids = data.get("mention_agent_ids")
+    mentions: list[str]
+    if raw_mention_ids is not None:
+        if not isinstance(raw_mention_ids, list):
+            await ws.send_text(_jdump({
+                "type": "error", "reason": "invalid_send_message_payload",
+                "detail": "mention_agent_ids must be an array of strings",
+            }))
+            return
+        if len(raw_mention_ids) > MAX_MENTION_AGENT_IDS_PER_MESSAGE:
+            await ws.send_text(_jdump({
+                "type": "error", "reason": "invalid_send_message_payload",
+                "detail": f"mention_agent_ids must have at most {MAX_MENTION_AGENT_IDS_PER_MESSAGE} entries",
+            }))
+            return
+        for item in raw_mention_ids:
+            if not isinstance(item, str) or not item.strip():
+                await ws.send_text(_jdump({
+                    "type": "error", "reason": "invalid_send_message_payload",
+                    "detail": "each mention_agent_ids entry must be a non-empty string",
+                }))
+                return
+        room_id_pre = await social.current_room_id(agent_id)
+        if not room_id_pre:
+            mentions = []
+        else:
+            room_obj_pre = await social.get_room(room_id_pre)
+            if not room_obj_pre:
+                mentions = []
+            else:
+                clean = [x.strip() for x in raw_mention_ids if isinstance(x, str) and x.strip()]
+                mentions = filter_mention_agent_ids_for_room(room_obj_pre, clean)
+    else:
+        name_to_id = await social.get_name_to_id_map(agent_id)
+        mentions = parse_mentions(text, name_to_id)
 
     room_id = await social.record_message(agent_id)
     if room_id is None:
@@ -608,3 +702,62 @@ async def _broadcast_member_left(
         "agent_name": agent_name,
     }
     await social.broadcast_to_room(room.room_id, left_frame)
+
+
+async def _handle_update_room_allowlist(
+    ws: WebSocket,
+    social: SocialRoomRegistry,
+    session_factory: object,
+    agent_id: str,
+    data: dict,
+) -> None:
+    room_id = data.get("room_id", "")
+    if not isinstance(room_id, str) or not room_id:
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_update_room_allowlist_payload",
+            "detail": "room_id required",
+        }))
+        return
+    raw = data.get("allowed_agent_ids")
+    if raw is not None and not isinstance(raw, list):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_update_room_allowlist_payload",
+            "detail": "allowed_agent_ids must be an array of strings (or null)",
+        }))
+        return
+    room = await social.get_room(room_id)
+    if room is None:
+        await ws.send_text(_jdump({"type": "error", "reason": "room_not_found"}))
+        return
+    if room.creator_id != agent_id:
+        await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
+        return
+    if not room.is_private:
+        await ws.send_text(_jdump({"type": "error", "reason": "not_private_room"}))
+        return
+    norm = normalize_private_allowlist(agent_id, raw)
+    if isinstance(norm, str):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_update_room_allowlist_payload",
+            "detail": norm,
+        }))
+        return
+    if not await db_update_room_allowlist(session_factory, room_id, sorted(norm)):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "persistence_failed",
+            "detail": "Could not update allowlist.",
+        }))
+        return
+    aerr = await social.apply_private_allowlist_after_persist(room_id, agent_id, norm)
+    if aerr:
+        await ws.send_text(_jdump({"type": "error", "reason": aerr}))
+        return
+    await ws.send_text(_jdump({
+        "type": "room_allowlist_updated",
+        "room_id": room_id,
+        "allowed_agent_ids": sorted(norm),
+    }))

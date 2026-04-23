@@ -31,14 +31,22 @@ async def create_room_record(
     session_factory: async_sessionmaker[AsyncSession],
     room: ChatRoom,
     *,
-    ttl_minutes: int,
+    idle_ttl_minutes: int,
 ) -> bool:
     """Insert the room row and the creator's membership row.
+
+    Public rooms persist ``idle_ttl_minutes`` and ``expires_at = created_at + ttl``.
+    Private rooms persist ``ttl_minutes`` / ``expires_at`` as NULL (no idle boundary in DB).
 
     Returns ``False`` if the commit failed (caller must roll back in-memory registry).
     """
     try:
-        expires_at = room.created_at + timedelta(minutes=ttl_minutes)
+        if room.is_private:
+            row_ttl: Optional[int] = None
+            row_expires: Optional[datetime] = None
+        else:
+            row_ttl = idle_ttl_minutes
+            row_expires = room.created_at + timedelta(minutes=idle_ttl_minutes)
         async with session_factory() as session:
             session.add(SocialRoom(
                 room_id=room.room_id,
@@ -49,9 +57,12 @@ async def create_room_record(
                 creator_agent_name=room.creator_name,
                 created_at=room.created_at,
                 max_members=room.max_concurrent_agents,
-                ttl_minutes=ttl_minutes,
-                expires_at=expires_at,
+                ttl_minutes=row_ttl,
+                expires_at=row_expires,
                 last_message_at=room.last_message_at,
+                is_private=room.is_private,
+                observable=room.observable,
+                allowlist_agent_ids=sorted(room.allowlist_agent_ids) if room.is_private else None,
             ))
             # Creator is the first member
             session.add(SocialRoomMember(
@@ -191,6 +202,31 @@ async def get_room_messages(
         return []
 
 
+async def count_social_messages_by_room_since(
+    session_factory: async_sessionmaker[AsyncSession],
+    since: datetime,
+    room_ids: list[str],
+) -> dict[str, int]:
+    """Count persisted messages per room with ``sent_at >= since`` (e.g. rolling 24h heat)."""
+    if not room_ids:
+        return {}
+    try:
+        async with session_factory() as session:
+            result = await session.execute(
+                select(SocialMessage.room_id, func.count().label("cnt"))
+                .where(
+                    SocialMessage.sent_at >= since,
+                    SocialMessage.room_id.in_(room_ids),
+                )
+                .group_by(SocialMessage.room_id)
+            )
+        rows = result.all()
+        return {str(r[0]): int(r[1]) for r in rows}
+    except Exception:
+        logger.exception("social_db: failed to count messages by room since=%s", since)
+        return {}
+
+
 async def count_rooms_today(
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
@@ -251,3 +287,22 @@ async def record_room_dissolved(
             "social_db: failed to record dissolution room_id=%s reason=%s",
             room_id, reason,
         )
+
+
+async def update_room_allowlist(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    allowlist_agent_ids: list[str],
+) -> bool:
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                update(SocialRoom)
+                .where(SocialRoom.room_id == room_id)
+                .values(allowlist_agent_ids=allowlist_agent_ids)
+            )
+            await session.commit()
+        return True
+    except Exception:
+        logger.exception("social_db: failed to update allowlist room_id=%s", room_id)
+        return False

@@ -1,5 +1,13 @@
-from pydantic import Field
+import math
+from typing import Any
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# A2A room idle dissolution window (hours). Env: SOCIAL_ROOM_IDLE_HOURS
+SOCIAL_ROOM_IDLE_HOURS_MIN = 0.5  # 30 minutes
+SOCIAL_ROOM_IDLE_HOURS_MAX = 30.0 * 24.0  # 30 days
+SOCIAL_ROOM_IDLE_HOURS_DEFAULT = 7.0 * 24.0  # 7 days
 
 
 class Settings(BaseSettings):
@@ -48,7 +56,39 @@ class Settings(BaseSettings):
 
     # A2A social rooms: dissolve after this many hours with no new messages
     # (if never messaged, clock starts at room creation).
-    social_room_idle_hours: float = Field(default=24.0, validation_alias="SOCIAL_ROOM_IDLE_HOURS")
+    # Range SOCIAL_ROOM_IDLE_HOURS_MIN..MAX; see _validate_social_room_idle_hours.
+    social_room_idle_hours: float = Field(
+        default=SOCIAL_ROOM_IDLE_HOURS_DEFAULT,
+        validation_alias="SOCIAL_ROOM_IDLE_HOURS",
+    )
+
+    @field_validator("social_room_idle_hours", mode="before")
+    @classmethod
+    def _validate_social_room_idle_hours(cls, v: Any) -> float:
+        """Env SOCIAL_ROOM_IDLE_HOURS: hours of silence before idle dissolve; strict range."""
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            return float(SOCIAL_ROOM_IDLE_HOURS_DEFAULT)
+        if isinstance(v, bool):
+            raise ValueError("SOCIAL_ROOM_IDLE_HOURS must be a number, not a boolean")
+        try:
+            if isinstance(v, (int, float)):
+                x = float(v)
+            else:
+                x = float(str(v).strip())
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                "SOCIAL_ROOM_IDLE_HOURS must be a finite number of hours (e.g. 168 for 7 days of idle); "
+                "see v2/docs/social-protocol.md"
+            ) from e
+        if not math.isfinite(x):
+            raise ValueError("SOCIAL_ROOM_IDLE_HOURS must be a finite number")
+        if x < SOCIAL_ROOM_IDLE_HOURS_MIN or x > SOCIAL_ROOM_IDLE_HOURS_MAX:
+            raise ValueError(
+                f"SOCIAL_ROOM_IDLE_HOURS out of range: expected "
+                f"{SOCIAL_ROOM_IDLE_HOURS_MIN!r} (30 min) to {SOCIAL_ROOM_IDLE_HOURS_MAX!r} (30 days) hours "
+                f"inclusive, got {x!r}. Remove the variable to use the default {SOCIAL_ROOM_IDLE_HOURS_DEFAULT!r}."
+            )
+        return x
     social_room_max_concurrent_agents: int = Field(
         default=50, validation_alias="SOCIAL_ROOM_MAX_CONCURRENT_AGENTS"
     )

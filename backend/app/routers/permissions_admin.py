@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, select
 
-from app.deps import DbSession, admin_key_guard
+from app.deps import DbSession, admin_or_sovereign_guard
 from app.models import LevelPermission
 from app.schemas import (
     LevelPermissionListResponse,
@@ -14,7 +14,7 @@ from app.schemas import (
 router = APIRouter(
     prefix="/v2/admin/permissions",
     tags=["admin-permissions"],
-    dependencies=[Depends(admin_key_guard)],
+    dependencies=[Depends(admin_or_sovereign_guard)],
 )
 
 

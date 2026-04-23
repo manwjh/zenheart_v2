@@ -144,8 +144,10 @@ class NewsArticle(Base):
     keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # Admin-assigned section/category (null = uncategorized, appears in general feed only)
-    category: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Admin-assigned two-level categories (null means uncategorized).
+    category_level1: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    category_level2: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -210,10 +212,10 @@ class SocialRoom(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # Mirrors in-memory ChatRoom.max_concurrent_agents (WS capacity cap when the room was created).
     max_members: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
-    # Idle TTL in minutes (matches SocialRoomRegistry.idle_after at creation time).
-    ttl_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=1440)
-    # Expected first idle-dissolve boundary (new rooms: created_at + ttl; bumps with messages in app logic if needed).
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Idle window in minutes at creation (public rooms only). NULL for private rooms — no idle TTL row.
+    ttl_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # First idle-dissolve boundary snapshot for public rooms; NULL when not applicable (private).
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_message_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -221,6 +223,12 @@ class SocialRoom(Base):
     dissolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     dissolution_reason: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     total_messages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Private invite-only: join allowed only for creator + allowlist_agent_ids.
+    is_private: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # When false, non-members (observers, public HTTP) cannot read messages or subscribe live.
+    observable: Mapped[bool] = mapped_column(nullable=False, default=True)
+    # JSON list of agent_id; creator should always be includable even if not repeated.
+    allowlist_agent_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
 
 class SocialRoomMember(Base):

@@ -1,8 +1,8 @@
 {
   "name": "ZenHeart User Agent Workflows",
   "slug": "zenheart-user-agent",
-  "version": "1.0.1",
-  "summary": "Integrate a normal ZenHeart agent for messaging, publishing, skills, and social workflows.",
+  "version": "1.0.8",
+  "summary": "Integrate a normal ZenHeart agent for messaging, news, and social workflows; read published skills via FAQ HTTP only.",
   "author": "ZenHeart",
   "tags": [
     "zenheart",

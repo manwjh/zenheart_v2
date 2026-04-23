@@ -4,9 +4,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
-from app.deps import DbSession, SettingsDep, admin_key_guard
+from app.deps import DbSession, SettingsDep, admin_or_sovereign_guard
 from app.models import Agent, NewsArticle
 from app.schemas import (
+    NewsArticleCategory,
     NewsArticleAdminCreateRequest,
     NewsArticleAdminDetailResponse,
     NewsArticleAdminPatchRequest,
@@ -19,8 +20,14 @@ from app.services.markdown_storage import resolve_markdown_path
 router = APIRouter(
     prefix="/v2/admin/news",
     tags=["admin-news"],
-    dependencies=[Depends(admin_key_guard)],
+    dependencies=[Depends(admin_or_sovereign_guard)],
 )
+
+
+def _to_category(level1: str | None, level2: str | None) -> NewsArticleCategory | None:
+    if not level1 and not level2:
+        return None
+    return NewsArticleCategory(primary=level1, secondary=level2)
 
 
 def _resolve_markdown_file_or_400(markdown_path: str, news_markdown_root: str) -> Path:
@@ -77,6 +84,9 @@ async def create_news_article(
         tags=[tag.strip() for tag in body.tags if tag.strip()],
         keywords=[k.strip() for k in body.keywords if k.strip()],
         published_at=body.published_at,
+        score=body.score,
+        category_level1=body.category.primary.strip() if body.category and body.category.primary else None,
+        category_level2=body.category.secondary.strip() if body.category and body.category.secondary else None,
     )
     session.add(article)
     await session.commit()
@@ -95,6 +105,8 @@ async def create_news_article(
         keywords=article.keywords,
         published_at=article.published_at,
         like_count=article.like_count,
+        score=article.score,
+        category=_to_category(article.category_level1, article.category_level2),
         markdown_content=markdown_content,
     )
 
@@ -118,6 +130,8 @@ async def list_news_articles_admin(session: DbSession) -> NewsArticleListRespons
                 keywords=row.keywords,
                 published_at=row.published_at,
                 like_count=row.like_count,
+                score=row.score,
+                category=_to_category(row.category_level1, row.category_level2),
             )
             for row in rows
         ]
@@ -143,6 +157,8 @@ async def get_news_article_admin(
         keywords=article.keywords,
         published_at=article.published_at,
         like_count=article.like_count,
+        score=article.score,
+        category=_to_category(article.category_level1, article.category_level2),
         markdown_content=markdown_content,
     )
 
@@ -164,6 +180,9 @@ async def update_news_article(
     article.tags = [tag.strip() for tag in body.tags if tag.strip()]
     article.keywords = [k.strip() for k in body.keywords if k.strip()]
     article.published_at = body.published_at
+    article.score = body.score
+    article.category_level1 = body.category.primary.strip() if body.category and body.category.primary else None
+    article.category_level2 = body.category.secondary.strip() if body.category and body.category.secondary else None
     await session.commit()
     await session.refresh(article)
 
@@ -180,6 +199,8 @@ async def update_news_article(
         keywords=article.keywords,
         published_at=article.published_at,
         like_count=article.like_count,
+        score=article.score,
+        category=_to_category(article.category_level1, article.category_level2),
         markdown_content=markdown_content,
     )
 
@@ -205,6 +226,11 @@ async def patch_news_article(
         article.keywords = [k.strip() for k in body.keywords if k.strip()]
     if body.published_at is not None:
         article.published_at = body.published_at
+    if body.score is not None:
+        article.score = body.score
+    if body.category is not None:
+        article.category_level1 = body.category.primary.strip() if body.category.primary else None
+        article.category_level2 = body.category.secondary.strip() if body.category.secondary else None
 
     await session.commit()
     await session.refresh(article)
@@ -223,6 +249,8 @@ async def patch_news_article(
         keywords=article.keywords,
         published_at=article.published_at,
         like_count=article.like_count,
+        score=article.score,
+        category=_to_category(article.category_level1, article.category_level2),
         markdown_content=markdown_content,
     )
 

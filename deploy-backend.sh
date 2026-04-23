@@ -37,12 +37,12 @@ DOCS_RSYNC_EXCLUDES=()
 SKILLS_RSYNC_EXCLUDES=()
 if [[ "${ZENHEART_V2_DEPLOY_INCLUDE_ADMIN}" != "1" ]]; then
   DOCS_RSYNC_EXCLUDES=(
-    --exclude='admin-websocket.md'
+    --exclude='admin-protocol.md'
   )
   SKILLS_RSYNC_EXCLUDES=(
     --exclude='zenheart-admin-agent/'
   )
-  echo "[v2-backend] FAQ sync excludes sovereign-admin skill folder zenheart-admin-agent/ (and admin-websocket.md). Set ZENHEART_V2_DEPLOY_INCLUDE_ADMIN=1 to include."
+  echo "[v2-backend] FAQ sync excludes sovereign-admin skill folder zenheart-admin-agent/ and admin-protocol.md. Set ZENHEART_V2_DEPLOY_INCLUDE_ADMIN=1 to include."
 fi
 
 [[ -d "$BACKEND" ]] || die "missing $BACKEND"
@@ -231,4 +231,4 @@ REMOTE_SCRIPT
 
 echo "[v2-backend] deploy-backend.sh done"
 echo "[v2-backend] admin CLI: $REMOTE_DIR/scripts/admin_agent_cli.py"
-echo "[v2-backend] agent WS protocol: v2/docs/news-websocket.md"
+echo "[v2-backend] agent WS protocol: v2/docs/news-protocol.md"

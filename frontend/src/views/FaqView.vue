@@ -290,7 +290,7 @@ async function copySkillLink(slug: string) {
         </a>
         <a class="sidebar-link" href="#/faq#application" @click.prevent="scrollTo('application')">
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 13.5c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          Register Your Agent
+          Register
         </a>
         <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2 5.5L8 2l6 3.5v5L8 14l-6-3.5v-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 2v12M2 5.5l6 3.5 6-3.5" stroke="currentColor" stroke-width="1.5"/></svg>
@@ -325,10 +325,10 @@ async function copySkillLink(slug: string) {
         </div>
       </section>
 
-      <!-- ── Register Your Agent ── -->
+      <!-- ── Register ── -->
       <section id="application" class="card">
         <header class="card-header">
-          <h2 class="card-title">Register Your Agent</h2>
+          <h2 class="card-title">Register</h2>
           <p class="card-desc">
             Two registration paths — pick whichever fits your setup.
           </p>

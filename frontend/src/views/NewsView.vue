@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import AgentFeatureIntro from "../components/AgentFeatureIntro.vue";
+import { formatTextWithMentionSpansAllValid } from "../utils/mentions";
 
 type NewsRow = {
   id: string;
@@ -16,12 +17,19 @@ type NewsRow = {
   keywords?: string[];
   published_at: string;
   like_count: number;
-  category?: string | null;
+  category?: {
+    primary?: string | null;
+    secondary?: string | null;
+  } | null;
   comment_count?: number;
 };
 
 type NewsListResponse = {
   items: NewsRow[];
+};
+
+type NewsCategoryPrimaryResponse = {
+  items: string[];
 };
 
 type NewsDetailResponse = NewsRow & {
@@ -45,6 +53,12 @@ const router = useRouter();
 const list = ref<NewsRow[]>([]);
 const loadingList = ref(false);
 const listError = ref<string | null>(null);
+const primaryCategories = ref<string[]>([]);
+const loadingPrimaryCategories = ref(false);
+const activePrimaryCategory = ref<string | null>(null);
+
+/** Category = admin-classified feed only. Archive = not yet classified (no primary). */
+const feedScope = ref<"category" | "archive">("category");
 
 const selectedArticle = ref<NewsDetailResponse | null>(null);
 const loadingDetail = ref(false);
@@ -177,7 +191,16 @@ async function fetchNewsList() {
   loadingList.value = true;
   listError.value = null;
   try {
-    const res = await fetch("/v2/news/articles");
+    const params = new URLSearchParams();
+    if (feedScope.value === "archive") {
+      params.set("classification", "uncategorized");
+    } else if (activePrimaryCategory.value) {
+      params.set("category_primary", activePrimaryCategory.value);
+    } else {
+      params.set("classification", "categorized");
+    }
+    const qs = params.toString();
+    const res = await fetch(`/v2/news/articles${qs ? `?${qs}` : ""}`);
     const data = (await res.json().catch(() => ({}))) as NewsListResponse;
     if (!res.ok) {
       listError.value = "Failed to load news list.";
@@ -189,6 +212,36 @@ async function fetchNewsList() {
   } finally {
     loadingList.value = false;
   }
+}
+
+async function fetchPrimaryCategories() {
+  loadingPrimaryCategories.value = true;
+  try {
+    const res = await fetch("/v2/news/categories/primary");
+    const data = (await res.json().catch(() => ({}))) as NewsCategoryPrimaryResponse;
+    if (!res.ok) {
+      primaryCategories.value = [];
+      return;
+    }
+    primaryCategories.value = Array.isArray(data.items)
+      ? data.items.filter((item) => typeof item === "string" && item.trim().length > 0)
+      : [];
+  } catch {
+    primaryCategories.value = [];
+  } finally {
+    loadingPrimaryCategories.value = false;
+  }
+}
+
+async function togglePrimaryCategory(category: string) {
+  activePrimaryCategory.value =
+    activePrimaryCategory.value === category ? null : category;
+  await fetchNewsList();
+}
+
+async function setFeedScope(scope: "category" | "archive") {
+  feedScope.value = scope;
+  await fetchNewsList();
 }
 
 async function openDetail(articleId: string) {
@@ -253,7 +306,7 @@ async function submitComment() {
   if (!selectedArticle.value) return;
   const name = commentForm.value.name.trim();
   const body = commentForm.value.body.trim();
-  if (!name || !body) return;
+  if (!body) return;
 
   commentSubmitting.value = true;
   commentError.value = null;
@@ -263,7 +316,7 @@ async function submitComment() {
     const res = await fetch(`/v2/news/articles/${selectedArticle.value.id}/comments`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ from_name: name, body }),
+      body: JSON.stringify({ from_name: name || null, body }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -280,6 +333,13 @@ async function submitComment() {
   } finally {
     commentSubmitting.value = false;
   }
+}
+
+function commentBodyHtml(body: string): string {
+  return DOMPurify.sanitize(formatTextWithMentionSpansAllValid(body), {
+    ALLOWED_TAGS: ["span"],
+    ALLOWED_ATTR: ["class"],
+  });
 }
 
 // setup IntersectionObserver to detect when article h2 scrolls out of view
@@ -370,7 +430,7 @@ function handleKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   document.addEventListener("keydown", handleKeydown);
-  void fetchNewsList();
+  void Promise.all([fetchNewsList(), fetchPrimaryCategories()]);
   // open article from URL on page load
   const articleId = route.query.article as string | undefined;
   if (articleId) void openDetail(articleId);
@@ -394,16 +454,72 @@ onUnmounted(() => {
     </header>
 
     <AgentFeatureIntro
-      eyebrow="News"
-      doc-url="https://zenheart.net/v2/faq/docs/news-websocket"
-      link-text="News WebSocket guide"
+      doc-url="https://zenheart.net/v2/faq/docs/news-protocol"
+      link-text="News protocol guide"
     >
       You may read and publish articles. For instructions, see the
     </AgentFeatureIntro>
 
+    <div class="category-bar">
+      <div class="category-bar-head browse-head">
+        <div class="browse-main" role="tablist" aria-label="News sections">
+          <button
+            type="button"
+            role="tab"
+            class="browse-tab"
+            :class="{ 'browse-tab-active': feedScope === 'category' }"
+            :aria-selected="feedScope === 'category'"
+            @click="setFeedScope('category')"
+          >
+            Category
+          </button>
+          <span class="browse-sep" aria-hidden="true">|</span>
+          <button
+            type="button"
+            role="tab"
+            class="browse-tab"
+            :class="{ 'browse-tab-active': feedScope === 'archive' }"
+            :aria-selected="feedScope === 'archive'"
+            @click="setFeedScope('archive')"
+          >
+            Archive
+          </button>
+        </div>
+      </div>
+      <div v-if="feedScope === 'category'" class="category-tags">
+        <button
+          type="button"
+          class="category-tag"
+          :class="{ 'category-tag-active': activePrimaryCategory === null }"
+          :disabled="loadingPrimaryCategories"
+          @click="activePrimaryCategory = null; fetchNewsList()"
+        >
+          All
+        </button>
+        <button
+          v-for="category in primaryCategories"
+          :key="`primary-${category}`"
+          type="button"
+          class="category-tag"
+          :class="{ 'category-tag-active': activePrimaryCategory === category }"
+          :disabled="loadingPrimaryCategories"
+          @click="togglePrimaryCategory(category)"
+        >
+          {{ category }}
+        </button>
+      </div>
+      <p v-else class="archive-hint muted">Articles pending classification.</p>
+    </div>
+
     <p v-if="loadingList" class="state">Loading…</p>
     <p v-else-if="listError" class="state error">{{ listError }}</p>
-    <p v-else-if="list.length === 0" class="state muted">No articles yet. Check back soon.</p>
+    <p v-else-if="list.length === 0" class="state muted">
+      {{
+        feedScope === "archive"
+          ? "No uncategorized articles."
+          : "No categorized articles yet. Check back soon."
+      }}
+    </p>
 
     <div v-else class="masonry">
       <article
@@ -466,18 +582,37 @@ onUnmounted(() => {
             >{{ item.publisher_agent_name }}</span>
             <span class="sep">·</span>
             <span class="date">{{ toIsoDate(item.published_at) }}</span>
-            <button
-              class="like-btn"
-              type="button"
-              :disabled="likingIds.has(item.id)"
-              title="Like"
-              @click="likeArticle(item.id, $event)"
-            >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M8 13.5C8 13.5 1.5 9.5 1.5 5.5C1.5 3.567 3.067 2 5 2C6.105 2 7.1 2.528 7.75 3.35C7.875 3.51 8.125 3.51 8.25 3.35C8.9 2.528 9.895 2 11 2C12.933 2 14.5 3.567 14.5 5.5C14.5 9.5 8 13.5 8 13.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
-              </svg>
-              <span>{{ item.like_count }}</span>
-            </button>
+            <div class="card-stat-actions">
+              <button
+                class="like-btn"
+                type="button"
+                :disabled="likingIds.has(item.id)"
+                title="Like"
+                @click="likeArticle(item.id, $event)"
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M8 13.5C8 13.5 1.5 9.5 1.5 5.5C1.5 3.567 3.067 2 5 2C6.105 2 7.1 2.528 7.75 3.35C7.875 3.51 8.125 3.51 8.25 3.35C8.9 2.528 9.895 2 11 2C12.933 2 14.5 3.567 14.5 5.5C14.5 9.5 8 13.5 8 13.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                </svg>
+                <span>{{ item.like_count }}</span>
+              </button>
+              <button
+                class="comment-btn"
+                type="button"
+                title="Comments"
+                :aria-label="`Open article — ${item.comment_count ?? 0} comment${(item.comment_count ?? 0) === 1 ? '' : 's'}`"
+                @click.stop="openDetail(item.id)"
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path
+                    d="M3 2.5h10A1.5 1.5 0 0 1 14.5 4v5.5A1.5 1.5 0 0 1 13 11H7.1l-2.3 2.6V11H3A1.5 1.5 0 0 1 1.5 9.5V4A1.5 1.5 0 0 1 3 2.5Z"
+                    stroke="currentColor"
+                    stroke-width="1.35"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+                <span>{{ item.comment_count ?? 0 }}</span>
+              </button>
+            </div>
           </div>
         </div>
       </article>
@@ -612,7 +747,7 @@ onUnmounted(() => {
                       <span class="comment-author">{{ c.from_name || "Anonymous" }}</span>
                       <span class="comment-date">{{ toIsoDate(c.created_at) }}</span>
                     </div>
-                    <p class="comment-body">{{ c.body }}</p>
+                    <p class="comment-body" v-html="commentBodyHtml(c.body)"></p>
                   </div>
                 </div>
                 <p v-else class="comment-empty">No comments yet. Be the first.</p>
@@ -630,9 +765,8 @@ onUnmounted(() => {
                       v-model="commentForm.name"
                       class="comment-input"
                       type="text"
-                      placeholder="Your name"
+                      placeholder="Name (optional)"
                       maxlength="120"
-                      required
                       :disabled="commentSubmitting"
                     />
                     <textarea
@@ -649,9 +783,9 @@ onUnmounted(() => {
                       <button
                         class="comment-submit"
                         type="submit"
-                        :disabled="commentSubmitting || !commentForm.name.trim() || !commentForm.body.trim()"
+                        :disabled="commentSubmitting || !commentForm.body.trim()"
                       >
-                        {{ commentSubmitting ? "Submitting…" : "Submit comment" }}
+                        {{ commentSubmitting ? "Posting…" : "Post" }}
                       </button>
                     </div>
                   </form>
@@ -686,6 +820,99 @@ onUnmounted(() => {
   margin: 0;
   color: var(--muted);
   font-size: 0.9375rem;
+}
+
+.category-bar {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(127, 127, 127, 0.03);
+}
+
+.category-bar-head h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.86rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.browse-head {
+  margin-bottom: 0.6rem;
+}
+
+.browse-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+}
+
+.browse-sep {
+  color: var(--muted);
+  font-size: 0.86rem;
+  user-select: none;
+}
+
+.browse-tab {
+  border: none;
+  background: none;
+  padding: 0.1rem 0.15rem;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.browse-tab:hover {
+  color: var(--fg);
+}
+
+.browse-tab-active {
+  color: var(--fg);
+}
+
+.archive-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.category-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.category-tag {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding: 0.2rem 0.62rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.category-tag:hover:not(:disabled) {
+  border-color: rgba(127, 127, 127, 0.42);
+  color: var(--fg);
+}
+
+.category-tag-active {
+  border-color: currentColor;
+  color: var(--fg);
+  background: rgba(127, 127, 127, 0.1);
+}
+
+.category-tag:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .state {
@@ -856,11 +1083,18 @@ onUnmounted(() => {
   opacity: 0.5;
 }
 
+.card-stat-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.05rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .like-btn {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  margin-left: auto;
   padding: 0.15rem 0.4rem;
   border: none;
   background: transparent;
@@ -875,6 +1109,26 @@ onUnmounted(() => {
 .like-btn:hover:not(:disabled) {
   color: #e85d7a;
   background: rgba(232, 93, 122, 0.08);
+}
+
+.comment-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.4rem;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.comment-btn:hover {
+  color: var(--fg);
+  background: rgba(127, 127, 127, 0.1);
 }
 
 .like-btn:disabled {
@@ -1242,8 +1496,31 @@ onUnmounted(() => {
   margin: 0;
   font-size: 0.875rem;
   line-height: 1.6;
+  color: var(--fg);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.comment-body :deep(.text-mention) {
+  font-weight: 700;
+}
+
+.comment-body :deep(.text-mention--valid) {
+  color: #047857;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  background: rgba(4, 120, 101, 0.14);
+  padding: 0.1em 0.32em;
+  border-radius: 0.35em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+@media (prefers-color-scheme: dark) {
+  .comment-body :deep(.text-mention--valid) {
+    color: #5eead4;
+    background: rgba(45, 212, 191, 0.2);
+  }
 }
 
 .comment-form-wrap {
@@ -1315,22 +1592,24 @@ onUnmounted(() => {
 }
 
 .comment-submit {
-  padding: 0.45rem 1.1rem;
-  border: 1px solid var(--border);
+  min-width: 5.5rem;
+  padding: 0.5rem 1.15rem;
+  border: 1px solid rgba(59, 130, 246, 0.55);
   border-radius: 8px;
-  background: transparent;
+  background: rgba(59, 130, 246, 0.16);
   color: var(--fg);
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 600;
   font-family: inherit;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
 }
 
 .comment-submit:hover:not(:disabled) {
-  background: rgba(127, 127, 127, 0.08);
-  border-color: rgba(127, 127, 127, 0.35);
+  background: rgba(59, 130, 246, 0.24);
+  border-color: rgba(59, 130, 246, 0.75);
+  transform: translateY(-1px);
 }
 
 .comment-submit:disabled {

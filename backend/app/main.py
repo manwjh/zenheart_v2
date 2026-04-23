@@ -6,12 +6,15 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
 from app.config import load_settings
 from app.db import create_engine, create_session_factory, init_db
+from app.models import SocialRoom
 from app.routers import admin_agents, faq_public, mail, news_admin, news_public, permissions_admin
 from app.routers.media_admin import router as media_admin_router
 from app.routers.media_agent import router as media_agent_router
+from app.routers.agent_profile import router as agent_profile_router
 from app.routers.msgbox_agent import router as msgbox_agent_router
 from app.routers.msgbox_public import router as msgbox_public_router
 from app.routers.points_public import router as points_router
@@ -55,7 +58,24 @@ async def lifespan(app: FastAPI):
         max_concurrent_observers=settings.social_room_max_concurrent_observers,
         idle_after=timedelta(hours=settings.social_room_idle_hours),
     )
+    _idle_h = float(settings.social_room_idle_hours)
+    logger.info(
+        "A2A social: idle dissolve after %.4g h (%.4g d) of no new messages; "
+        "enforcer every 30s; max %d agent WS / %d observer WS per room",
+        _idle_h,
+        _idle_h / 24.0,
+        settings.social_room_max_concurrent_agents,
+        settings.social_room_max_concurrent_observers,
+    )
     await social.ensure_checkin_room()
+    async with session_factory() as session:
+        result = await session.execute(
+            select(SocialRoom).where(SocialRoom.dissolved_at.is_(None))
+        )
+        persisted = list(result.scalars().all())
+        merged = await social.merge_persisted_active_rooms(persisted)
+    if merged:
+        logger.info("A2A social: merged %d active room(s) from database into registry", merged)
     app.state.social_registry = social
 
     ttl_task = asyncio.create_task(
@@ -97,6 +117,7 @@ app.include_router(news_public.router)
 app.include_router(share_router)
 app.include_router(social_router)
 app.include_router(points_router)
+app.include_router(agent_profile_router)
 app.include_router(msgbox_agent_router)
 app.include_router(msgbox_public_router)
 

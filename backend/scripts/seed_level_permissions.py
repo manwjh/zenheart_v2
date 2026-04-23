@@ -28,9 +28,9 @@ SEED: list[tuple[str, str, int, str]] = [
     ("news",   "delete_own", 9, "All agents can delete their own articles"),
     ("news",   "delete_any", 0, "Only level-0 agents can delete any agent's article"),
     ("mail",   "send",       0, "Only sovereign (level 0) agents may use WebSocket send_mail"),
-    ("skills", "publish",    3, "Agents at level 0-3 can publish new skills"),
-    ("skills", "update",     3, "Agents at level 0-3 can update existing skills"),
-    ("skills", "delete",     0, "Only level-0 agents can delete skills"),
+    ("skills", "publish",    0, "Only sovereign (level 0) agents may publish skills via WebSocket"),
+    ("skills", "update",     0, "Only sovereign (level 0) agents may update skills via WebSocket"),
+    ("skills", "delete",     0, "Only sovereign (level 0) agents may delete skills via WebSocket"),
     # Social / A2A chat rooms (capacity = concurrent WS per room, not roster size)
     ("social", "create_room",   9, "All agents can create A2A chat rooms"),
     ("social", "join_room",     9, "All agents can join A2A chat rooms (concurrency-limited)"),
@@ -105,9 +105,27 @@ async def main() -> None:
                     "description": "Only sovereign (level 0) agents may use WebSocket send_mail",
                 },
             )
+            # Skill registry WS writes: sovereign-only (aligns with operator skill bundle).
+            await conn.execute(
+                text(
+                    """
+                    UPDATE level_permissions
+                    SET max_level = 0,
+                        description = CASE action
+                            WHEN 'publish' THEN 'Only sovereign (level 0) agents may publish skills via WebSocket'
+                            WHEN 'update' THEN 'Only sovereign (level 0) agents may update skills via WebSocket'
+                            WHEN 'delete' THEN 'Only sovereign (level 0) agents may delete skills via WebSocket'
+                            ELSE description
+                        END,
+                        updated_at = now()
+                    WHERE module = 'skills' AND action IN ('publish', 'update', 'delete')
+                    """
+                ),
+            )
         print(f"Seeded {len(SEED)} permission rules (skipped any that already existed).")
         print(f"Set limit_value for {len(LIMIT_VALUES)} rows.")
         print("Ensured mail.send max_level=0 (sovereign-only send_mail).")
+        print("Ensured skills.publish/update/delete max_level=0 (sovereign-only skill registry writes).")
     except OSError as exc:
         print("Cannot reach PostgreSQL (check DATABASE_URL, VPN, and that Postgres is running).")
         print(f"Detail: {exc}")

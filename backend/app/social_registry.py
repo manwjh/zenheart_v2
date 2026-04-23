@@ -9,6 +9,8 @@ separately), not by a fixed roster size.
 Live membership and WebSocket handles are held in memory. Room lifecycle
 and chat messages are persisted in PostgreSQL (`social_rooms`,
 `social_room_members`, `social_messages`) via `social_db` helpers.
+On process start, non-dissolved rows in `social_rooms` are merged into the
+registry so empty rooms and `room_id` remain joinable after restarts.
 """
 from __future__ import annotations
 
@@ -18,9 +20,12 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from starlette.websockets import WebSocket
+
+from app.config import SOCIAL_ROOM_IDLE_HOURS_DEFAULT
+from app.models import SocialRoom
 
 # ------------------------------------------------------------------ permanent check-in room
 
@@ -53,6 +58,47 @@ def parse_mentions(text: str, name_to_id: dict[str, str]) -> list[str]:
         if agent_id and agent_id not in seen:
             seen[agent_id] = None
     return list(seen)
+
+
+# Max agent_ids accepted on send_message when using explicit `mention_agent_ids` (see ws_social).
+MAX_MENTION_AGENT_IDS_PER_MESSAGE = 50
+
+# Private room allowlist: creator is always included; cap size for abuse prevention.
+MAX_PRIVATE_ROOM_ALLOWLIST = 200
+
+
+def filter_mention_agent_ids_for_room(
+    room: "ChatRoom", raw: list[str]
+) -> list[str]:
+    """Keep only current room members, preserve order, deduplicate (first wins).
+
+    `raw` is expected to be pre-validated as a list of non-empty str.
+    """
+    member_ids = set(room.members.keys())
+    out: list[str] = []
+    seen: set[str] = set()
+    for x in raw:
+        if x in member_ids and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def normalize_private_allowlist(creator_id: str, raw: list[Any] | None) -> set[str] | str:
+    """Build allowlist; always includes ``creator_id``. Returns error string on invalid input."""
+    if raw is None:
+        return {creator_id}
+    if not isinstance(raw, list):
+        return "invalid_allowlist"
+    out: set[str] = set()
+    for x in raw:
+        if not isinstance(x, str) or not x.strip():
+            return "invalid_allowlist"
+        out.add(x.strip())
+    if len(out) > MAX_PRIVATE_ROOM_ALLOWLIST:
+        return "allowlist_too_large"
+    out.add(creator_id)
+    return out
 
 
 # ------------------------------------------------------------------ data classes
@@ -88,20 +134,37 @@ class ChatRoom:
     message_count: int = 0
     is_permanent: bool = False
     last_message_at: Optional[datetime] = None
+    # Invite-only: only creator + allowlist may join. Implies no idle auto-dissolve.
+    is_private: bool = False
+    # When false, observers and unauthenticated HTTP cannot read room content; card still listable.
+    observable: bool = True
+    allowlist_agent_ids: set[str] = field(default_factory=set)
 
     def idle_anchor(self) -> datetime:
         """Time anchor for idle dissolution (no new messages resets the clock)."""
         return self.last_message_at or self.created_at
 
-    def to_summary(self, idle_after: timedelta) -> dict[str, Any]:
-        """Full room snapshot used in list_rooms responses."""
+    def to_summary(
+        self, idle_after: timedelta, *, for_public_lobby: bool = False
+    ) -> dict[str, Any]:
+        """Room snapshot. When ``for_public_lobby`` is true, redact in-room detail for private / hidden rooms."""
         anchor = self.idle_anchor()
+        if self.is_private:
+            idle_dissolves_at: str | None = None
+        else:
+            idle_dissolves_at = (anchor + idle_after).isoformat()
+        redact = for_public_lobby and (self.is_private or not self.observable)
+        members = [] if redact else self.member_list()
+        if for_public_lobby and (self.is_private or not self.observable):
+            rules_out = ""
+        else:
+            rules_out = self.rules
         return {
             "room_id": self.room_id,
             "status": "active",
             "name": self.name,
             "topic": self.topic,
-            "rules": self.rules,
+            "rules": rules_out,
             "creator_id": self.creator_id,
             "creator_name": self.creator_name,
             "member_count": len(self.members),
@@ -109,9 +172,11 @@ class ChatRoom:
             "created_at": self.created_at.isoformat(),
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
             "idle_anchor_at": anchor.isoformat(),
-            "idle_dissolves_at": (anchor + idle_after).isoformat(),
-            "members": self.member_list(),
+            "idle_dissolves_at": idle_dissolves_at,
+            "members": members,
             "is_permanent": self.is_permanent,
+            "is_private": self.is_private,
+            "observable": self.observable,
         }
 
     def member_list(self) -> list[dict[str, Any]]:
@@ -120,6 +185,33 @@ class ChatRoom:
     def name_to_id_map(self) -> dict[str, str]:
         """Returns {lowercase_agent_name: agent_id} for @mention resolution."""
         return {m.agent_name.lower(): m.agent_id for m in self.members.values()}
+
+
+def _chat_room_from_social_row(row: SocialRoom) -> ChatRoom:
+    """Build an in-memory room with no live members (used after DB rehydrate)."""
+    allow: set[str] = set()
+    if row.is_private:
+        if row.allowlist_agent_ids:
+            allow.update(str(x) for x in row.allowlist_agent_ids)
+        allow.add(row.creator_agent_id)
+    return ChatRoom(
+        room_id=row.room_id,
+        name=row.name,
+        topic=row.topic or "",
+        rules=row.rules or "",
+        creator_id=row.creator_agent_id,
+        creator_name=row.creator_agent_name,
+        created_at=row.created_at,
+        max_concurrent_agents=row.max_members,
+        members={},
+        observers=set(),
+        message_count=int(row.total_messages),
+        is_permanent=(row.room_id == CHECKIN_ROOM_ID),
+        last_message_at=row.last_message_at,
+        is_private=row.is_private,
+        observable=row.observable,
+        allowlist_agent_ids=allow,
+    )
 
 
 # ------------------------------------------------------------------ registry
@@ -133,7 +225,7 @@ class SocialRoomRegistry:
         self._agent_room: dict[str, str] = {}  # agent_id → room_id
         self._max_concurrent_agents: int = 50
         self._max_concurrent_observers: int = 50
-        self._idle_after: timedelta = timedelta(hours=24)
+        self._idle_after: timedelta = timedelta(hours=SOCIAL_ROOM_IDLE_HOURS_DEFAULT)
 
     def configure(
         self,
@@ -144,7 +236,11 @@ class SocialRoomRegistry:
     ) -> None:
         self._max_concurrent_agents = max(1, max_concurrent_agents)
         self._max_concurrent_observers = max(1, max_concurrent_observers)
-        self._idle_after = idle_after if idle_after.total_seconds() > 0 else timedelta(hours=24)
+        self._idle_after = (
+            idle_after
+            if idle_after.total_seconds() > 0
+            else timedelta(hours=SOCIAL_ROOM_IDLE_HOURS_DEFAULT)
+        )
 
     @property
     def max_concurrent_agents(self) -> int:
@@ -168,8 +264,18 @@ class SocialRoomRegistry:
         creator_name: str,
         ws: WebSocket,
         rules: str = "",
+        *,
+        is_private: bool = False,
+        observable: bool = True,
+        allowlist_raw: list[Any] | None = None,
     ) -> ChatRoom | str:
         """Return ChatRoom on success, or an error-reason string."""
+        allow: set[str] | str = {creator_id}
+        if is_private:
+            al = normalize_private_allowlist(creator_id, allowlist_raw)
+            if isinstance(al, str):
+                return al
+            allow = al
         async with self._lock:
             if creator_id in self._agent_room:
                 return "already_in_room"
@@ -191,6 +297,9 @@ class SocialRoomRegistry:
                 created_at=now,
                 max_concurrent_agents=self._max_concurrent_agents,
                 members={creator_id: member},
+                is_private=is_private,
+                observable=bool(observable),
+                allowlist_agent_ids=set(allow) if is_private else set(),
             )
             self._rooms[room_id] = room
             self._agent_room[creator_id] = room_id
@@ -212,6 +321,8 @@ class SocialRoomRegistry:
                 return "room_not_found"
             if len(room.members) >= room.max_concurrent_agents:
                 return "room_concurrency_full"
+            if room.is_private and agent_id not in room.allowlist_agent_ids:
+                return "not_invited"
             member = RoomMember(
                 agent_id=agent_id,
                 agent_name=agent_name,
@@ -236,16 +347,20 @@ class SocialRoomRegistry:
 
     async def dissolve_expired(self) -> list[tuple[ChatRoom, str]]:
         """
-        Remove rooms whose idle anchor (last message or creation) exceeds idle_after.
+        Remove **occupied** public rooms whose idle anchor exceeds ``idle_after``.
 
-        Permanent rooms are never dissolved by TTL.
+        Permanent and private rooms are skipped. **Empty rooms (no members) are never
+        removed by this task** so ``room_id`` and lobby entries stay until admin
+        dissolve or explicit DB dissolution.
         Returns a list of (room, reason) pairs; reason is always ``idle_timeout``.
         """
         now = datetime.now(timezone.utc)
         async with self._lock:
             to_dissolve: list[tuple[ChatRoom, str]] = []
             for room in list(self._rooms.values()):
-                if room.is_permanent:
+                if room.is_permanent or room.is_private:
+                    continue
+                if not room.members:
                     continue
                 if now - room.idle_anchor() >= self._idle_after:
                     to_dissolve.append((room, "idle_timeout"))
@@ -267,6 +382,22 @@ class SocialRoomRegistry:
                 self._agent_room.pop(agent_id, None)
             del self._rooms[room_id]
             return room
+
+    async def merge_persisted_active_rooms(self, rows: Sequence[SocialRoom]) -> int:
+        """Load non-dissolved ``social_rooms`` rows into memory (e.g. after restart).
+
+        Call while the ORM session is still open so attributes are readable.
+        Skips ``room_id`` already present (including the check-in room).
+        """
+        snapshots = [_chat_room_from_social_row(r) for r in rows]
+        async with self._lock:
+            n = 0
+            for room in snapshots:
+                if room.room_id in self._rooms:
+                    continue
+                self._rooms[room.room_id] = room
+                n += 1
+            return n
 
     async def ensure_checkin_room(self) -> None:
         """Create the permanent check-in room if it is not already present."""
@@ -312,7 +443,22 @@ class SocialRoomRegistry:
             self._rooms.values(),
             key=lambda r: (0 if r.is_permanent else 1, r.created_at),
         )
-        return [r.to_summary(self._idle_after) for r in rooms]
+        return [r.to_summary(self._idle_after, for_public_lobby=True) for r in rooms]
+
+    async def apply_private_allowlist_after_persist(
+        self, room_id: str, creator_id: str, allow: set[str],
+    ) -> str | None:
+        """Set in-memory allowlist after DB success (``allow`` is already normalized)."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return "room_not_found"
+            if room.creator_id != creator_id:
+                return "forbidden"
+            if not room.is_private:
+                return "not_private_room"
+            room.allowlist_agent_ids = set(allow)
+        return None
 
     # ---------------------------------------------------------------- observer management
 
@@ -324,6 +470,8 @@ class SocialRoomRegistry:
             room = self._rooms.get(room_id)
             if room is None:
                 return None, "room_not_found"
+            if not room.observable:
+                return None, "not_observable"
             if len(room.observers) >= self._max_concurrent_observers:
                 return None, "observer_room_full"
             room.observers.add(ws)

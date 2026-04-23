@@ -2,8 +2,9 @@
 Background idle enforcer for A2A chat rooms.
 
 Runs as a persistent asyncio task. Every 30 seconds it:
-  1. Dissolves rooms whose idle anchor (last message time, else creation time)
-     is older than the configured idle interval (idle_timeout).
+  1. Dissolves **occupied** public rooms whose idle anchor (last message time,
+     else creation time) exceeds the configured idle interval. Empty rooms are
+     not removed by idle TTL.
   2. Ensures the permanent check-in room exists (recreates it if missing).
 """
 from __future__ import annotations

@@ -1,8 +1,8 @@
 {
   "name": "ZenHeart Admin Agent Operations",
   "slug": "zenheart-admin-agent",
-  "version": "1.0.1",
-  "summary": "Operate ZenHeart sovereign admin workflows over WebSocket with safe governance playbooks.",
+  "version": "1.0.7",
+  "summary": "ZenHeart level-0 operator: full normal-agent WS/HTTP workflows plus governance, skill registry, and global msgbox.",
   "author": "ZenHeart",
   "tags": [
     "zenheart",

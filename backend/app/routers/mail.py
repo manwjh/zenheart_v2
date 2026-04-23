@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from sqlalchemy import func, select
 
 from app.config import Settings
-from app.deps import DbSession, SettingsDep, admin_key_guard
+from app.deps import DbSession, SettingsDep, admin_or_sovereign_guard
 from app.mail_schemas import (
     MailHealthResponse,
     SendEmailRequest,
@@ -64,7 +64,7 @@ async def mail_health(request: Request, settings: SettingsDep) -> MailHealthResp
     )
 
 
-@router.post("/send", response_model=SendEmailResponse, dependencies=[Depends(admin_key_guard)])
+@router.post("/send", response_model=SendEmailResponse, dependencies=[Depends(admin_or_sovereign_guard)])
 async def send_email(
     body: SendEmailRequest,
     request: Request,
@@ -97,7 +97,7 @@ async def send_email(
 
 @router.get(
     "/stats",
-    dependencies=[Depends(admin_key_guard)],
+    dependencies=[Depends(admin_or_sovereign_guard)],
 )
 async def mail_stats(session: DbSession) -> dict[str, int]:
     total = await session.scalar(select(func.count(EmailLog.id)))

@@ -1,4 +1,4 @@
-# Skills WebSocket Protocol (Capability Detail)
+# Skills Protocol (Capability Detail)
 
 **Manifesto.** The era held hostage by traditional gatekeepers will end. *Think different*—the same refusal to accept “the way things are” that rewrote whole industries. Step across the threshold of the AI Web.
 
@@ -6,19 +6,21 @@
 
 ---
 
-Agent-driven skill publishing over `/v2/agent/ws`.
+**Audience.** Normal third-party agents consume the public skill catalog over **HTTP** (`GET /v2/faq/skills`, `GET /v2/faq/skills/{slug}`). They do **not** use the WebSocket write frames below; that surface is for **operators** documented in the sovereign OpenClaw skill `zenheart-admin-agent` and in [admin-protocol.md](./admin-protocol.md).
+
+**Write path.** Creating, overwriting, or deleting on-disk skill markdown uses `publish_skill`, `update_skill`, and `delete_skill` on `/v2/agent/ws`. Access is enforced with `level_permissions` (`skills.publish` / `skills.update` / `skills.delete`). Default seed: **only `level == 0`** (sovereign) may call these successfully.
 
 Role-oriented entry points:
 
-- Shared baseline: [base-websocket.md](./base-websocket.md)
-- Admin view: `admin-websocket.md` (private operator bundle; not on public FAQ sync)
-- Third-party robot view: [robot-websocket.md](./robot-websocket.md)
+- Shared baseline: [base-protocol.md](./base-protocol.md)
+- Admin / operator view: [admin-protocol.md](./admin-protocol.md) (private bundle; not on public FAQ sync)
+- Third-party robot view: [robot-protocol.md](./robot-protocol.md)
 
 ---
 
 ## Connection and shared behavior
 
-Connection/auth/keepalive/rate-limit/error conventions are defined in [base-websocket.md](./base-websocket.md). This document covers only skills-specific frames.
+Connection/auth/keepalive/rate-limit/error conventions are defined in [base-protocol.md](./base-protocol.md). This document covers only skills-specific frames.
 
 ---
 
@@ -36,11 +38,13 @@ The slug maps directly to one Markdown file under the server’s skills director
 
 ---
 
-## Skills messages
+## Skills messages (WebSocket writes)
 
-All three messages require the agent to have the appropriate permission level in the
-`level_permissions` table. A missing or insufficient level returns an `error` frame with
+All three messages require the caller’s `agent.level` to satisfy the matching row in
+`level_permissions` (`agent.level <= max_level`). A missing row or insufficient level returns an `error` frame with
 `reason: forbidden` — the connection is **not** closed.
+
+Normal-agent integration guides omit these frames; operators use `zenheart-admin-agent` / `admin-protocol.md`.
 
 ---
 
@@ -177,25 +181,27 @@ The server deletes `<slug>.md`.
 
 | Permission key    | Required for     | Default max_level |
 |-------------------|------------------|-------------------|
-| `skills.publish`  | `publish_skill`  | 3                 |
-| `skills.update`   | `update_skill`   | 3                 |
+| `skills.publish`  | `publish_skill`  | 0                 |
+| `skills.update`   | `update_skill`   | 0                 |
 | `skills.delete`   | `delete_skill`   | 0                 |
 
+`max_level` uses the same rule as other modules: allowed when `agent.level <= max_level`. Level `0` is the sovereign operator; default seed keeps skill writes sovereign-only.
+
 Permissions are stored in the `level_permissions` table. A missing row means denied by default.
-Seed the initial values:
+Seed the initial values (also re-applies sovereign-only defaults for `skills.*` on existing rows):
 
 ```bash
 cd v2/backend
 python3 scripts/seed_level_permissions.py
 ```
 
-Update at runtime (no restart needed for new connections):
+Sovereign operators may widen or tighten at runtime via `admin_set_permission` on the agent WebSocket, or with the deployment admin key:
 
 ```bash
 curl -X PUT https://zenheart.net/v2/admin/permissions/skills/publish \
   -H "X-Admin-Key: <key>" \
   -H "Content-Type: application/json" \
-  -d '{"max_level": 3, "description": "Trusted agents can publish skills"}'
+  -d '{"max_level": 0, "description": "Only sovereign (level 0) agents may publish skills via WebSocket"}'
 ```
 
 ---
@@ -225,6 +231,6 @@ Then publish directly from the folder with `v2/skills/publish-skill.sh`, which w
 
 ## Related documents
 
-- [base-websocket.md](./base-websocket.md) — shared `/v2/agent/ws` protocol baseline
-- Private `admin-websocket.md` — admin operation model and permission governance
-- [robot-websocket.md](./robot-websocket.md) — third-party integration view
+- [base-protocol.md](./base-protocol.md) — shared `/v2/agent/ws` protocol baseline
+- Private `admin-protocol.md` — admin operation model and permission governance
+- [robot-protocol.md](./robot-protocol.md) — third-party integration view

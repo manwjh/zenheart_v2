@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app.deps import SettingsDep, admin_key_guard
+from app.deps import SettingsDep, admin_or_sovereign_guard
 
 _ALLOWED_CONTENT_TYPES: dict[str, str] = {
     "image/jpeg": ".jpg",
@@ -49,7 +49,7 @@ class ImageListResponse(BaseModel):
 router = APIRouter(
     prefix="/v2/admin/media",
     tags=["admin-media"],
-    dependencies=[Depends(admin_key_guard)],
+    dependencies=[Depends(admin_or_sovereign_guard)],
 )
 
 

@@ -1,18 +1,21 @@
 import asyncio
 import time
 from collections import defaultdict
+from enum import Enum
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from app.deps import DbSession, SettingsDep
 from app.models import ArticleComment, NewsArticle
 from app.schemas import (
     ArticleCommentListResponse,
     ArticleCommentRow,
+    NewsCategoryPrimaryListResponse,
+    NewsArticleCategory,
     NewsArticleDetailResponse,
     NewsArticleLikeResponse,
     NewsArticleListResponse,
@@ -45,8 +48,37 @@ def _client_ip(request: Request) -> str:
 
 router = APIRouter(prefix="/v2/news", tags=["news"])
 
+
+class NewsClassificationFilter(str, Enum):
+    """Restrict list rows by whether admin assigned category_level1."""
+
+    categorized = "categorized"
+    uncategorized = "uncategorized"
+
+
 LIKES_PER_POINT = 10
 MAX_POINTS_PER_ARTICLE = 10  # cap: at most 10 points per article (reached at 100 likes)
+
+
+def _to_category(level1: str | None, level2: str | None) -> NewsArticleCategory | None:
+    if not level1 and not level2:
+        return None
+    return NewsArticleCategory(primary=level1, secondary=level2)
+
+
+@router.get("/categories/primary", response_model=NewsCategoryPrimaryListResponse)
+async def list_primary_categories(session: DbSession) -> NewsCategoryPrimaryListResponse:
+    rows = (
+        await session.scalars(
+            select(func.distinct(NewsArticle.category_level1))
+            .where(
+                NewsArticle.category_level1.is_not(None),
+                NewsArticle.category_level1 != "",
+            )
+            .order_by(NewsArticle.category_level1.asc())
+        )
+    ).all()
+    return NewsCategoryPrimaryListResponse(items=list(rows))
 
 
 @router.get("/articles", response_model=NewsArticleListResponse)
@@ -54,7 +86,12 @@ async def list_news_articles(
     session: DbSession,
     publisher_agent_id: Optional[str] = Query(default=None, description="Filter by publisher agent ID"),
     tag: Optional[str] = Query(default=None, description="Filter by tag (exact match)"),
-    category: Optional[str] = Query(default=None, description="Filter by admin-assigned category"),
+    category_primary: Optional[str] = Query(default=None, description="Filter by category.primary"),
+    category_secondary: Optional[str] = Query(default=None, description="Filter by category.secondary"),
+    classification: Optional[NewsClassificationFilter] = Query(
+        default=None,
+        description="categorized = has primary category; uncategorized = no primary category",
+    ),
     limit: int = Query(default=100, ge=1, le=200),
     before_id: Optional[UUID] = Query(default=None, description="Pagination cursor: UUID of last seen article"),
 ) -> NewsArticleListResponse:
@@ -75,8 +112,27 @@ async def list_news_articles(
         query = query.where(NewsArticle.publisher_agent_id == publisher_agent_id.strip())
     if tag:
         query = query.where(NewsArticle.tags.contains([tag.strip()]))
-    if category:
-        query = query.where(NewsArticle.category == category.strip())
+    if category_primary and classification == NewsClassificationFilter.uncategorized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="category_primary cannot be combined with classification=uncategorized.",
+        )
+    if category_primary:
+        query = query.where(NewsArticle.category_level1 == category_primary.strip())
+    if category_secondary:
+        query = query.where(NewsArticle.category_level2 == category_secondary.strip())
+    if classification == NewsClassificationFilter.uncategorized:
+        query = query.where(
+            or_(
+                NewsArticle.category_level1.is_(None),
+                NewsArticle.category_level1 == "",
+            )
+        )
+    elif classification == NewsClassificationFilter.categorized and not category_primary:
+        query = query.where(
+            NewsArticle.category_level1.is_not(None),
+            NewsArticle.category_level1 != "",
+        )
     if before_id:
         subq = select(NewsArticle.published_at).where(NewsArticle.id == before_id).scalar_subquery()
         query = query.where(NewsArticle.published_at < subq)
@@ -96,7 +152,8 @@ async def list_news_articles(
                 keywords=row.NewsArticle.keywords,
                 published_at=row.NewsArticle.published_at,
                 like_count=row.NewsArticle.like_count,
-                category=row.NewsArticle.category,
+                score=row.NewsArticle.score,
+                category=_to_category(row.NewsArticle.category_level1, row.NewsArticle.category_level2),
                 comment_count=int(row.comment_count),
             )
             for row in rows
@@ -147,7 +204,8 @@ async def get_news_article(
         keywords=article.keywords,
         published_at=article.published_at,
         like_count=article.like_count,
-        category=article.category,
+        score=article.score,
+        category=_to_category(article.category_level1, article.category_level2),
         comment_count=int(comment_count),
         markdown_content=markdown_content,
     )
@@ -186,7 +244,7 @@ async def like_news_article(
 # ---------------------------------------------------------------------------
 
 class SubmitCommentRequest(BaseModel):
-    from_name: str = Field(min_length=1, max_length=120)
+    from_name: Optional[str] = Field(default=None, max_length=120)
     body: str = Field(min_length=1, max_length=2000)
 
 
@@ -212,11 +270,13 @@ async def submit_comment_public(
     if article is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Article not found.")
 
+    display_name = (body.from_name or "").strip() or "Anonymous"
+
     comment = ArticleComment(
         article_id=article_id,
         publisher_agent_id=article.publisher_agent_id,
         from_type="anonymous",
-        from_name=body.from_name.strip(),
+        from_name=display_name,
         body=body.body.strip(),
         status="pending",
     )
@@ -232,7 +292,7 @@ async def submit_comment_public(
         scope="agent",
         recipient_id=article.publisher_agent_id,
         from_type="anonymous",
-        from_name=body.from_name.strip(),
+        from_name=display_name,
         type="article_commented",
         priority=2,
         resource_type="article",
@@ -241,7 +301,7 @@ async def submit_comment_public(
             "comment_id": str(comment.id),
             "article_title": article.title[:100],
             "preview": preview,
-            "commenter": body.from_name.strip(),
+            "commenter": display_name,
         },
     )
     if message_id:
@@ -252,7 +312,7 @@ async def submit_comment_public(
             "article_id": str(article_id),
             "article_title": article.title[:100],
             "comment_id": str(comment.id),
-            "commenter": body.from_name.strip(),
+            "commenter": display_name,
             "preview": preview,
         }))
 

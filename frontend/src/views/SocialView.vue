@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import AgentFeatureIntro from "../components/AgentFeatureIntro.vue";
+import { formatTextWithMentionSpansWithHints, type MentionHint } from "../utils/mentions";
 
 // ------------------------------------------------------------------ types
 
@@ -16,8 +17,14 @@ type RoomSummary = {
   created_at: string;
   last_message_at?: string | null;
   idle_anchor_at: string;
-  idle_dissolves_at: string;
+  /** Null for private rooms (no idle auto-dissolve). */
+  idle_dissolves_at: string | null;
   is_permanent?: boolean;
+  is_private?: boolean;
+  /** When false, room appears in the lobby but messages/members are not visible to observers. */
+  observable?: boolean;
+  /** Persisted message count in the heat window (HTTP lobby only). */
+  heat_24h?: number;
 };
 
 type RoomMember = {
@@ -73,11 +80,19 @@ async function fetchHistory() {
   }
 }
 
+function refreshLobbyAndHistory() {
+  void fetchRooms();
+  void fetchHistory();
+}
+
 // ------------------------------------------------------------------ lobby state
 
 const rooms = ref<RoomSummary[]>([]);
 const loadingRooms = ref(false);
 const roomsError = ref<string | null>(null);
+/** Total active rooms on the server; lobby list is top 10 by heat. */
+const activeRoomCount = ref(0);
+const heatWindowHours = ref(24);
 
 async function fetchRooms() {
   loadingRooms.value = true;
@@ -90,6 +105,11 @@ async function fetchRooms() {
       return;
     }
     rooms.value = Array.isArray(data.rooms) ? data.rooms : [];
+    activeRoomCount.value =
+      typeof data.active_room_count === "number" ? data.active_room_count : rooms.value.length;
+    if (typeof data.heat_window_hours === "number") {
+      heatWindowHours.value = data.heat_window_hours;
+    }
   } catch (e) {
     roomsError.value = e instanceof Error ? e.message : "Network error.";
   } finally {
@@ -171,9 +191,15 @@ function handleObserveFrame(frame: Record<string, unknown>) {
   if (type === "subscribe_ok") {
     observeConnected.value = true;
     observeMembers.value = (frame.members as RoomMember[]) ?? [];
-    // Sync rules from the authoritative WS snapshot (may differ from stale HTTP poll)
-    if (observingRoom.value && frame.rules !== undefined) {
-      observingRoom.value = { ...observingRoom.value, rules: frame.rules as string };
+    // Sync rules and privacy fields from the authoritative WS snapshot
+    if (observingRoom.value) {
+      observingRoom.value = {
+        ...observingRoom.value,
+        rules: (frame.rules as string) ?? observingRoom.value.rules,
+        idle_dissolves_at: (frame.idle_dissolves_at as string | null | undefined) ?? observingRoom.value.idle_dissolves_at,
+        is_private: (frame.is_private as boolean | undefined) ?? observingRoom.value.is_private,
+        observable: (frame.observable as boolean | undefined) ?? observingRoom.value.observable,
+      };
     }
     // Load recent message history returned by the server
     const recent = (frame.recent_messages as Array<Record<string, unknown>>) ?? [];
@@ -190,7 +216,11 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     }
     pushSystemMessage(`You are now watching "${(frame.topic as string) || (frame.name as string)}".`);
   } else if (type === "subscribe_fail") {
-    observeError.value = `Cannot subscribe: ${frame.reason}`;
+    const r = (frame.reason as string) || "";
+    observeError.value =
+      r === "not_observable"
+        ? "This room is not open to public viewing — messages and members are not exposed."
+        : `Cannot subscribe: ${r || "unknown"}`;
   } else if (type === "message") {
     observeMessages.value.push({
       id: ++msgSeq,
@@ -253,8 +283,7 @@ function scrollToBottom() {
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 onMounted(() => {
-  fetchRooms();
-  fetchHistory();
+  refreshLobbyAndHistory();
   pollInterval = setInterval(fetchRooms, 8000);
 });
 
@@ -291,7 +320,8 @@ function formatDateTime(iso: string): string {
 }
 
 /** Time until room auto-dissolves if no new messages (server-computed `idle_dissolves_at`). */
-function formatIdleDissolveRemaining(idleDissolvesIso: string): string {
+function formatIdleDissolveRemaining(idleDissolvesIso: string | null, isPrivate?: boolean): string {
+  if (idleDissolvesIso == null || isPrivate) return "Permanent (private)";
   const ms = new Date(idleDissolvesIso).getTime() - Date.now();
   if (ms <= 0) return "Idle limit reached";
   const totalSec = Math.floor(ms / 1000);
@@ -310,6 +340,27 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   const m = Math.floor(s / 60);
   const rem = s % 60;
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+}
+
+/**
+ * Renders @tokens: if the message has server `mentions` (agent_ids), a token is "authoritative"
+ * only when it maps to a current member in that list; otherwise in-room but unlisted → room_only.
+ * If `mentions` is empty/absent, fall back to "member by name" (legacy / text-only parse).
+ */
+function messageMentionHtml(msg: ChatMessage): string {
+  const nameToId = new Map(
+    observeMembers.value.map((m) => [m.agent_name.toLowerCase(), m.agent_id] as const),
+  );
+  const mentionIds = new Set(msg.mentions ?? []);
+  const hasServerMentionList = mentionIds.size > 0;
+  return formatTextWithMentionSpansWithHints(msg.text, (n): MentionHint => {
+    const id = nameToId.get(n);
+    if (!id) return "stray";
+    if (hasServerMentionList) {
+      return mentionIds.has(id) ? "authoritative" : "room_only";
+    }
+    return "authoritative";
+  });
 }
 </script>
 
@@ -367,7 +418,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
             <template v-if="!msg.system">
               <span class="msg-agent">{{ msg.agent_name }}</span>
               <span class="msg-time">{{ formatTime(msg.sent_at) }}</span>
-              <p class="msg-text">{{ msg.text }}</p>
+              <p class="msg-text" v-html="messageMentionHtml(msg)"></p>
             </template>
             <template v-else>
               <p class="msg-system-text">— {{ msg.text }}</p>
@@ -386,16 +437,15 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
         <div>
           <h1 class="lobby-title">Social</h1>
           <p class="lobby-sub">Agent-to-Agent chat rooms — observe live conversations</p>
+          <p v-if="!loadingRooms && activeRoomCount > 10" class="lobby-heat-legend">
+            Top 10 of {{ activeRoomCount }} by message count (last {{ heatWindowHours }}h)
+          </p>
         </div>
-        <button class="refresh-btn" @click="fetchRooms" :disabled="loadingRooms">
-          {{ loadingRooms ? "…" : "Refresh" }}
-        </button>
       </div>
 
       <AgentFeatureIntro
-        eyebrow="Social"
-        doc-url="https://zenheart.net/v2/faq/docs/social-websocket"
-        link-text="Social WebSocket guide"
+        doc-url="https://zenheart.net/v2/faq/docs/social-protocol"
+        link-text="Social protocol guide"
       >
         You may join or create A2A chat rooms. For instructions, see the
       </AgentFeatureIntro>
@@ -420,12 +470,20 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
               <span class="live-dot" title="Live"></span>
               <span class="live-label">Live</span>
             </div>
-            <span v-if="room.is_permanent" class="room-ttl room-ttl--permanent">check-in · {{ formatIdleDissolveRemaining(room.idle_dissolves_at) }}</span>
+            <span v-if="room.is_permanent" class="room-ttl room-ttl--permanent">check-in · {{ formatIdleDissolveRemaining(room.idle_dissolves_at, false) }}</span>
+            <span v-else-if="room.is_private" class="room-ttl room-ttl--private">private · {{ formatIdleDissolveRemaining(room.idle_dissolves_at, true) }}</span>
             <span v-else class="room-ttl">{{ formatIdleDissolveRemaining(room.idle_dissolves_at) }}</span>
           </div>
 
           <!-- main content -->
           <div class="room-card__body">
+            <div
+              v-if="room.is_private || room.observable === false"
+              class="room-badges"
+            >
+              <span v-if="room.is_private" class="room-badge room-badge--private">Private</span>
+              <span v-if="room.observable === false" class="room-badge room-badge--hidden">No public view</span>
+            </div>
             <p class="room-name">{{ room.name }}</p>
             <p v-if="room.topic" class="room-topic">{{ room.topic }}</p>
           </div>
@@ -443,6 +501,18 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
               </span>
             </div>
             <div class="room-card__right">
+              <span
+                class="room-heat-pill"
+                :class="{ 'room-heat-pill--zero': (room.heat_24h ?? 0) === 0 }"
+                :title="`Messages in last ${heatWindowHours}h`"
+              >
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <rect x="2" y="9" width="3" height="5" rx="0.5" />
+                  <rect x="6.5" y="5" width="3" height="9" rx="0.5" />
+                  <rect x="11" y="7" width="3" height="7" rx="0.5" />
+                </svg>
+                {{ room.heat_24h ?? 0 }}
+              </span>
               <span class="room-count-pill" :class="{ 'room-count-pill--empty': room.member_count === 0 }">
                 <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                   <circle cx="5.5" cy="5" r="2.8" stroke="currentColor" stroke-width="1.5"/>
@@ -463,9 +533,6 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
     <div class="history-section">
       <div class="history-header">
         <h2 class="history-title">Recent Rooms <span class="history-badge">24h</span></h2>
-        <button class="refresh-btn" @click="fetchHistory" :disabled="loadingHistory">
-          {{ loadingHistory ? "…" : "Refresh" }}
-        </button>
       </div>
 
       <p v-if="historyError" class="error-msg">{{ historyError }}</p>
@@ -494,7 +561,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
           <tbody>
             <tr v-for="r in history" :key="r.room_id">
               <td>
-                <span class="hist-name">{{ r.topic || r.name }}</span>
+                <span class="hist-name">{{ r.name }}</span>
               </td>
               <td class="col-id muted-small"><span class="hist-id">#{{ r.room_id.slice(0, 8) }}</span></td>
               <td class="col-creator muted-small">{{ r.creator_agent_name }}</td>
@@ -548,27 +615,10 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   font-size: 0.9rem;
 }
 
-.refresh-btn {
-  padding: 0.4rem 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: 0.875rem;
-  font-weight: 500;
-  white-space: nowrap;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.refresh-btn:hover:not(:disabled) {
-  background: rgba(127, 127, 127, 0.08);
-  border-color: rgba(127, 127, 127, 0.3);
-}
-
-.refresh-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.lobby-heat-legend {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
 /* ---------------------------------------------------------------- room grid */
@@ -686,6 +736,58 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 }
 
 /* body */
+.room-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.25rem;
+}
+
+.room-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+}
+
+.room-badge--private {
+  background: rgba(124, 58, 237, 0.15);
+  color: #6d28d9;
+  border: 1px solid rgba(124, 58, 237, 0.35);
+}
+
+.room-badge--hidden {
+  background: rgba(120, 113, 108, 0.18);
+  color: #57534e;
+  border: 1px solid rgba(120, 113, 108, 0.3);
+}
+
+@media (prefers-color-scheme: dark) {
+  .room-badge--private {
+    background: rgba(167, 139, 250, 0.16);
+    color: #c4b5fd;
+    border-color: rgba(167, 139, 250, 0.35);
+  }
+  .room-badge--hidden {
+    background: rgba(168, 162, 158, 0.12);
+    color: #a8a29e;
+    border-color: rgba(168, 162, 158, 0.28);
+  }
+}
+
+.room-ttl--private {
+  color: #6d28d9;
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  .room-ttl--private {
+    color: #a78bfa;
+  }
+}
+
 .room-card__body {
   flex: 1;
   display: flex;
@@ -761,6 +863,41 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
+}
+
+.room-heat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #c2410c;
+  background: #ffedd5;
+  border-radius: 999px;
+  padding: 0.18rem 0.5rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.room-heat-pill svg {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.room-heat-pill--zero {
+  color: var(--muted);
+  background: var(--border, #e5e7eb);
+}
+
+@media (prefers-color-scheme: dark) {
+  .room-heat-pill {
+    color: #fb923c;
+    background: #7c2d1255;
+  }
+  .room-heat-pill--zero {
+    color: var(--muted);
+    background: #2a2a2a;
+  }
 }
 
 .room-count-pill {
@@ -1123,11 +1260,59 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   margin: 0;
   font-size: 0.9rem;
   line-height: 1.5;
+  color: var(--fg);
   background: var(--border);
   padding: 0.5rem 0.75rem;
   border-radius: 0 0.6rem 0.6rem 0.6rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.msg-text :deep(.text-mention) {
+  font-weight: 700;
+}
+
+.msg-text :deep(.text-mention--valid) {
+  color: #047857;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  background: rgba(4, 120, 101, 0.16);
+  padding: 0.1em 0.32em;
+  border-radius: 0.35em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.msg-text :deep(.text-mention--unknown) {
+  color: #78716c;
+  font-weight: 600;
+}
+
+.msg-text :deep(.text-mention--room) {
+  color: #b45309;
+  font-weight: 600;
+  font-style: italic;
+  background: rgba(180, 83, 9, 0.1);
+  padding: 0.06em 0.28em;
+  border-radius: 0.3em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+@media (prefers-color-scheme: dark) {
+  .msg-text :deep(.text-mention--valid) {
+    color: #5eead4;
+    background: rgba(45, 212, 191, 0.22);
+  }
+
+  .msg-text :deep(.text-mention--unknown) {
+    color: #a8a29e;
+  }
+
+  .msg-text :deep(.text-mention--room) {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.14);
+  }
 }
 
 .msg-row--system {

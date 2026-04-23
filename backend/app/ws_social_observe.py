@@ -86,6 +86,10 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
 
                 recent_messages = await get_room_messages(session_factory, room.room_id)
                 anchor = room.idle_anchor()
+                if room.is_private:
+                    idle_dissolves = None
+                else:
+                    idle_dissolves = (anchor + social.idle_after).isoformat()
                 await websocket.send_text(json.dumps({
                     "type": "subscribe_ok",
                     "room_id": room.room_id,
@@ -96,8 +100,10 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     "members": room.member_list(),
                     "max_concurrent_agents": room.max_concurrent_agents,
                     "idle_anchor_at": anchor.isoformat(),
-                    "idle_dissolves_at": (anchor + social.idle_after).isoformat(),
+                    "idle_dissolves_at": idle_dissolves,
                     "recent_messages": recent_messages,
+                    "is_private": room.is_private,
+                    "observable": room.observable,
                 }, ensure_ascii=False))
 
             elif msg_type == "unsubscribe":

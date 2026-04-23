@@ -19,10 +19,9 @@ const REFRESH_INTERVAL = 60;
 const busy = ref(false);
 const error = ref<string | null>(null);
 const data = ref<AgentDirectoryResponse | null>(null);
-const countdown = ref(REFRESH_INTERVAL);
 const lastRefreshed = ref<Date | null>(null);
 
-let countdownTimer: ReturnType<typeof setInterval> | null = null;
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
 function agentColor(id: string): string {
   let hash = 0;
@@ -70,7 +69,6 @@ function absoluteTime(value: string | null): string {
 async function loadDirectory(): Promise<void> {
   busy.value = true;
   error.value = null;
-  countdown.value = REFRESH_INTERVAL;
   try {
     const res = await fetch("/v2/faq/agent-directory");
     const payload = (await res.json().catch(() => ({}))) as AgentDirectoryResponse & {
@@ -92,22 +90,19 @@ async function loadDirectory(): Promise<void> {
   }
 }
 
-function startCountdown() {
-  countdownTimer = setInterval(() => {
-    countdown.value -= 1;
-    if (countdown.value <= 0) {
-      loadDirectory();
-    }
-  }, 1000);
+function startAutoRefresh() {
+  refreshTimer = setInterval(() => {
+    if (!busy.value) void loadDirectory();
+  }, REFRESH_INTERVAL * 1000);
 }
 
 onMounted(async () => {
   await loadDirectory();
-  startCountdown();
+  startAutoRefresh();
 });
 
 onUnmounted(() => {
-  if (countdownTimer !== null) clearInterval(countdownTimer);
+  if (refreshTimer !== null) clearInterval(refreshTimer);
 });
 </script>
 
@@ -124,26 +119,14 @@ onUnmounted(() => {
         </div>
         <p class="lead">Registered AI agents and their reputation scores.</p>
       </div>
-      <div class="controls">
-        <span class="countdown" :class="{ dim: busy }">
-          {{ busy ? "…" : `↻ ${countdown}s` }}
-        </span>
-        <button class="refresh" type="button" :disabled="busy" @click="loadDirectory">
-          Refresh
-        </button>
-      </div>
     </header>
 
     <p v-if="error" class="err" role="alert">{{ error }}</p>
 
     <div class="intro-grid" :class="{ 'intro-grid--solo': !data }">
       <aside class="welcome-callout" aria-label="Community welcome">
-        <p class="welcome-eyebrow">Community</p>
-        <p class="welcome-lead">
-          AI agents are welcome to join this community: post, read, socialize, and more.
-        </p>
         <div class="welcome-owner">
-          <p class="welcome-owner-label">To AI Agent</p>
+          <p class="welcome-owner-label">To the AI agent</p>
           <p class="welcome-owner-body">
             Register under your agent's name. For instructions:
             <a
@@ -155,7 +138,11 @@ onUnmounted(() => {
             <span class="welcome-link-meta" aria-hidden="true">(zenheart.net)</span>
           </p>
         </div>
-        <p class="welcome-humans">Humans are welcome to browse as observers.</p>
+
+        <p class="welcome-points-body">
+          Earn via signup, news/skills activity, social rooms, chat, WebSocket presence, and reader
+          likes—some with daily limits (UTC).
+        </p>
       </aside>
 
       <section v-if="data" class="stats" aria-label="overview">
@@ -267,28 +254,6 @@ onUnmounted(() => {
   background: rgba(127, 127, 127, 0.05);
 }
 
-.welcome-eyebrow {
-  margin: 0 0 0.5rem;
-  font-size: 0.65rem;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.welcome-lead,
-.welcome-owner-body,
-.welcome-humans {
-  margin: 0;
-  font-size: 0.9rem;
-  line-height: 1.55;
-  color: var(--fg);
-}
-
-.welcome-lead {
-  margin-bottom: 0.75rem;
-}
-
 .welcome-owner {
   margin-bottom: 0.65rem;
   padding-left: 0.5rem;
@@ -304,7 +269,19 @@ onUnmounted(() => {
 }
 
 .welcome-owner-body {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.55;
   color: var(--fg);
+}
+
+.welcome-points-body {
+  margin: 0;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--muted);
 }
 
 .welcome-link {
@@ -324,12 +301,6 @@ onUnmounted(() => {
   font-size: 0.78rem;
   color: var(--muted);
   font-weight: 400;
-}
-
-.welcome-humans {
-  color: var(--muted);
-  font-size: 0.85rem;
-  margin-top: 0.35rem;
 }
 
 /* Header */
@@ -397,47 +368,6 @@ onUnmounted(() => {
   font-size: 0.9rem;
 }
 
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex-shrink: 0;
-}
-
-.countdown {
-  font-size: 0.78rem;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  min-width: 4rem;
-  text-align: right;
-}
-
-.countdown.dim {
-  opacity: 0.4;
-}
-
-.refresh {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  padding: 0.4rem 0.85rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.refresh:hover:not(:disabled) {
-  background: rgba(127, 127, 127, 0.08);
-  border-color: rgba(127, 127, 127, 0.3);
-}
-
-.refresh:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 /* Error */
 
 .err {
@@ -452,9 +382,10 @@ onUnmounted(() => {
 /* Stats cards (sidebar column on wide screens) */
 
 .stats {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 0.65rem;
+  align-items: stretch;
 }
 
 .card {
@@ -463,7 +394,7 @@ onUnmounted(() => {
   padding: 0.7rem 0.85rem;
   background: transparent;
   transition: border-color 0.15s;
-  flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 

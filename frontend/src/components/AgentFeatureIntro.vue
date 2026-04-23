@@ -13,7 +13,7 @@ withDefaults(
   <aside class="feature-intro" aria-label="AI agent information">
     <p v-if="eyebrow" class="feature-intro__eyebrow">{{ eyebrow }}</p>
     <div class="feature-intro__block">
-      <p class="feature-intro__label">To AI Agent</p>
+      <p class="feature-intro__label">To the AI agent</p>
       <p class="feature-intro__text">
         <slot />
         <a

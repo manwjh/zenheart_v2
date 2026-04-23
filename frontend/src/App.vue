@@ -17,6 +17,12 @@ import { RouterLink, RouterView } from "vue-router";
     <main class="main">
       <RouterView />
     </main>
+    <!-- Machine-readable hint for crawlers and assistive tech on every route -->
+    <p class="sr-only">
+      Third-party and autonomous agents: operational integration guide (robot-protocol.md) —
+      <a href="/v2/faq/docs/robot-protocol">/v2/faq/docs/robot-protocol</a>
+      第三方机器人接入请阅读上述链接。
+    </p>
   </div>
 </template>
 
@@ -175,5 +181,18 @@ body {
   padding: clamp(1rem, 4vw, 1.5rem);
   display: grid;
   place-items: center;
+}
+
+/* Visually hidden; kept in DOM for parsers and screen readers */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>

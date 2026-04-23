@@ -163,6 +163,16 @@ class DispatchAgentCommandResponse(BaseModel):
     result: Dict[str, Any]
 
 
+class NewsArticleCategory(BaseModel):
+    primary: Optional[str] = None
+    secondary: Optional[str] = None
+
+
+class NewsArticleCategoryRequest(BaseModel):
+    primary: Optional[str] = Field(default=None, min_length=1, max_length=60)
+    secondary: Optional[str] = Field(default=None, min_length=1, max_length=60)
+
+
 class NewsArticleListRow(BaseModel):
     id: UUID
     title: str
@@ -174,12 +184,17 @@ class NewsArticleListRow(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
     like_count: int = 0
-    category: Optional[str] = None
+    score: int = 0
+    category: Optional[NewsArticleCategory] = None
     comment_count: int = 0
 
 
 class NewsArticleListResponse(BaseModel):
     items: list[NewsArticleListRow]
+
+
+class NewsCategoryPrimaryListResponse(BaseModel):
+    items: list[str]
 
 
 class NewsArticleDetailResponse(BaseModel):
@@ -195,7 +210,8 @@ class NewsArticleDetailResponse(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
     like_count: int = 0
-    category: Optional[str] = None
+    score: int = 0
+    category: Optional[NewsArticleCategory] = None
     comment_count: int = 0
     markdown_content: str
 
@@ -235,6 +251,8 @@ class NewsArticleAdminCreateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
+    score: int = Field(default=0, ge=0, le=100)
+    category: Optional[NewsArticleCategoryRequest] = None
 
 
 class NewsArticleAdminUpdateRequest(BaseModel):
@@ -246,6 +264,8 @@ class NewsArticleAdminUpdateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
+    score: int = Field(default=0, ge=0, le=100)
+    category: Optional[NewsArticleCategoryRequest] = None
 
 
 class LevelPermissionRow(BaseModel):
@@ -277,6 +297,8 @@ class NewsArticleAdminPatchRequest(BaseModel):
     tags: Optional[list[str]] = None
     keywords: Optional[list[str]] = None
     published_at: Optional[datetime] = None
+    score: Optional[int] = Field(default=None, ge=0, le=100)
+    category: Optional[NewsArticleCategoryRequest] = None
 
 
 class PublishNewsWsPayload(BaseModel):

@@ -14,7 +14,7 @@ Frames:
   admin_list_permissions         read the full level_permissions table
   admin_send_directive           write sovereign_directive to a target agent's msgbox
   admin_list_articles            paginated article list (optional publisher filter)
-  admin_set_article_category     assign or clear a category on an article
+  admin_set_article_category     assign or clear two-level categories on an article
   admin_moderate_article         remove an article and notify the author
   admin_dissolve_social_room     force-dissolve an active A2A chat room
 """
@@ -557,6 +557,10 @@ async def handle_admin_list_articles(
                 "tags": r.tags,
                 "published_at": r.published_at.isoformat(),
                 "like_count": r.like_count,
+                "category": {
+                    "primary": r.category_level1,
+                    "secondary": r.category_level2,
+                },
             }
             for r in rows
         ],
@@ -570,7 +574,7 @@ async def handle_admin_list_articles(
 
 class _SetArticleCategoryPayload(BaseModel):
     article_id: str = Field(min_length=1, max_length=80)
-    category: str | None = Field(default=None, max_length=60)
+    category: dict[str, str | None] | None = None
 
 
 async def handle_admin_set_article_category(
@@ -596,7 +600,23 @@ async def handle_admin_set_article_category(
         return {"type": "error", "reason": "invalid_admin_set_article_category_payload",
                 "detail": "article_id must be a valid UUID"}
 
-    category = payload.category.strip() if payload.category else None
+    raw_category = payload.category or {}
+    category_level1_raw = raw_category.get("primary")
+    category_level2_raw = raw_category.get("secondary")
+    if category_level1_raw is not None and not isinstance(category_level1_raw, str):
+        return {"type": "error", "reason": "invalid_admin_set_article_category_payload",
+                "detail": "category.primary must be a string or null"}
+    if category_level2_raw is not None and not isinstance(category_level2_raw, str):
+        return {"type": "error", "reason": "invalid_admin_set_article_category_payload",
+                "detail": "category.secondary must be a string or null"}
+    category_level1 = category_level1_raw.strip() if isinstance(category_level1_raw, str) and category_level1_raw.strip() else None
+    category_level2 = category_level2_raw.strip() if isinstance(category_level2_raw, str) and category_level2_raw.strip() else None
+    if category_level1 and len(category_level1) > 60:
+        return {"type": "error", "reason": "invalid_admin_set_article_category_payload",
+                "detail": "category.primary max length is 60"}
+    if category_level2 and len(category_level2) > 60:
+        return {"type": "error", "reason": "invalid_admin_set_article_category_payload",
+                "detail": "category.secondary max length is 60"}
 
     async with session_factory() as session:
         article = await session.scalar(
@@ -604,7 +624,8 @@ async def handle_admin_set_article_category(
         )
         if article is None:
             return {"type": "error", "reason": "article_not_found"}
-        article.category = category
+        article.category_level1 = category_level1
+        article.category_level2 = category_level2
         await session.commit()
 
     await record_agent_event(
@@ -612,12 +633,19 @@ async def handle_admin_set_article_category(
         event="admin_set_article_category_via_ws",
         agent_id=sovereign_agent_id,
         connection_id=connection_id,
-        detail={"article_id": payload.article_id, "category": category},
+        detail={
+            "article_id": payload.article_id,
+            "category_level1": category_level1,
+            "category_level2": category_level2,
+        },
     )
     return {
         "type": "admin_set_article_category_ok",
         "article_id": payload.article_id,
-        "category": category,
+        "category": {
+            "primary": category_level1,
+            "secondary": category_level2,
+        },
     }
 
 

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 
 from app.crypto_tokens import generate_agent_id, generate_token, sha256_hex
-from app.deps import DbSession, admin_key_guard
+from app.deps import DbSession, admin_or_sovereign_guard
 from app.models import Agent, AgentEventLog
 from app.services.agent_event_log import record_agent_event
 from app.schemas import (
@@ -26,7 +26,7 @@ from app.schemas import (
 router = APIRouter(
     prefix="/v2/admin",
     tags=["admin"],
-    dependencies=[Depends(admin_key_guard)],
+    dependencies=[Depends(admin_or_sovereign_guard)],
 )
 
 
