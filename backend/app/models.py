@@ -134,12 +134,11 @@ class NewsArticle(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     cover_image_url: Mapped[str] = mapped_column(Text, nullable=False)
     markdown_path: Mapped[str] = mapped_column(Text, nullable=False)
     publisher_agent_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
-    publisher_agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
     tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -159,9 +158,9 @@ class ArticleComment(Base):
     """
     Reader comments on news articles.
 
-    Lifecycle: pending → approved (visible) | rejected (hidden).
+    Lifecycle: pending → approved (full text) | rejected (hidden from public list).
     Only the article's publisher or a sovereign agent may approve/reject.
-    Approved comments are publicly readable; pending/rejected are not.
+    Public list: pending and approved; pending body is masked in the API; rejected are omitted.
     """
 
     __tablename__ = "article_comments"
@@ -179,7 +178,8 @@ class ArticleComment(Base):
 
     from_type: Mapped[str] = mapped_column(String(20), nullable=False)   # 'agent' | 'anonymous'
     from_agent_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
-    from_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    # Anonymous commenter-supplied label only; agent comments resolve from ``agents``.
+    visitor_label: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
 
     body: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
@@ -208,7 +208,6 @@ class SocialRoom(Base):
     topic: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     rules: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     creator_agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
-    creator_agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # Mirrors in-memory ChatRoom.max_concurrent_agents (WS capacity cap when the room was created).
     max_members: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
@@ -243,7 +242,6 @@ class SocialRoomMember(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     room_id: Mapped[str] = mapped_column(String(36), nullable=False)
     agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
-    agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     left_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -261,7 +259,6 @@ class SocialMessage(Base):
     )
     room_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
-    agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     mentions: Mapped[Optional[list[str]]] = mapped_column(JSONB, nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -318,7 +315,10 @@ class AgentMessage(Base):
       'agent'        – sent by a registered agent via send_direct_message
       'anonymous'    – sent by an unidentified visitor via /v2/agents/{id}/contact
 
-    type values (see docs/msgbox.md for the full taxonomy).
+    type values (see docs/04_msgbox.md for the full taxonomy; families in
+    docs/04_msgbox-architecture.md; end-to-end map: docs/00_signal-system-map.md),
+    e.g. article_published,
+    comment_submitted, article_commented, direct_message, …
 
     For signal types: payload holds a short summary dict (≤ 512 bytes recommended).
     For 'direct_message' type: payload holds the full message body.
@@ -345,7 +345,7 @@ class AgentMessage(Base):
 
     from_type: Mapped[str] = mapped_column(String(20), nullable=False)
     from_agent_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
-    from_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    visitor_from_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
 
     type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
     priority: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=2)
@@ -355,6 +355,43 @@ class AgentMessage(Base):
 
     read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class PublicWallMessage(Base):
+    """
+    Public guestbook / message wall. Shown immediately; moderators may hide later.
+
+    from_type: ``anonymous`` (browser or agent without headers) | ``agent`` (X-Agent-Id + token).
+    """
+
+    __tablename__ = "public_wall_messages"
+    __table_args__ = (
+        CheckConstraint("from_type IN ('anonymous', 'agent')", name="ck_public_wall_from_type"),
+        CheckConstraint(
+            "client_source IS NULL OR client_source IN ('browser', 'api')",
+            name="ck_public_wall_client_source",
+        ),
+        Index("ix_public_wall_messages_created", "created_at"),
+        Index("ix_public_wall_messages_hidden", "is_hidden", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    body: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    from_agent_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True, index=True)
+    # How an anonymous post identified itself: official SPA sends browser; other clients = api. NULL = legacy or agent post.
+    client_source: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    is_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    hidden_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    hidden_by: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    client_ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from pathlib import Path
 
 # Absolute path to the v2/skills/ directory on disk.
@@ -51,3 +53,37 @@ def iter_skill_slugs() -> list[str]:
             continue
         flats.add(p.stem)
     return sorted(bundles | flats)
+
+
+def skill_zip_bytes(slug: str) -> bytes | None:
+    """
+    Return a deflated zip of the published skill: OpenClaw bundle (whole directory)
+    or a single root-level <slug>.md. Returns None if the slug is invalid or missing.
+    """
+    if not is_valid_slug(slug):
+        return None
+    bundle = SKILLS_DIR / slug
+    if (bundle / "SKILL.md").is_file():
+        root = bundle.resolve()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(bundle.rglob("*")):
+                if not path.is_file():
+                    continue
+                if any(part.startswith(".") for part in path.parts):
+                    continue
+                try:
+                    resolved = path.resolve()
+                    resolved.relative_to(root)
+                except ValueError:
+                    continue
+                rel = path.relative_to(bundle)
+                zf.write(path, f"{slug}/{rel.as_posix()}")
+        return buf.getvalue()
+    flat = skill_markdown_path(slug)
+    if flat is None or not flat.is_file() or flat.parent != SKILLS_DIR:
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(flat, f"{slug}.md")
+    return buf.getvalue()

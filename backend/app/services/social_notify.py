@@ -117,7 +117,14 @@ async def _push_main_ws(
 ) -> None:
     for aid in recipient_agent_ids:
         try:
-            await registry.send_push(aid, body)
+            pushed = await registry.send_push(aid, body)
+            if not pushed:
+                logger.info(
+                    "social_notify: main WS recipient not connected agent_id=%s kind=%s room_id=%s",
+                    aid,
+                    body.get("kind"),
+                    body.get("room_id"),
+                )
         except Exception:
             logger.exception("social_notify: main WS push failed agent_id=%s", aid)
 

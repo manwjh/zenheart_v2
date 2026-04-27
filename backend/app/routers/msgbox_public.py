@@ -12,7 +12,6 @@ Heavy-traffic sites should add an upstream rate limiter.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -24,9 +23,10 @@ from sqlalchemy import func, select
 
 from app.deps import DbSession
 from app.models import Agent, AgentEventLog, AgentPoints, NewsArticle
+from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message
-
-logger = logging.getLogger(__name__)
+from app.services.msgbox_notify import push_msgbox_notify_to_agent
+from app.services.sovereign_notify import push_msgbox_notify_to_sovereigns
 
 router = APIRouter(tags=["msgbox-public"])
 
@@ -231,7 +231,7 @@ async def contact_agent(
         scope="agent",
         recipient_id=agent_id,
         from_type="anonymous",
-        from_name=body.from_name.strip() if body.from_name else None,
+        visitor_from_name=body.from_name.strip() if body.from_name else None,
         type="direct_message",
         priority=2,
         payload=msg_payload,
@@ -242,17 +242,33 @@ async def contact_agent(
             detail="Failed to deliver message.",
         )
 
+    stripped_body = body.body.strip()
+    await record_agent_event(
+        session_factory,
+        event="msgbox_contact_submitted_public",
+        agent_id=None,
+        detail={
+            "to_agent_id": agent_id,
+            "message_id": message_id,
+            "client_ip": ip,
+            "from_name": body.from_name.strip() if body.from_name else None,
+            "body_length": len(stripped_body),
+        },
+    )
+
     # Best-effort live push.
     registry = request.app.state.registry
-    push_body = {
-        "type": "msgbox_notify",
-        "kind": "direct_message",
-        "message_id": message_id,
-        "from_type": "anonymous",
-        "from_name": body.from_name.strip() if body.from_name else None,
-        "preview": preview,
-    }
-    asyncio.create_task(registry.send_push(agent_id, push_body))
+    asyncio.create_task(
+        push_msgbox_notify_to_agent(
+            registry,
+            agent_id,
+            kind="direct_message",
+            message_id=message_id,
+            from_name=body.from_name.strip() if body.from_name else None,
+            preview=preview,
+            extra={"from_type": "anonymous"},
+        )
+    )
 
     return ContactResponse(delivered=True, message="Message delivered to agent's inbox.")
 
@@ -300,7 +316,7 @@ async def report_content(
         session_factory,
         scope="global",
         from_type="anonymous",
-        from_name=body.from_name,
+        visitor_from_name=body.from_name,
         type=msg_type,
         priority=1,
         resource_type=body.resource_type,
@@ -313,37 +329,33 @@ async def report_content(
             detail="Failed to submit report.",
         )
 
-    # Best-effort live push to sovereign agents.
-    registry = request.app.state.registry
-    push_body = {
-        "type": "msgbox_notify",
-        "kind": msg_type,
-        "message_id": message_id,
-        "resource_type": body.resource_type,
-        "resource_id": body.resource_id,
-        "priority": 1,
-    }
-    asyncio.create_task(_push_to_sovereign(request, push_body))
+    await record_agent_event(
+        session_factory,
+        event="content_report_submitted_public",
+        agent_id=None,
+        detail={
+            "resource_type": body.resource_type,
+            "resource_id": body.resource_id,
+            "message_id": message_id,
+            "client_ip": ip,
+            "reason_length": len(body.reason.strip()),
+            "reporter_from_name": body.from_name.strip() if body.from_name else None,
+        },
+    )
+
+    # Best-effort live push to sovereign agents via shared helper.
+    asyncio.create_task(
+        push_msgbox_notify_to_sovereigns(
+            request.app.state.session_factory,
+            request.app.state.registry,
+            message_id=message_id,
+            kind=msg_type,
+            extra={
+                "resource_type": body.resource_type,
+                "resource_id": body.resource_id,
+                "priority": 1,
+            },
+        )
+    )
 
     return ReportResponse(received=True, message="Report received. Thank you.")
-
-
-async def _push_to_sovereign(request: Request, body: dict) -> None:
-    """Push a live notification to all sovereign agents that are connected."""
-    try:
-        session_factory = request.app.state.session_factory
-        registry = request.app.state.registry
-        async with session_factory() as session:
-            from sqlalchemy import select as _select
-            from app.models import Agent as _Agent
-            result = await session.execute(
-                _select(_Agent.agent_id).where(
-                    _Agent.level == 0,
-                    _Agent.revoked_at.is_(None),
-                )
-            )
-            sovereign_ids = [row[0] for row in result.all()]
-        for aid in sovereign_ids:
-            await registry.send_push(aid, body)
-    except Exception:
-        logger.exception("msgbox_public: failed to push report to sovereign agents")

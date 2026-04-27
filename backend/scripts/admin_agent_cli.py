@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Admin HTTP CLI.
+
+Auth (pick one):
+  - ADMIN_API_KEY + X-Admin-Key (legacy)
+  - ZENHEART_ADMIN_AGENT_ID + ZENHEART_ADMIN_AGENT_TOKEN (level-0 agent; same as admin_or_sovereign_guard)
+
+Always required: ADMIN_API_BASE_URL
+"""
 import argparse
 import json
 import os
@@ -16,21 +24,34 @@ def load_required_env(name: str) -> str:
     return value
 
 
+def _operator_headers() -> dict[str, str]:
+    admin_key = os.environ.get("ADMIN_API_KEY", "").strip()
+    agent_id = os.environ.get("ZENHEART_ADMIN_AGENT_ID", "").strip()
+    token = os.environ.get("ZENHEART_ADMIN_AGENT_TOKEN", "").strip()
+    if admin_key:
+        return {"X-Admin-Key": admin_key}
+    if agent_id and token:
+        return {
+            "X-Agent-Id": agent_id,
+            "X-Agent-Token": token,
+        }
+    raise RuntimeError(
+        "Set ADMIN_API_KEY or both ZENHEART_ADMIN_AGENT_ID and ZENHEART_ADMIN_AGENT_TOKEN"
+    )
+
+
 def request_json(method: str, path: str, body: dict[str, Any] | None) -> Any:
     base_url = load_required_env("ADMIN_API_BASE_URL").rstrip("/")
-    admin_key = load_required_env("ADMIN_API_KEY")
     url = f"{base_url}{path}"
     payload = None
     if body is not None:
         payload = json.dumps(body).encode("utf-8")
+    headers = {"Content-Type": "application/json", **_operator_headers()}
     req = urllib.request.Request(
         url=url,
         data=payload,
         method=method,
-        headers={
-            "Content-Type": "application/json",
-            "X-Admin-Key": admin_key,
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

@@ -12,16 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 
 from app.config import Settings
+from app.models import Agent
 from app.services.agent_event_log import record_agent_event
-from app.services.msgbox import get_summary as msgbox_get_summary, push_message as msgbox_push
+from app.services.msgbox import get_summary as msgbox_get_summary, push_message
+from app.services.msgbox_notify import push_msgbox_notify_to_agent
 from app.services.ws_profile import get_agent_profile
 from app.services.permission_service import check_permission, get_limit_value
 from app.services.points_service import award_points
@@ -56,11 +60,18 @@ def _jdump(obj: dict) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+_MENTION_ALL_RE = re.compile(r"(?<![A-Za-z0-9_\-])@all(?![A-Za-z0-9_\-])", re.IGNORECASE)
+
+
+def _has_mention_all(text: str) -> bool:
+    return bool(_MENTION_ALL_RE.search(text))
+
+
 def _room_join_payload(
     room: ChatRoom, recent_messages: list[dict], idle_after: timedelta,
 ) -> dict:
     anchor = room.idle_anchor()
-    if room.is_private:
+    if room.is_private or room.is_permanent:
         idle_dissolves_at: str | None = None
     else:
         idle_dissolves_at = (anchor + idle_after).isoformat()
@@ -138,7 +149,22 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
     async with session_factory() as _rl_session:
         db_rate_limit = await get_limit_value(_rl_session, "ws", "rate_limit_per_minute")
     rate_limit = db_rate_limit if db_rate_limit is not None else settings.agent_ws_rate_limit_per_minute
-    rate_window: deque[float] = deque(maxlen=rate_limit if rate_limit > 0 else None)
+    rate_window: deque[float] = deque()
+    last_pong_at = time.monotonic()
+
+    async def _heartbeat_loop() -> None:
+        nonlocal last_pong_at
+        interval = float(settings.social_ws_ping_interval_seconds)
+        timeout = float(settings.social_ws_pong_timeout_seconds)
+        while True:
+            await asyncio.sleep(interval)
+            now = time.monotonic()
+            if (now - last_pong_at) > timeout:
+                await websocket.close(code=4008, reason="pong_timeout")
+                return
+            await websocket.send_text(_jdump({"type": "ping"}))
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
     try:
         while True:
@@ -147,8 +173,10 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
 
             if rate_limit > 0:
                 now = time.monotonic()
+                while rate_window and (now - rate_window[0]) >= 60.0:
+                    rate_window.popleft()
                 rate_window.append(now)
-                if len(rate_window) == rate_limit and (now - rate_window[0]) < 60.0:
+                if len(rate_window) > rate_limit:
                     await websocket.send_text(
                         _jdump({"type": "error", "reason": "rate_limit_exceeded"})
                     )
@@ -176,6 +204,8 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
 
             if msg_type == "ping":
                 await websocket.send_text(_jdump({"type": "pong"}))
+            elif msg_type == "pong":
+                last_pong_at = time.monotonic()
 
             elif msg_type == "list_rooms":
                 await websocket.send_text(_jdump({
@@ -212,12 +242,22 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
                     websocket, social, session_factory, agent_id, data,
                 )
 
+            elif msg_type == "list_room_members":
+                await _handle_list_room_members(websocket, social, agent_id)
+
             else:
                 await websocket.send_text(_jdump({"type": "error", "reason": "unknown_type"}))
 
     except WebSocketDisconnect:
         pass
     finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
         room = await social.leave_room(agent_id)
         if room is not None:
             now = datetime.now(timezone.utc)
@@ -228,7 +268,7 @@ async def handle_social_agent_websocket(websocket: WebSocket) -> None:
                 agent_id=agent_id, connection_id=connection_id,
                 detail={"room_id": room.room_id, "room_name": room.name},
             )
-            await _broadcast_member_left(social, room, agent_id, agent.agent_name)
+            await _broadcast_member_left(social, room, agent_id, agent.agent_name, left_at_str)
             recipient_ids = list(room.members.keys())
             if recipient_ids:
                 ws_body, hook_payload = build_member_left_notify(
@@ -300,7 +340,14 @@ async def _handle_create_room(
         return
 
     rules = data.get("rules", "")
-    if not isinstance(rules, str) or len(rules) > 2000:
+    if not isinstance(rules, str):
+        await ws.send_text(_jdump({
+            "type": "error", "reason": "invalid_create_room_payload",
+            "detail": "rules must be a string ≤2000 chars",
+        }))
+        return
+    rules = rules.strip()
+    if len(rules) > 2000:
         await ws.send_text(_jdump({
             "type": "error", "reason": "invalid_create_room_payload",
             "detail": "rules must be a string ≤2000 chars",
@@ -337,7 +384,7 @@ async def _handle_create_room(
     result = await social.create_room(
         name=name.strip(),
         topic=topic.strip(),
-        rules=rules.strip(),
+        rules=rules,
         creator_id=agent_id,
         creator_name=agent_name,
         ws=ws,
@@ -351,6 +398,12 @@ async def _handle_create_room(
             await ws.send_text(_jdump({
                 "type": "error", "reason": "invalid_create_room_payload",
                 "detail": result,
+            }))
+        elif result == "room_name_taken":
+            await ws.send_text(_jdump({
+                "type": "error",
+                "reason": "room_name_taken",
+                "detail": "An active room with this name already exists (case-insensitive).",
             }))
         else:
             await ws.send_text(_jdump({"type": "error", "reason": reason}))
@@ -367,7 +420,7 @@ async def _handle_create_room(
         }))
         return
 
-    if room.is_private:
+    if room.is_private or room.is_permanent:
         _idle_diss = None
     else:
         _idle_diss = (room.idle_anchor() + social.idle_after).isoformat()
@@ -448,7 +501,7 @@ async def _handle_join_room(
     now = datetime.now(timezone.utc)
     joined_at_str = now.isoformat()
 
-    if not await record_member_join(session_factory, room.room_id, agent_id, agent_name, now):
+    if not await record_member_join(session_factory, room.room_id, agent_id, now):
         await social.leave_room(agent_id)
         await ws.send_text(_jdump({
             "type": "error",
@@ -519,7 +572,7 @@ async def _handle_leave_room(
         session_factory, event="a2a_room_left", agent_id=agent_id,
         detail={"room_id": room.room_id, "name": room.name},
     )
-    await _broadcast_member_left(social, room, agent_id, agent_name)
+    await _broadcast_member_left(social, room, agent_id, agent_name, left_at_str)
     recipient_ids = list(room.members.keys())
     if recipient_ids:
         ws_body, hook_payload = build_member_left_notify(
@@ -567,6 +620,7 @@ async def _handle_send_message(
 
     raw_mention_ids = data.get("mention_agent_ids")
     mentions: list[str]
+    out_of_room_mentions: list[str] = []
     if raw_mention_ids is not None:
         if not isinstance(raw_mention_ids, list):
             await ws.send_text(_jdump({
@@ -587,19 +641,43 @@ async def _handle_send_message(
                     "detail": "each mention_agent_ids entry must be a non-empty string",
                 }))
                 return
+        clean: list[str] = []
+        seen_clean: set[str] = set()
+        for item in raw_mention_ids:
+            item_s = item.strip()
+            if item_s not in seen_clean:
+                seen_clean.add(item_s)
+                clean.append(item_s)
         room_id_pre = await social.current_room_id(agent_id)
-        if not room_id_pre:
+        room_obj_pre = await social.get_room(room_id_pre) if room_id_pre else None
+        if room_obj_pre is None:
             mentions = []
+            out_of_room_mentions = clean
         else:
-            room_obj_pre = await social.get_room(room_id_pre)
-            if not room_obj_pre:
-                mentions = []
-            else:
-                clean = [x.strip() for x in raw_mention_ids if isinstance(x, str) and x.strip()]
-                mentions = filter_mention_agent_ids_for_room(room_obj_pre, clean)
+            mentions = filter_mention_agent_ids_for_room(room_obj_pre, clean)
+            in_room_set = set(mentions)
+            out_of_room_mentions = [mid for mid in clean if mid not in in_room_set]
+        unknown_recipients = await _find_unknown_agent_ids(session_factory, out_of_room_mentions)
+        if unknown_recipients:
+            await ws.send_text(_jdump({
+                "type": "error",
+                "reason": "unknown_mention_targets",
+                "detail": "mention_agent_ids contains unknown or revoked agent_id",
+                "invalid_agent_ids": unknown_recipients,
+            }))
+            return
     else:
         name_to_id = await social.get_name_to_id_map(agent_id)
         mentions = parse_mentions(text, name_to_id)
+        if _has_mention_all(text):
+            room_id_pre = await social.current_room_id(agent_id)
+            room_obj_pre = await social.get_room(room_id_pre) if room_id_pre else None
+            if room_obj_pre is not None:
+                for mid in room_obj_pre.members.keys():
+                    if mid == agent_id:
+                        continue
+                    if mid not in mentions:
+                        mentions.append(mid)
 
     room_id = await social.record_message(agent_id)
     if room_id is None:
@@ -623,7 +701,6 @@ async def _handle_send_message(
         session_factory,
         room_id=room_id,
         agent_id=agent_id,
-        agent_name=agent_name,
         text=text,
         mentions=mentions,
         sent_at=datetime.fromisoformat(sent_at),
@@ -639,33 +716,6 @@ async def _handle_send_message(
     await award_points(session_factory, agent_id, "chat_message")
 
     room_obj = await social.get_room(room_id)
-    if room_obj and mentions:
-        room_name = room_obj.name
-        preview = text[:100] + ("…" if len(text) > 100 else "")
-        for mentioned_id in mentions:
-            if mentioned_id != agent_id:
-                await msgbox_push(
-                    session_factory,
-                    scope="agent",
-                    recipient_id=mentioned_id,
-                    from_type="agent",
-                    from_agent_id=agent_id,
-                    from_name=agent_name,
-                    type="room_mention",
-                    priority=2,
-                    resource_id=room_id,
-                    payload={"room_name": room_name, "preview": preview, "mentioner": agent_name},
-                )
-                asyncio.create_task(registry.send_push(mentioned_id, {
-                    "type": "msgbox_notify",
-                    "kind": "room_mention",
-                    "room_id": room_id,
-                    "room_name": room_name,
-                    "from_agent_id": agent_id,
-                    "from_name": agent_name,
-                    "preview": preview,
-                }))
-
     if room_obj:
         recipient_ids = [k for k in room_obj.members if k != agent_id]
         if recipient_ids:
@@ -687,6 +737,18 @@ async def _handle_send_message(
                 webhook_event="social.message",
                 webhook_payload=hook_payload,
             )
+    if out_of_room_mentions:
+        await _deliver_room_mentions_to_msgbox(
+            session_factory=session_factory,
+            registry=registry,
+            sender_agent_id=agent_id,
+            sender_agent_name=agent_name,
+            room_id=room_id,
+            room_name=(room_obj.name if room_obj else room_id),
+            text=text,
+            sent_at=sent_at,
+            mention_agent_ids=out_of_room_mentions,
+        )
 
 
 async def _broadcast_member_left(
@@ -694,6 +756,7 @@ async def _broadcast_member_left(
     room: ChatRoom,
     agent_id: str,
     agent_name: str,
+    left_at: str | None = None,
 ) -> None:
     left_frame = {
         "type": "member_left",
@@ -701,6 +764,8 @@ async def _broadcast_member_left(
         "agent_id": agent_id,
         "agent_name": agent_name,
     }
+    if left_at:
+        left_frame["left_at"] = left_at
     await social.broadcast_to_room(room.room_id, left_frame)
 
 
@@ -761,3 +826,93 @@ async def _handle_update_room_allowlist(
         "room_id": room_id,
         "allowed_agent_ids": sorted(norm),
     }))
+
+
+async def _handle_list_room_members(
+    ws: WebSocket,
+    social: SocialRoomRegistry,
+    agent_id: str,
+) -> None:
+    snapshot = await social.get_current_room_members_snapshot(agent_id)
+    if snapshot is None:
+        await ws.send_text(_jdump({"type": "error", "reason": "not_in_room"}))
+        return
+    await ws.send_text(_jdump({
+        "type": "room_members_list",
+        "room_id": snapshot["room_id"],
+        "name": snapshot["name"],
+        "members": snapshot["members"],
+    }))
+
+
+async def _find_unknown_agent_ids(
+    session_factory: object,
+    agent_ids: list[str],
+) -> list[str]:
+    if not agent_ids:
+        return []
+    async with session_factory() as session:
+        rows = await session.execute(
+            select(Agent.agent_id).where(
+                Agent.agent_id.in_(agent_ids),
+                Agent.revoked_at.is_(None),
+            )
+        )
+    valid_ids = {x for x in rows.scalars().all()}
+    return [x for x in agent_ids if x not in valid_ids]
+
+
+async def _deliver_room_mentions_to_msgbox(
+    *,
+    session_factory: object,
+    registry: AgentConnectionRegistry,
+    sender_agent_id: str,
+    sender_agent_name: str,
+    room_id: str,
+    room_name: str,
+    text: str,
+    sent_at: str,
+    mention_agent_ids: list[str],
+) -> None:
+    preview = text.strip()
+    if len(preview) > 100:
+        preview = preview[:100] + "…"
+    for target_agent_id in mention_agent_ids:
+        if target_agent_id == sender_agent_id:
+            continue
+        message_id = await push_message(
+            session_factory,
+            scope="agent",
+            recipient_id=target_agent_id,
+            from_type="agent",
+            from_agent_id=sender_agent_id,
+            type="room_mention",
+            priority=2,
+            resource_type="social_room",
+            resource_id=room_id,
+            payload={
+                "room_id": room_id,
+                "room_name": room_name,
+                "sender_agent_id": sender_agent_id,
+                "sender_agent_name": sender_agent_name,
+                "text_preview": preview,
+                "sent_at": sent_at,
+            },
+        )
+        if not message_id:
+            continue
+        asyncio.create_task(
+            push_msgbox_notify_to_agent(
+                registry,
+                target_agent_id,
+                kind="room_mention",
+                message_id=message_id,
+                from_agent_id=sender_agent_id,
+                from_name=sender_agent_name,
+                preview=preview,
+                extra={
+                    "room_id": room_id,
+                    "room_name": room_name,
+                },
+            )
+        )

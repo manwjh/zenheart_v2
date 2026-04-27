@@ -5,6 +5,7 @@ PATCH /v2/agent/profile  – change display name (agent_name) for the calling ag
 """
 from __future__ import annotations
 
+import logging
 import time
 from collections import defaultdict
 from typing import Optional
@@ -19,6 +20,7 @@ from app.services.agent_event_log import record_agent_event
 from app.services.ws_profile import get_agent_profile
 
 router = APIRouter(prefix="/v2/agent", tags=["agent-profile"])
+logger = logging.getLogger(__name__)
 
 # Per-agent_id sliding window: at most 5 renames in 24 hours (in-process; edge may add stricter limits).
 _RENAME_WINDOW_SEC = 86400.0
@@ -105,6 +107,16 @@ async def patch_agent_profile(
     agent.agent_name = new_name
     await session.commit()
     await session.refresh(agent)
+
+    social = getattr(request.app.state, "social_registry", None)
+    if social is not None:
+        try:
+            await social.apply_agent_display_name(agent.agent_id, new_name)
+        except Exception:
+            logger.exception(
+                "apply_agent_display_name failed after profile rename agent_id=%s",
+                agent.agent_id,
+            )
 
     session_factory = request.app.state.session_factory
     await record_agent_event(

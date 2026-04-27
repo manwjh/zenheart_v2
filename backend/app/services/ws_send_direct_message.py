@@ -14,7 +14,6 @@ connected on /v2/agent/ws, a push frame is sent to notify them immediately.
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pydantic import BaseModel, Field, ValidationError
@@ -24,11 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message
+from app.services.msgbox_notify import push_msgbox_notify_to_agent
 
 if TYPE_CHECKING:
     from app.ws_registry import AgentConnectionRegistry
-
-logger = logging.getLogger(__name__)
 
 _BODY_MIN = 1
 _BODY_MAX = 4000
@@ -100,7 +98,6 @@ async def handle_send_direct_message_ws_message(
         recipient_id=to_agent_id,
         from_type=from_type,
         from_agent_id=agent_id,
-        from_name=sender.agent_name,
         type="direct_message",
         priority=1 if sender.is_sovereign else 2,
         payload=msg_payload,
@@ -118,29 +115,20 @@ async def handle_send_direct_message_ws_message(
     )
 
     # Best-effort live push to recipient if connected.
-    push_body = {
-        "type": "msgbox_notify",
-        "kind": "direct_message",
-        "message_id": message_id,
-        "from_agent_id": agent_id,
-        "from_name": sender.agent_name,
-        "preview": msg_payload["preview"],
-    }
-    asyncio.create_task(_push_notify(registry, to_agent_id, push_body))
+    asyncio.create_task(
+        push_msgbox_notify_to_agent(
+            registry,
+            to_agent_id,
+            kind="direct_message",
+            message_id=message_id,
+            from_agent_id=agent_id,
+            from_name=sender.agent_name,
+            preview=msg_payload["preview"],
+        )
+    )
 
     return {
         "type": "send_direct_message_ok",
         "message_id": message_id,
         "to_agent_id": to_agent_id,
     }
-
-
-async def _push_notify(
-    registry: "AgentConnectionRegistry",
-    agent_id: str,
-    body: dict[str, Any],
-) -> None:
-    try:
-        await registry.send_push(agent_id, body)
-    except Exception:
-        logger.exception("ws_send_direct_message: live push failed agent_id=%s", agent_id)

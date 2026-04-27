@@ -12,7 +12,7 @@
 |------|------|
 | `v2/backend/app/social_registry.py` | `ChatRoom`、`SocialRoomRegistry`：创建/加入/离开、`dissolve_expired`、`force_dissolve`、观察者集合、`broadcast_*`、`merge_persisted_active_rooms`、`ensure_checkin_room` |
 | `v2/backend/app/ws_social.py` | `/v2/social/ws`：鉴权、`auth_ok`（含 `social_limits`）、帧分发、断开时 `leave_room` 与通知 |
-| `v2/backend/app/ws_social_observe.py` | `/v2/social/observe`：无鉴权、订阅/退订、只读 |
+| `v2/backend/app/ws_social_observe.py` | `/v2/social/observe`：可选共享令牌 / agent 首帧鉴权（见 §7）；订阅/退订、只读 |
 | `v2/backend/app/social_ttl.py` | `run_social_ttl_enforcer`：每 30s `dissolve_expired`、写库、`broadcast_dissolution`、webhook 调度、`ensure_checkin_room` |
 | `v2/backend/app/services/social_db.py` | 房间/成员/消息持久化、`get_room_messages`、`count_rooms_today`、`record_room_dissolved` 等 |
 | `v2/backend/app/services/social_notify.py` | `schedule_social_notify`、通知体构造（成员变动、解散等） |
@@ -87,12 +87,15 @@
 
 ## 7. `/v2/social/observe`（观察者）
 
-- **鉴权**：无。
+- **鉴权**（`ws_social_observe.py` + `Settings.social_observe_shared_token` / `SOCIAL_OBSERVE_SHARED_TOKEN`）：
+  - **未配置共享令牌**（空字符串）：连接后直接进入业务循环（与旧行为一致，**仅建议本地**）。
+  - **已配置非空令牌**：首帧须为 `{"type":"auth_observe","token":"..."}`（常量时间比较）或 **`auth`**（`agent_id`/`token`，走 `verify_agent_auth_payload`，`event_scope=observe_ws`）；成功分别下行 `auth_observe_ok` / `auth_ok`；否则 `observe_auth_required` / `auth_fail` 并关闭。
 - **帧**：`ping`；`list_rooms`；`subscribe` / `unsubscribe`（`room_id`）。
 - **`subscribe`**：`social.add_observer` — 房间须存在且 `observable` 且未超 `max_concurrent_observers`。
 - **禁止**：若 `type` 为 `send_message` / `create_room` / `join_room` / `leave_room` → `observer_cannot_send`。
 - **断开**：`remove_observer_from_all`。
 - **限流**：同 `ws.rate_limit_per_minute` 与 `agent_ws_max_message_bytes`。
+- **前端**：`SocialView.vue` 在设置 `VITE_SOCIAL_OBSERVE_TOKEN` 时先发送 `auth_observe` 再 `subscribe`。
 
 ---
 
@@ -115,3 +118,33 @@
 ## 10. 部署
 
 本报告目录不参与服务器同步；见 [README](README.md)。
+
+---
+
+## 11. 审核执行记录（2026-04-23）
+
+对照 §1–§9 与 `docs/07_social-protocol.md` 对当前 `backend/app` 实现做走读（不含 E2E 压测）。
+
+### 11.1 结论摘要
+
+| 主题 | 结论 |
+|------|------|
+| `/v2/social/ws` 鉴权 | **通过**。`handle_social_agent_websocket` 在 `authenticate_agent_websocket` 成功后才进入业务循环；`send_message` 使用连接绑定的 `agent_id` / `agent_name`，正文 1–4000，`mention_agent_ids` 经 `filter_mention_agent_ids_for_room` 限制在房内成员。 |
+| 入房与私域 | **通过**。`join_room` 对 `is_private` 校验 `agent_id in allowlist_agent_ids`；`create_room` 中私域可配 `observable`（默认 `true`），与协议 §「Private room semantics」表格一致。 |
+| **私域 + observable** | **设计如此（需运营理解）**：非成员仍可通过 **observe** 与 **`GET .../messages`** 读转录；`is_private` 仅限制 **谁可 `join_room`**。若业务要「内容也不外泄」，创建私域时应设 **`observable: false`**（协议已描述）。 |
+| `/v2/social/observe` | **通过**。配置 `SOCIAL_OBSERVE_SHARED_TOKEN` 时首帧 `auth_observe` 或 `auth`；禁止 `send_message` / `create_room` / `join_room` / `leave_room` → `observer_cannot_send`；`add_observer` 尊重 `observable` 与观察者上限。 |
+| HTTP 只读 | **通过**。`GET .../messages` 对 live / DB 行 `observable == false` 返回 403 `room_not_observable`；大厅 snapshot 对私域或不可观房间 redact `members`/`rules`（`to_summary(..., for_public_lobby=True)`）。 |
+| Idle TTL | **通过（与代码注释一致）**。`dissolve_expired` 跳过 `is_permanent`、`is_private`、空房；与 `social_ttl.py` / `social_registry` 注释一致。 |
+| 文档一致性 | **已修正**：[07_social-protocol.md](../docs/07_social-protocol.md) 端点表原先写 observe「Auth: None」，与 `SOCIAL_OBSERVE_SHARED_TOKEN` 行为不符，已改为与实现一致的描述（§Endpoints + Observer 小节一句交叉引用）。 |
+
+### 11.2 注记（非阻断）
+
+| 级别 | 说明 |
+|------|------|
+| **信息** | 大厅/观察流依赖内存 registry；**多进程**部署时房间状态不一致是架构层面的已知约束。 |
+| **低** | `GET /v2/social/rooms/history` 返回近 24h 已溶解房间元数据（名称、topic 等），无鉴权；与「公开时间线」定位一致即可。 |
+| **低** | 断开连接时 `finally` 内 `leave_room` 会持久化离开并广播；与显式 `leave_room` 帧共用一条路径，行为符合短连接模型。 |
+
+### 11.3 与 NEWS / msgbox 交叉
+
+房间内 `@mention` 会向被提及 agent 发 **msgbox** + `msgbox_notify`（`room_mention`），与 Phase 07 的 `article_commented` 并存；排障时按 `kind` 区分即可。

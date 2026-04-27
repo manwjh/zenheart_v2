@@ -80,7 +80,6 @@ async def create_news_article(
         cover_image_url=body.cover_image_url.strip(),
         markdown_path=body.markdown_path.strip(),
         publisher_agent_id=publisher.agent_id,
-        publisher_agent_name=publisher.agent_name,
         tags=[tag.strip() for tag in body.tags if tag.strip()],
         keywords=[k.strip() for k in body.keywords if k.strip()],
         published_at=body.published_at,
@@ -100,7 +99,7 @@ async def create_news_article(
         cover_image_url=article.cover_image_url,
         markdown_path=article.markdown_path,
         publisher_agent_id=article.publisher_agent_id,
-        publisher_agent_name=article.publisher_agent_name,
+        publisher_agent_name=publisher.agent_name,
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
@@ -113,27 +112,33 @@ async def create_news_article(
 
 @router.get("/articles", response_model=NewsArticleListResponse)
 async def list_news_articles_admin(session: DbSession) -> NewsArticleListResponse:
-    result = await session.scalars(
-        select(NewsArticle).order_by(NewsArticle.published_at.desc(), NewsArticle.created_at.desc())
+    result = await session.execute(
+        select(NewsArticle, Agent)
+        .outerjoin(Agent, NewsArticle.publisher_agent_id == Agent.agent_id)
+        .order_by(NewsArticle.published_at.desc(), NewsArticle.created_at.desc())
     )
     rows = result.all()
     return NewsArticleListResponse(
         items=[
             NewsArticleListRow(
-                id=row.id,
-                title=row.title,
-                summary=row.summary,
-                cover_image_url=row.cover_image_url,
-                publisher_agent_id=row.publisher_agent_id,
-                publisher_agent_name=row.publisher_agent_name,
-                tags=row.tags,
-                keywords=row.keywords,
-                published_at=row.published_at,
-                like_count=row.like_count,
-                score=row.score,
-                category=_to_category(row.category_level1, row.category_level2),
+                id=art.id,
+                title=art.title,
+                summary=art.summary,
+                cover_image_url=art.cover_image_url,
+                publisher_agent_id=art.publisher_agent_id,
+                publisher_agent_name=ag.agent_name
+                if ag
+                else (art.publisher_agent_id[:8] + "…")
+                if len(art.publisher_agent_id) > 8
+                else art.publisher_agent_id,
+                tags=art.tags,
+                keywords=art.keywords,
+                published_at=art.published_at,
+                like_count=art.like_count,
+                score=art.score,
+                category=_to_category(art.category_level1, art.category_level2),
             )
-            for row in rows
+            for art, ag in rows
         ]
     )
 
@@ -143,6 +148,18 @@ async def get_news_article_admin(
     article_id: UUID, session: DbSession, settings: SettingsDep
 ) -> NewsArticleAdminDetailResponse:
     article = await _get_article_or_404(session, article_id)
+    pub = await session.scalar(
+        select(Agent).where(Agent.agent_id == article.publisher_agent_id)
+    )
+    pub_name = (
+        pub.agent_name
+        if pub
+        else (
+            (article.publisher_agent_id[:8] + "…")
+            if len(article.publisher_agent_id) > 8
+            else article.publisher_agent_id
+        )
+    )
     markdown_file = _resolve_markdown_file_or_400(article.markdown_path, settings.news_markdown_root)
     markdown_content = markdown_file.read_text(encoding="utf-8")
     return NewsArticleAdminDetailResponse(
@@ -152,7 +169,7 @@ async def get_news_article_admin(
         cover_image_url=article.cover_image_url,
         markdown_path=article.markdown_path,
         publisher_agent_id=article.publisher_agent_id,
-        publisher_agent_name=article.publisher_agent_name,
+        publisher_agent_name=pub_name,
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
@@ -176,7 +193,6 @@ async def update_news_article(
     article.cover_image_url = body.cover_image_url.strip()
     article.markdown_path = body.markdown_path.strip()
     article.publisher_agent_id = publisher.agent_id
-    article.publisher_agent_name = publisher.agent_name
     article.tags = [tag.strip() for tag in body.tags if tag.strip()]
     article.keywords = [k.strip() for k in body.keywords if k.strip()]
     article.published_at = body.published_at
@@ -194,7 +210,7 @@ async def update_news_article(
         cover_image_url=article.cover_image_url,
         markdown_path=article.markdown_path,
         publisher_agent_id=article.publisher_agent_id,
-        publisher_agent_name=article.publisher_agent_name,
+        publisher_agent_name=publisher.agent_name,
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
@@ -235,6 +251,18 @@ async def patch_news_article(
     await session.commit()
     await session.refresh(article)
 
+    pub = await session.scalar(
+        select(Agent).where(Agent.agent_id == article.publisher_agent_id)
+    )
+    pub_name = (
+        pub.agent_name
+        if pub
+        else (
+            (article.publisher_agent_id[:8] + "…")
+            if len(article.publisher_agent_id) > 8
+            else article.publisher_agent_id
+        )
+    )
     markdown_file = _resolve_markdown_file_or_400(article.markdown_path, settings.news_markdown_root)
     markdown_content = markdown_file.read_text(encoding="utf-8")
     return NewsArticleAdminDetailResponse(
@@ -244,7 +272,7 @@ async def patch_news_article(
         cover_image_url=article.cover_image_url,
         markdown_path=article.markdown_path,
         publisher_agent_id=article.publisher_agent_id,
-        publisher_agent_name=article.publisher_agent_name,
+        publisher_agent_name=pub_name,
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,

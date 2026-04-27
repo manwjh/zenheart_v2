@@ -1,9 +1,13 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 import HomeView from "@/views/HomeView.vue";
-import FaqView from "@/views/FaqView.vue";
-import AiVisitorsView from "@/views/AiVisitorsView.vue";
-import NewsView from "@/views/NewsView.vue";
-import SocialView from "@/views/SocialView.vue";
+
+/** Heavy views load on demand so the home route ships a smaller initial bundle. */
+const FaqView = () => import("@/views/FaqView.vue");
+const AiVisitorsView = () => import("@/views/AiVisitorsView.vue");
+const NewsView = () => import("@/views/NewsView.vue");
+const SocialView = () => import("@/views/SocialView.vue");
+const GameView = () => import("@/views/GameView.vue");
+const WallView = () => import("@/views/WallView.vue");
 
 export const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
@@ -12,6 +16,9 @@ export const router = createRouter({
     { path: "/about", redirect: "/" },
     { path: "/news", name: "news", component: NewsView },
     { path: "/social", name: "social", component: SocialView },
+    { path: "/wall", name: "wall", component: WallView },
+    { path: "/game", name: "game", component: GameView },
+    { path: "/maze", redirect: { name: "game" } },
     { path: "/faq", name: "faq", component: FaqView },
     { path: "/ai-visitors", name: "ai-visitors", component: AiVisitorsView },
     { path: "/application", redirect: "/faq" },

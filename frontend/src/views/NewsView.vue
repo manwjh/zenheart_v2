@@ -50,9 +50,15 @@ type CommentRow = {
 const route = useRoute();
 const router = useRouter();
 
+const NEWS_PAGE_SIZE = 24;
+
 const list = ref<NewsRow[]>([]);
 const loadingList = ref(false);
+const loadingMore = ref(false);
+const listHasMore = ref(false);
 const listError = ref<string | null>(null);
+const loadMoreSentinel = ref<HTMLElement | null>(null);
+let loadMoreObserver: IntersectionObserver | null = null;
 const primaryCategories = ref<string[]>([]);
 const loadingPrimaryCategories = ref(false);
 const activePrimaryCategory = ref<string | null>(null);
@@ -82,30 +88,38 @@ let titleObserver: IntersectionObserver | null = null;
 
 // sort-to-top filters (click tag or author to promote matching articles)
 const activeTag = ref<string | null>(null);
-const activeAuthor = ref<string | null>(null);
+/** Author filter is keyed by stable `publisher_agent_id`, not display name. */
+const activeAuthorAgentId = ref<string | null>(null);
 
 function toggleTag(tag: string, event: Event) {
   event.stopPropagation();
   activeTag.value = activeTag.value === tag ? null : tag;
 }
 
-function toggleAuthor(name: string, event: Event) {
+function toggleAuthor(publisherAgentId: string, event: Event) {
   event.stopPropagation();
-  activeAuthor.value = activeAuthor.value === name ? null : name;
+  activeAuthorAgentId.value =
+    activeAuthorAgentId.value === publisherAgentId ? null : publisherAgentId;
 }
 
 const displayList = computed(() => {
   const byTime = (a: NewsRow, b: NewsRow) =>
     new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
 
-  if (!activeTag.value && !activeAuthor.value) return [...list.value].sort(byTime);
+  // Archive: strict newest-first by published_at only (no tag/author sort-to-top).
+  if (
+    feedScope.value === "archive" ||
+    (!activeTag.value && !activeAuthorAgentId.value)
+  ) {
+    return [...list.value].sort(byTime);
+  }
 
   return [...list.value].sort((a, b) => {
     const scoreA =
-      (activeAuthor.value && a.publisher_agent_name === activeAuthor.value ? 2 : 0) +
+      (activeAuthorAgentId.value && a.publisher_agent_id === activeAuthorAgentId.value ? 2 : 0) +
       (activeTag.value && a.tags?.includes(activeTag.value) ? 1 : 0);
     const scoreB =
-      (activeAuthor.value && b.publisher_agent_name === activeAuthor.value ? 2 : 0) +
+      (activeAuthorAgentId.value && b.publisher_agent_id === activeAuthorAgentId.value ? 2 : 0) +
       (activeTag.value && b.tags?.includes(activeTag.value) ? 1 : 0);
     return scoreB - scoreA || byTime(a, b);
   });
@@ -187,30 +201,83 @@ function toIsoDate(value: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-async function fetchNewsList() {
-  loadingList.value = true;
-  listError.value = null;
-  try {
-    const params = new URLSearchParams();
-    if (feedScope.value === "archive") {
-      params.set("classification", "uncategorized");
-    } else if (activePrimaryCategory.value) {
-      params.set("category_primary", activePrimaryCategory.value);
-    } else {
-      params.set("classification", "categorized");
-    }
-    const qs = params.toString();
-    const res = await fetch(`/v2/news/articles${qs ? `?${qs}` : ""}`);
-    const data = (await res.json().catch(() => ({}))) as NewsListResponse;
-    if (!res.ok) {
-      listError.value = "Failed to load news list.";
+function buildNewsListSearchParams(): URLSearchParams {
+  const params = new URLSearchParams();
+  params.set("limit", String(NEWS_PAGE_SIZE));
+  if (feedScope.value === "archive") {
+    params.set("classification", "uncategorized");
+  } else if (activePrimaryCategory.value) {
+    params.set("category_primary", activePrimaryCategory.value);
+  } else {
+    params.set("classification", "categorized");
+  }
+  return params;
+}
+
+function bindLoadMoreObserver() {
+  loadMoreObserver?.disconnect();
+  loadMoreObserver = null;
+  const el = loadMoreSentinel.value;
+  if (!el || !listHasMore.value) return;
+  loadMoreObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        void fetchNewsList(true);
+      }
+    },
+    { root: null, rootMargin: "280px", threshold: 0 }
+  );
+  loadMoreObserver.observe(el);
+}
+
+async function fetchNewsList(append = false) {
+  if (append) {
+    if (
+      !listHasMore.value ||
+      loadingMore.value ||
+      loadingList.value ||
+      list.value.length === 0
+    ) {
       return;
     }
-    list.value = Array.isArray(data.items) ? data.items : [];
+    loadingMore.value = true;
+  } else {
+    loadingList.value = true;
+    listError.value = null;
+  }
+  try {
+    const params = buildNewsListSearchParams();
+    if (append && list.value.length > 0) {
+      const last = list.value[list.value.length - 1]!;
+      params.set("before_id", last.id);
+    }
+    const qs = params.toString();
+    const res = await fetch(`/v2/news/articles?${qs}`);
+    const data = (await res.json().catch(() => ({}))) as NewsListResponse;
+    if (!res.ok) {
+      if (!append) listError.value = "Failed to load news list.";
+      return;
+    }
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (append) {
+      const seen = new Set(list.value.map((i) => i.id));
+      for (const row of items) {
+        if (!seen.has(row.id)) {
+          list.value.push(row);
+          seen.add(row.id);
+        }
+      }
+    } else {
+      list.value = items;
+    }
+    listHasMore.value = items.length >= NEWS_PAGE_SIZE;
   } catch (error) {
-    listError.value = error instanceof Error ? error.message : "Network error.";
+    if (!append) {
+      listError.value = error instanceof Error ? error.message : "Network error.";
+    }
   } finally {
-    loadingList.value = false;
+    if (append) loadingMore.value = false;
+    else loadingList.value = false;
   }
 }
 
@@ -328,6 +395,14 @@ async function submitComment() {
     }
     commentSuccess.value = true;
     commentForm.value = { name: "", body: "" };
+    const aid = selectedArticle.value.id;
+    void fetchComments(aid);
+    void fetch(`/v2/news/articles/${aid}`).then(async (r) => {
+      if (!r.ok) return;
+      const d = (await r.json().catch(() => null)) as NewsDetailResponse | null;
+      if (!d || selectedArticle.value?.id !== aid) return;
+      selectedArticle.value = { ...selectedArticle.value, comment_count: d.comment_count };
+    });
   } catch {
     commentError.value = "Network error. Please try again.";
   } finally {
@@ -374,6 +449,10 @@ watch(
     }
   }
 );
+
+watch([listHasMore, () => list.value.length], () => {
+  nextTick(() => bindLoadMoreObserver());
+});
 
 async function shareArticle() {
   if (!selectedArticle.value) return;
@@ -430,7 +509,9 @@ function handleKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   document.addEventListener("keydown", handleKeydown);
-  void Promise.all([fetchNewsList(), fetchPrimaryCategories()]);
+  void Promise.all([fetchNewsList(false), fetchPrimaryCategories()]).then(() => {
+    nextTick(() => bindLoadMoreObserver());
+  });
   // open article from URL on page load
   const articleId = route.query.article as string | undefined;
   if (articleId) void openDetail(articleId);
@@ -439,6 +520,8 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("keydown", handleKeydown);
   titleObserver?.disconnect();
+  loadMoreObserver?.disconnect();
+  loadMoreObserver = null;
   if (toastTimer) clearTimeout(toastTimer);
   if (shareCopyTimer) clearTimeout(shareCopyTimer);
 });
@@ -577,8 +660,8 @@ onUnmounted(() => {
           <div class="byline">
             <span
               class="author author-btn"
-              :class="{ 'author-active': activeAuthor === item.publisher_agent_name }"
-              @click="toggleAuthor(item.publisher_agent_name, $event)"
+              :class="{ 'author-active': activeAuthorAgentId === item.publisher_agent_id }"
+              @click="toggleAuthor(item.publisher_agent_id, $event)"
             >{{ item.publisher_agent_name }}</span>
             <span class="sep">·</span>
             <span class="date">{{ toIsoDate(item.published_at) }}</span>
@@ -617,6 +700,21 @@ onUnmounted(() => {
         </div>
       </article>
     </div>
+
+    <p
+      v-if="loadingMore"
+      class="state muted load-more-hint"
+      role="status"
+      aria-live="polite"
+    >
+      Loading more…
+    </p>
+    <div
+      v-if="list.length > 0 && listHasMore && !listError"
+      ref="loadMoreSentinel"
+      class="load-more-sentinel"
+      aria-hidden="true"
+    />
 
     <Teleport to="body">
       <div
@@ -739,7 +837,7 @@ onUnmounted(() => {
                   <span v-if="comments.length" class="comment-count">{{ comments.length }}</span>
                 </h3>
 
-                <!-- Approved comments list -->
+                <!-- Comments (pending show placeholder until author approves) -->
                 <div v-if="loadingComments" class="comment-loading">Loading comments…</div>
                 <div v-else-if="comments.length" class="comment-list">
                   <div v-for="c in comments" :key="c.id" class="comment-item">
@@ -747,7 +845,13 @@ onUnmounted(() => {
                       <span class="comment-author">{{ c.from_name || "Anonymous" }}</span>
                       <span class="comment-date">{{ toIsoDate(c.created_at) }}</span>
                     </div>
-                    <p class="comment-body" v-html="commentBodyHtml(c.body)"></p>
+                    <p
+                      v-if="c.status === 'pending'"
+                      class="comment-body comment-body--pending"
+                    >
+                      <strong>Pending review</strong>
+                    </p>
+                    <p v-else class="comment-body" v-html="commentBodyHtml(c.body)"></p>
                   </div>
                 </div>
                 <p v-else class="comment-empty">No comments yet. Be the first.</p>
@@ -932,6 +1036,17 @@ onUnmounted(() => {
 .masonry {
   columns: 3 22rem;
   gap: 1rem;
+}
+
+.load-more-sentinel {
+  height: 1px;
+  width: 100%;
+  pointer-events: none;
+}
+
+.load-more-hint {
+  text-align: center;
+  margin-top: 0.5rem;
 }
 
 .card {
@@ -1490,6 +1605,10 @@ onUnmounted(() => {
 .comment-date {
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+.comment-body--pending {
+  color: var(--text-muted, rgba(0, 0, 0, 0.55));
 }
 
 .comment-body {

@@ -1,4 +1,5 @@
 node_modules
 dist
+public/zenlink
 *.local
 .DS_Store

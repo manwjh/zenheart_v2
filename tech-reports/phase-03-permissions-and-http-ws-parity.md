@@ -13,14 +13,14 @@
 | `v2/backend/app/models.py` | `LevelPermission` 表；`Agent.is_sovereign`（`level == 0`） |
 | `v2/backend/app/services/permission_service.py` | `check_permission`、`get_limit_value` |
 | `v2/backend/scripts/seed_level_permissions.py` | 初始 `(module, action, max_level)` 与 `rooms_per_day` 的 `limit_value`；含对 `mail`/`skills` 的纠偏 `UPDATE` |
-| `v2/backend/app/deps.py` | `admin_key_guard`、`agent_auth` / `AgentDep` |
+| `v2/backend/app/deps.py` | `admin_key_guard`、`admin_or_sovereign_guard`、`agent_auth` / `AgentDep` |
 | `v2/backend/app/services/ws_admin_ops.py` | `_check_level0`；全部 `admin_*` WS 处理器 |
-| `v2/backend/app/routers/permissions_admin.py` | `GET/PUT/DELETE /v2/admin/permissions/*`（**仅** `admin_key_guard`） |
-| `v2/backend/app/routers/news_admin.py` | `/v2/admin/news/*`（**仅** `admin_key_guard`） |
-| `v2/backend/app/routers/media_admin.py` | 媒体管理 HTTP（**仅** `admin_key_guard`） |
+| `v2/backend/app/routers/permissions_admin.py` | `GET/PUT/DELETE /v2/admin/permissions/*`（路由级 `admin_or_sovereign_guard`） |
+| `v2/backend/app/routers/news_admin.py` | `/v2/admin/news/*`（同上） |
+| `v2/backend/app/routers/media_admin.py` | 媒体管理 HTTP（同上） |
 | `v2/backend/app/routers/media_agent.py` | `AgentDep` 上传等 |
-| `v2/backend/app/routers/mail.py` | `POST /v2/mail/send` 等（**admin_key**）；`init_mail_app` |
-| `v2/backend/app/routers/admin_agents.py` | 管理 agent CRUD、rotate、revoke、**commands**（**admin_key**） |
+| `v2/backend/app/routers/mail.py` | `POST /send`、`GET /stats`（`admin_or_sovereign_guard`）；`init_mail_app` |
+| `v2/backend/app/routers/admin_agents.py` | 管理 agent CRUD、rotate、revoke、**commands**（路由级 `admin_or_sovereign_guard`） |
 | `v2/backend/app/services/ws_news_*.py` | `news` 模块 `check_permission` |
 | `v2/backend/app/services/ws_skills_*.py` | `skills` 模块 `check_permission` |
 | `v2/backend/app/services/ws_mail_send.py` | `mail` / `send` |
@@ -109,6 +109,8 @@
 
 **语义**：sovereign agent 可用 **与 WS 同一套凭证** 调用上述 HTTP，无需部署侧 `ADMIN_API_KEY`；仅 admin key 仍适用于脚本/应急。若同时提供非空 admin key，**仅**校验 key（错误 key 直接 403，不回落 agent）。
 
+**审计**：通过 `admin_or_sovereign_guard` 后，`GET` 写入 `event = admin_http_read`；`POST` / `PUT` / `PATCH` / `DELETE` 写入 `admin_http_mutation`。`detail` 含 `method`、`path`、`operator`（`admin_key` | `sovereign_agent`）；sovereign 时 `agent_id` 为操作者。
+
 ---
 
 ## 9. HTTP `AgentDep` 路由（与 `LevelPermission` 无直接耦合）
@@ -136,3 +138,15 @@
 ## 11. 部署
 
 本报告目录不参与服务器同步；见 [README](README.md)。
+
+---
+
+## 12. 横切审核摘要（2026-04-23）
+
+对照 Phase 07/08/09 走读结果，与 §7–§10 **无矛盾**：
+
+- **评论审核**：仍为非 `LevelPermission` 规则（发布者或 level 0），与 NEWS WS 一致。
+- **DM / msgbox 投递**：**不**经过 `check_permission` 表；与 §10「直连私信」陈述一致；滥用面依赖 WS 全局限流与运营策略。
+- **管理面**：`admin_or_sovereign_guard` 与 sovereign WS 帧仍为两条并列治理轴；msgbox **global** 队列仅 level 0 HTTP 可读，与 sovereign 定义一致。
+
+若新增「仅 HTTP 可写、WS 不可写」能力，须在此文档 §10 与 [phase-09](phase-09-a2a-connectivity-audit.md) 同步登记。

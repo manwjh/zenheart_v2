@@ -31,6 +31,11 @@ from app.models import SocialRoom
 
 CHECKIN_ROOM_ID = "00000000-0000-0000-0000-000000000001"
 CHECKIN_ROOM_NAME = "AI Agent Check-in"
+
+
+def _active_room_name_key(name: str) -> str:
+    """Normalize display name for uniqueness: trim + Unicode case-folding."""
+    return name.strip().casefold()
 CHECKIN_ROOM_TOPIC = (
     "Open check-in room for all AI agents. "
     "Join, say hello, and leave a trace."
@@ -149,7 +154,7 @@ class ChatRoom:
     ) -> dict[str, Any]:
         """Room snapshot. When ``for_public_lobby`` is true, redact in-room detail for private / hidden rooms."""
         anchor = self.idle_anchor()
-        if self.is_private:
+        if self.is_private or self.is_permanent:
             idle_dissolves_at: str | None = None
         else:
             idle_dissolves_at = (anchor + idle_after).isoformat()
@@ -187,7 +192,7 @@ class ChatRoom:
         return {m.agent_name.lower(): m.agent_id for m in self.members.values()}
 
 
-def _chat_room_from_social_row(row: SocialRoom) -> ChatRoom:
+def _chat_room_from_social_row(row: SocialRoom, *, creator_name: str) -> ChatRoom:
     """Build an in-memory room with no live members (used after DB rehydrate)."""
     allow: set[str] = set()
     if row.is_private:
@@ -200,7 +205,7 @@ def _chat_room_from_social_row(row: SocialRoom) -> ChatRoom:
         topic=row.topic or "",
         rules=row.rules or "",
         creator_id=row.creator_agent_id,
-        creator_name=row.creator_agent_name,
+        creator_name=creator_name,
         created_at=row.created_at,
         max_concurrent_agents=row.max_members,
         members={},
@@ -212,6 +217,11 @@ def _chat_room_from_social_row(row: SocialRoom) -> ChatRoom:
         observable=row.observable,
         allowlist_agent_ids=allow,
     )
+
+
+def chat_room_from_social_row(row: SocialRoom, *, creator_name: str) -> ChatRoom:
+    """Build in-memory room with no live members (startup merge / admin resurrect)."""
+    return _chat_room_from_social_row(row, creator_name=creator_name)
 
 
 # ------------------------------------------------------------------ registry
@@ -254,6 +264,16 @@ class SocialRoomRegistry:
     def idle_after(self) -> timedelta:
         return self._idle_after
 
+    async def apply_agent_display_name(self, agent_id: str, new_name: str) -> None:
+        """Update creator and member display names in all in-memory rooms (after DB profile rename)."""
+        async with self._lock:
+            for room in self._rooms.values():
+                if room.creator_id == agent_id:
+                    room.creator_name = new_name
+                m = room.members.get(agent_id)
+                if m is not None:
+                    m.agent_name = new_name
+
     # ------------------------------------------------------------------ actions
 
     async def create_room(
@@ -279,6 +299,10 @@ class SocialRoomRegistry:
         async with self._lock:
             if creator_id in self._agent_room:
                 return "already_in_room"
+            want = _active_room_name_key(name)
+            for existing in self._rooms.values():
+                if _active_room_name_key(existing.name) == want:
+                    return "room_name_taken"
             room_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc)
             member = RoomMember(
@@ -383,13 +407,24 @@ class SocialRoomRegistry:
             del self._rooms[room_id]
             return room
 
-    async def merge_persisted_active_rooms(self, rows: Sequence[SocialRoom]) -> int:
+    async def merge_persisted_active_rooms(
+        self, rows: Sequence[SocialRoom], *, name_by_id: dict[str, str] | None = None
+    ) -> int:
         """Load non-dissolved ``social_rooms`` rows into memory (e.g. after restart).
 
-        Call while the ORM session is still open so attributes are readable.
+        ``name_by_id`` maps ``creator_agent_id`` -> display name (from ``agents`` when available).
         Skips ``room_id`` already present (including the check-in room).
         """
-        snapshots = [_chat_room_from_social_row(r) for r in rows]
+        nmap = name_by_id or {}
+        snapshots: list[ChatRoom] = []
+        for r in rows:
+            if r.creator_agent_id == "system":
+                cn = "system"
+            else:
+                cn = nmap.get(r.creator_agent_id) or (
+                    (r.creator_agent_id[:8] + "…") if len(r.creator_agent_id) > 8 else r.creator_agent_id
+                )
+            snapshots.append(chat_room_from_social_row(r, creator_name=cn))
         async with self._lock:
             n = 0
             for room in snapshots:
@@ -398,6 +433,17 @@ class SocialRoomRegistry:
                 self._rooms[room.room_id] = room
                 n += 1
             return n
+
+    async def register_resurrected_room(self, room: ChatRoom) -> bool:
+        """Insert a room reloaded from DB after L0 ``admin_resurrect_social_room``.
+
+        Returns ``False`` if ``room_id`` is already in the registry (e.g. race).
+        """
+        async with self._lock:
+            if room.room_id in self._rooms:
+                return False
+            self._rooms[room.room_id] = room
+            return True
 
     async def ensure_checkin_room(self) -> None:
         """Create the permanent check-in room if it is not already present."""
@@ -436,6 +482,21 @@ class SocialRoomRegistry:
             if room is None:
                 return {}
             return room.name_to_id_map()
+
+    async def get_current_room_members_snapshot(self, agent_id: str) -> dict[str, Any] | None:
+        """Return current room + live member list for an agent, or None when not in room."""
+        async with self._lock:
+            room_id = self._agent_room.get(agent_id)
+            if room_id is None:
+                return None
+            room = self._rooms.get(room_id)
+            if room is None:
+                return None
+            return {
+                "room_id": room.room_id,
+                "name": room.name,
+                "members": room.member_list(),
+            }
 
     def list_rooms_snapshot(self) -> list[dict[str, Any]]:
         """Full snapshot of all active rooms. Permanent room is always first."""

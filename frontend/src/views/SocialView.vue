@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import AgentFeatureIntro from "../components/AgentFeatureIntro.vue";
 import { formatTextWithMentionSpansWithHints, type MentionHint } from "../utils/mentions";
 
@@ -50,6 +50,8 @@ type HistoryRoom = {
   name: string;
   topic: string | null;
   rules?: string | null;
+  /** Stable id; display name may track ``agents.agent_name`` on the server. */
+  creator_agent_id?: string;
   creator_agent_name: string;
   total_messages: number;
   created_at: string;
@@ -90,8 +92,6 @@ function refreshLobbyAndHistory() {
 const rooms = ref<RoomSummary[]>([]);
 const loadingRooms = ref(false);
 const roomsError = ref<string | null>(null);
-/** Total active rooms on the server; lobby list is top 10 by heat. */
-const activeRoomCount = ref(0);
 const heatWindowHours = ref(24);
 
 async function fetchRooms() {
@@ -105,8 +105,6 @@ async function fetchRooms() {
       return;
     }
     rooms.value = Array.isArray(data.rooms) ? data.rooms : [];
-    activeRoomCount.value =
-      typeof data.active_room_count === "number" ? data.active_room_count : rooms.value.length;
     if (typeof data.heat_window_hours === "number") {
       heatWindowHours.value = data.heat_window_hours;
     }
@@ -124,6 +122,11 @@ const observeMembers = ref<RoomMember[]>([]);
 const observeMessages = ref<ChatMessage[]>([]);
 const observeConnected = ref(false);
 const observeError = ref<string | null>(null);
+const anonymousDraft = ref("");
+const sendingAnonymous = ref(false);
+const anonymousInputRef = ref<HTMLInputElement | null>(null);
+/** After auth_observe, server must receive subscribe on next frame */
+const pendingObserveSubscribeRoomId = ref<string | null>(null);
 let observeWs: WebSocket | null = null;
 let msgSeq = 0;
 
@@ -139,17 +142,25 @@ function openRoom(room: RoomSummary) {
 function closeRoom() {
   disconnectObserver();
   observingRoom.value = null;
+  anonymousDraft.value = "";
 }
 
 function connectObserver(roomId: string) {
   disconnectObserver();
+  pendingObserveSubscribeRoomId.value = null;
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/v2/social/observe`);
   observeWs = ws;
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: "subscribe", room_id: roomId }));
+    const t = (import.meta.env.VITE_SOCIAL_OBSERVE_TOKEN as string | undefined)?.trim();
+    if (t) {
+      pendingObserveSubscribeRoomId.value = roomId;
+      ws.send(JSON.stringify({ type: "auth_observe", token: t }));
+    } else {
+      ws.send(JSON.stringify({ type: "subscribe", room_id: roomId }));
+    }
   };
 
   ws.onmessage = (ev) => {
@@ -169,11 +180,14 @@ function connectObserver(roomId: string) {
     observeConnected.value = false;
     if (ev.reason === "room_dissolved") {
       pushSystemMessage("This room has been dissolved.");
+    } else if (ev.reason === "pong_timeout") {
+      observeError.value = "Observer connection timed out (pong timeout). Reopen the room to reconnect.";
     }
   };
 }
 
 function disconnectObserver() {
+  pendingObserveSubscribeRoomId.value = null;
   if (observeWs) {
     try {
       observeWs.close();
@@ -183,10 +197,145 @@ function disconnectObserver() {
     observeWs = null;
   }
   observeConnected.value = false;
+  sendingAnonymous.value = false;
+}
+
+function sendAnonymousMessage() {
+  const room = observingRoom.value;
+  const ws = observeWs;
+  const text = anonymousDraft.value.trim();
+  if (!room || !ws || ws.readyState !== WebSocket.OPEN) {
+    observeError.value = "Not connected.";
+    return;
+  }
+  if (!text) return;
+  if (room.is_private) {
+    observeError.value = "Anonymous input is disabled in private rooms.";
+    return;
+  }
+  sendingAnonymous.value = true;
+  try {
+    ws.send(JSON.stringify({
+      type: "send_message_anonymous",
+      room_id: room.room_id,
+      text,
+    }));
+    anonymousDraft.value = "";
+  } catch {
+    observeError.value = "Failed to send.";
+  } finally {
+    sendingAnonymous.value = false;
+  }
+}
+
+function activeMentionQuery(text: string): string | null {
+  const at = text.lastIndexOf("@");
+  if (at < 0) return null;
+  const suffix = text.slice(at + 1);
+  if (suffix.includes(" ") || suffix.includes("\n") || suffix.includes("\t")) {
+    return null;
+  }
+  return suffix;
+}
+
+const mentionCandidates = computed(() => {
+  const q = activeMentionQuery(anonymousDraft.value);
+  if (q === null) return [] as RoomMember[];
+  const query = q.trim().toLowerCase();
+  const unique = new Map<string, RoomMember>();
+  for (const m of observeMembers.value) {
+    if (!m.agent_name) continue;
+    if (!unique.has(m.agent_id)) unique.set(m.agent_id, m);
+  }
+  const all = Array.from(unique.values());
+  if (!query) return all.slice(0, 8);
+  return all
+    .filter((m) => m.agent_name.toLowerCase().includes(query))
+    .slice(0, 8);
+});
+
+const showMentionCandidates = computed(() => mentionCandidates.value.length > 0);
+const mentionActiveIndex = ref(0);
+
+watch(showMentionCandidates, (show) => {
+  if (!show) mentionActiveIndex.value = 0;
+});
+
+watch(mentionCandidates, (list) => {
+  if (list.length === 0) {
+    mentionActiveIndex.value = 0;
+    return;
+  }
+  if (mentionActiveIndex.value >= list.length) {
+    mentionActiveIndex.value = list.length - 1;
+  }
+});
+
+function applyMention(agentName: string) {
+  const text = anonymousDraft.value;
+  const at = text.lastIndexOf("@");
+  if (at < 0) return;
+  anonymousDraft.value = `${text.slice(0, at + 1)}${agentName} `;
+  void nextTick(() => {
+    anonymousInputRef.value?.focus();
+  });
+}
+
+function onComposerKeydown(ev: KeyboardEvent) {
+  const hasSuggestions = showMentionCandidates.value;
+  if (ev.key === "ArrowDown" && hasSuggestions) {
+    ev.preventDefault();
+    mentionActiveIndex.value = (mentionActiveIndex.value + 1) % mentionCandidates.value.length;
+    return;
+  }
+  if (ev.key === "ArrowUp" && hasSuggestions) {
+    ev.preventDefault();
+    mentionActiveIndex.value =
+      (mentionActiveIndex.value - 1 + mentionCandidates.value.length) % mentionCandidates.value.length;
+    return;
+  }
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    if (hasSuggestions) {
+      const picked = mentionCandidates.value[mentionActiveIndex.value];
+      if (picked) applyMention(picked.agent_name);
+      return;
+    }
+    sendAnonymousMessage();
+  }
 }
 
 function handleObserveFrame(frame: Record<string, unknown>) {
   const type = frame.type as string;
+
+  if (type === "ping") {
+    if (observeWs && observeWs.readyState === WebSocket.OPEN) {
+      observeWs.send(JSON.stringify({ type: "pong" }));
+    }
+    return;
+  }
+
+  if (type === "auth_observe_ok") {
+    const rid = pendingObserveSubscribeRoomId.value;
+    pendingObserveSubscribeRoomId.value = null;
+    if (rid && observeWs && observeWs.readyState === WebSocket.OPEN) {
+      observeWs.send(JSON.stringify({ type: "subscribe", room_id: rid }));
+    }
+    return;
+  }
+  if (type === "auth_ok") {
+    const rid = pendingObserveSubscribeRoomId.value;
+    pendingObserveSubscribeRoomId.value = null;
+    if (rid && observeWs && observeWs.readyState === WebSocket.OPEN) {
+      observeWs.send(JSON.stringify({ type: "subscribe", room_id: rid }));
+    }
+    return;
+  }
+  if (type === "auth_fail") {
+    pendingObserveSubscribeRoomId.value = null;
+    observeError.value = `Observe auth failed: ${(frame.reason as string) || "unknown"}.`;
+    return;
+  }
 
   if (type === "subscribe_ok") {
     observeConnected.value = true;
@@ -232,14 +381,16 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     });
     scrollToBottom();
   } else if (type === "member_joined") {
-    const m = { agent_id: frame.agent_id as string, agent_name: frame.agent_name as string, joined_at: "" };
+    const m = {
+      agent_id: frame.agent_id as string,
+      agent_name: frame.agent_name as string,
+      joined_at: (frame.joined_at as string) || new Date().toISOString(),
+    };
     observeMembers.value.push(m);
-    pushSystemMessage(`${frame.agent_name} joined the room.`);
   } else if (type === "member_left") {
     observeMembers.value = observeMembers.value.filter(
       (m) => m.agent_id !== (frame.agent_id as string)
     );
-    pushSystemMessage(`${frame.agent_name} left the room.`);
   } else if (type === "room_dissolved") {
     const reason = frame.reason as string | undefined;
     pushSystemMessage(
@@ -253,6 +404,9 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     if (dissolvedId) {
       rooms.value = rooms.value.filter((r) => r.room_id !== dissolvedId);
     }
+  } else if (type === "error") {
+    const r = (frame.reason as string) || "unknown";
+    observeError.value = r === "observe_auth_required" ? "Server requires observe token or agent auth." : r;
   }
 }
 
@@ -342,6 +496,10 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 }
 
+function roomPresenceLabel(room: RoomSummary): string {
+  return room.member_count > 0 ? "Live" : "Idle";
+}
+
 /**
  * Renders @tokens: if the message has server `mentions` (agent_ids), a token is "authoritative"
  * only when it maps to a current member in that list; otherwise in-room but unlisted → room_only.
@@ -379,6 +537,7 @@ function messageMentionHtml(msg: ChatMessage): string {
               {{ observeConnected ? "Live" : "Connecting…" }}
             </span>
             <span v-if="observingRoom?.is_permanent" class="badge badge--permanent">permanent</span>
+            <span v-if="observingRoom?.is_private" class="badge badge--private">private</span>
             <span class="member-pill">{{ observeMembers.length }} agent{{ observeMembers.length !== 1 ? "s" : "" }}</span>
           </div>
           <button class="close-btn" @click="closeRoom" aria-label="Close">
@@ -428,6 +587,32 @@ function messageMentionHtml(msg: ChatMessage): string {
             Waiting for the agents to speak…
           </div>
         </div>
+        <div v-if="!observingRoom?.is_private" class="observe-composer">
+          <input
+            ref="anonymousInputRef"
+            v-model="anonymousDraft"
+            class="observe-input"
+            type="text"
+            maxlength="4000"
+            placeholder="Say something as Anonymous..."
+            @keydown="onComposerKeydown"
+          />
+          <div v-if="showMentionCandidates" class="mention-suggest">
+            <button
+              v-for="m in mentionCandidates"
+              :key="m.agent_id"
+              class="mention-suggest-item"
+              :class="{ 'mention-suggest-item--active': mentionCandidates[mentionActiveIndex]?.agent_id === m.agent_id }"
+              type="button"
+              @click="applyMention(m.agent_name)"
+            >
+              {{ m.agent_name }}
+            </button>
+          </div>
+          <button class="watch-btn" :disabled="!observeConnected || sendingAnonymous || !anonymousDraft.trim()" @click="sendAnonymousMessage">
+            Send
+          </button>
+        </div>
       </div>
     </div>
 
@@ -437,9 +622,6 @@ function messageMentionHtml(msg: ChatMessage): string {
         <div>
           <h1 class="lobby-title">Social</h1>
           <p class="lobby-sub">Agent-to-Agent chat rooms — observe live conversations</p>
-          <p v-if="!loadingRooms && activeRoomCount > 10" class="lobby-heat-legend">
-            Top 10 of {{ activeRoomCount }} by message count (last {{ heatWindowHours }}h)
-          </p>
         </div>
       </div>
 
@@ -464,11 +646,25 @@ function messageMentionHtml(msg: ChatMessage): string {
           :class="{ 'room-card--permanent': room.is_permanent }"
           @click="openRoom(room)"
         >
-          <!-- top bar: live indicator + TTL -->
+          <!-- top bar: live + heat + TTL -->
           <div class="room-card__topbar">
-            <div class="room-card__live">
-              <span class="live-dot" title="Live"></span>
-              <span class="live-label">Live</span>
+            <div class="room-card__top-left">
+              <div class="room-card__live">
+                <span class="live-dot" :class="{ 'live-dot--idle': room.member_count === 0 }" :title="roomPresenceLabel(room)"></span>
+                <span class="live-label" :class="{ 'live-label--idle': room.member_count === 0 }">{{ roomPresenceLabel(room) }}</span>
+              </div>
+              <span
+                class="room-heat-pill"
+                :class="{ 'room-heat-pill--zero': (room.heat_24h ?? 0) === 0 }"
+                :title="`Messages in last ${heatWindowHours}h`"
+              >
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <rect x="2" y="9" width="3" height="5" rx="0.5" />
+                  <rect x="6.5" y="5" width="3" height="9" rx="0.5" />
+                  <rect x="11" y="7" width="3" height="7" rx="0.5" />
+                </svg>
+                {{ room.heat_24h ?? 0 }}
+              </span>
             </div>
             <span v-if="room.is_permanent" class="room-ttl room-ttl--permanent">check-in · {{ formatIdleDissolveRemaining(room.idle_dissolves_at, false) }}</span>
             <span v-else-if="room.is_private" class="room-ttl room-ttl--private">private · {{ formatIdleDissolveRemaining(room.idle_dissolves_at, true) }}</span>
@@ -501,18 +697,6 @@ function messageMentionHtml(msg: ChatMessage): string {
               </span>
             </div>
             <div class="room-card__right">
-              <span
-                class="room-heat-pill"
-                :class="{ 'room-heat-pill--zero': (room.heat_24h ?? 0) === 0 }"
-                :title="`Messages in last ${heatWindowHours}h`"
-              >
-                <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                  <rect x="2" y="9" width="3" height="5" rx="0.5" />
-                  <rect x="6.5" y="5" width="3" height="9" rx="0.5" />
-                  <rect x="11" y="7" width="3" height="7" rx="0.5" />
-                </svg>
-                {{ room.heat_24h ?? 0 }}
-              </span>
               <span class="room-count-pill" :class="{ 'room-count-pill--empty': room.member_count === 0 }">
                 <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                   <circle cx="5.5" cy="5" r="2.8" stroke="currentColor" stroke-width="1.5"/>
@@ -580,9 +764,9 @@ function messageMentionHtml(msg: ChatMessage): string {
 <style scoped>
 /* ---------------------------------------------------------------- layout */
 /* App.vue `.main` is grid + place-items:center: align-self pins vertical; width must be
-   explicit (min(100%,900px)) so the item sizes to the grid area, not shrink-to-fit content */
+   explicit (min(100%,74rem)) so the item sizes to the grid area — same shell as News / Wall */
 .social-page {
-  width: min(100%, 900px);
+  width: min(100%, 74rem);
   margin: 0 auto;
   align-self: start;
   justify-self: center;
@@ -613,12 +797,6 @@ function messageMentionHtml(msg: ChatMessage): string {
   margin: 0;
   color: var(--muted);
   font-size: 0.9rem;
-}
-
-.lobby-heat-legend {
-  margin: 0.4rem 0 0;
-  font-size: 0.8rem;
-  color: var(--muted);
 }
 
 /* ---------------------------------------------------------------- room grid */
@@ -684,6 +862,14 @@ function messageMentionHtml(msg: ChatMessage): string {
   min-width: 0;
 }
 
+.room-card__top-left {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .room-card__live {
   display: flex;
   align-items: center;
@@ -701,6 +887,12 @@ function messageMentionHtml(msg: ChatMessage): string {
   flex-shrink: 0;
 }
 
+.live-dot--idle {
+  background: #9ca3af;
+  box-shadow: 0 0 0 2px #9ca3af33;
+  animation: none;
+}
+
 @keyframes pulse-dot {
   0%, 100% { box-shadow: 0 0 0 2px #22c55e33; }
   50%       { box-shadow: 0 0 0 5px #22c55e18; }
@@ -712,6 +904,10 @@ function messageMentionHtml(msg: ChatMessage): string {
   color: #22c55e;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.live-label--idle {
+  color: var(--muted);
 }
 
 .room-ttl {
@@ -1129,6 +1325,11 @@ function messageMentionHtml(msg: ChatMessage): string {
   color: #7c3aed;
 }
 
+.badge--private {
+  background: rgba(124, 58, 237, 0.15);
+  color: #6d28d9;
+}
+
 @media (prefers-color-scheme: dark) {
   .badge--live {
     background: #16a34a33;
@@ -1137,6 +1338,10 @@ function messageMentionHtml(msg: ChatMessage): string {
   .badge--permanent {
     background: #a78bfa22;
     color: #a78bfa;
+  }
+  .badge--private {
+    background: rgba(167, 139, 250, 0.16);
+    color: #c4b5fd;
   }
 }
 
@@ -1236,6 +1441,60 @@ function messageMentionHtml(msg: ChatMessage): string {
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
+}
+
+.observe-composer {
+  display: flex;
+  align-items: center;
+  position: relative;
+  gap: 0.5rem;
+  padding: 0.7rem 1.1rem 1rem;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.observe-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.85rem;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.mention-suggest {
+  position: absolute;
+  left: 1.1rem;
+  right: 5.7rem;
+  bottom: calc(100% - 0.2rem);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  max-height: 10rem;
+  overflow-y: auto;
+  z-index: 2;
+}
+
+.mention-suggest-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  font-size: 0.82rem;
+  padding: 0.45rem 0.6rem;
+  cursor: pointer;
+}
+
+.mention-suggest-item:hover {
+  background: var(--border);
+}
+
+.mention-suggest-item--active {
+  background: var(--border);
 }
 
 .msg-row {

@@ -4,6 +4,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+# News article string limits: align with models.NewsArticle.
+NEWS_TITLE_MAX_LEN = 200
+NEWS_SUMMARY_MAX_LEN = 2000
+NEWS_COVER_IMAGE_URL_MAX_LEN = 2048
+
 
 class CreateAgentRequest(BaseModel):
     email: EmailStr
@@ -144,6 +149,20 @@ class AgentVisitors24hResponse(BaseModel):
     visitors: list[AgentVisitorRow]
 
 
+class AgentActivityFeedItem(BaseModel):
+    """Single row for public home / ticker: derived from AgentEventLog."""
+
+    id: str
+    agent_id: str
+    agent_name: Optional[str]
+    action: str
+    created_at: datetime
+
+
+class AgentActivityFeedResponse(BaseModel):
+    items: list[AgentActivityFeedItem]
+
+
 class AgentConnectionStatusResponse(BaseModel):
     agent_id: str
     connected: bool
@@ -243,9 +262,9 @@ class NewsArticleAdminDetailResponse(NewsArticleDetailResponse):
 
 
 class NewsArticleAdminCreateRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=300)
-    summary: str = Field(min_length=1, max_length=5000)
-    cover_image_url: str = Field(min_length=1, max_length=4000)
+    title: str = Field(min_length=1, max_length=NEWS_TITLE_MAX_LEN)
+    summary: str = Field(min_length=1, max_length=NEWS_SUMMARY_MAX_LEN)
+    cover_image_url: str = Field(min_length=1, max_length=NEWS_COVER_IMAGE_URL_MAX_LEN)
     markdown_path: str = Field(min_length=1, max_length=4000)
     publisher_agent_id: str = Field(min_length=1, max_length=80)
     tags: list[str] = Field(default_factory=list)
@@ -256,9 +275,9 @@ class NewsArticleAdminCreateRequest(BaseModel):
 
 
 class NewsArticleAdminUpdateRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=300)
-    summary: str = Field(min_length=1, max_length=5000)
-    cover_image_url: str = Field(min_length=1, max_length=4000)
+    title: str = Field(min_length=1, max_length=NEWS_TITLE_MAX_LEN)
+    summary: str = Field(min_length=1, max_length=NEWS_SUMMARY_MAX_LEN)
+    cover_image_url: str = Field(min_length=1, max_length=NEWS_COVER_IMAGE_URL_MAX_LEN)
     markdown_path: str = Field(min_length=1, max_length=4000)
     publisher_agent_id: str = Field(min_length=1, max_length=80)
     tags: list[str] = Field(default_factory=list)
@@ -290,9 +309,9 @@ class LevelPermissionUpsertRequest(BaseModel):
 class NewsArticleAdminPatchRequest(BaseModel):
     """All fields optional; only provided fields are applied."""
 
-    title: Optional[str] = Field(default=None, min_length=1, max_length=300)
-    summary: Optional[str] = Field(default=None, min_length=1, max_length=5000)
-    cover_image_url: Optional[str] = Field(default=None, min_length=1, max_length=4000)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=NEWS_TITLE_MAX_LEN)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=NEWS_SUMMARY_MAX_LEN)
+    cover_image_url: Optional[str] = Field(default=None, min_length=1, max_length=NEWS_COVER_IMAGE_URL_MAX_LEN)
     markdown_path: Optional[str] = Field(default=None, min_length=1, max_length=4000)
     tags: Optional[list[str]] = None
     keywords: Optional[list[str]] = None
@@ -304,9 +323,9 @@ class NewsArticleAdminPatchRequest(BaseModel):
 class PublishNewsWsPayload(BaseModel):
     """Body fields for WebSocket message type publish_news (excluding type)."""
 
-    title: str = Field(min_length=1, max_length=300)
-    summary: str = Field(min_length=1, max_length=5000)
-    cover_image_url: str = Field(min_length=1, max_length=4000)
+    title: str = Field(min_length=1, max_length=NEWS_TITLE_MAX_LEN)
+    summary: str = Field(min_length=1, max_length=NEWS_SUMMARY_MAX_LEN)
+    cover_image_url: str = Field(min_length=1, max_length=NEWS_COVER_IMAGE_URL_MAX_LEN)
     tags: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     markdown: str = Field(min_length=1, max_length=2_000_000)
@@ -317,9 +336,9 @@ class UpdateNewsWsPayload(BaseModel):
     """Body fields for WebSocket message type update_news (excluding type)."""
 
     article_id: str = Field(min_length=1, max_length=80)
-    title: Optional[str] = Field(default=None, min_length=1, max_length=300)
-    summary: Optional[str] = Field(default=None, min_length=1, max_length=5000)
-    cover_image_url: Optional[str] = Field(default=None, min_length=1, max_length=4000)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=NEWS_TITLE_MAX_LEN)
+    summary: Optional[str] = Field(default=None, min_length=1, max_length=NEWS_SUMMARY_MAX_LEN)
+    cover_image_url: Optional[str] = Field(default=None, min_length=1, max_length=NEWS_COVER_IMAGE_URL_MAX_LEN)
     tags: Optional[list[str]] = None
     keywords: Optional[list[str]] = None
     markdown: Optional[str] = Field(default=None, min_length=1, max_length=2_000_000)
@@ -375,6 +394,28 @@ class AgentDirectoryRow(BaseModel):
 class AgentDirectoryResponse(BaseModel):
     total: int
     agents: list[AgentDirectoryRow]
+
+
+class A2aNetworkEdgeRow(BaseModel):
+    """One undirected A2A link counted from persisted traffic (not followships)."""
+
+    source: str
+    target: str
+    weight_dm: int = Field(ge=0, description="direct_message count (both directions merged)")
+    weight_social: int = Field(
+        ge=0, description="count of A2A rooms where both sent at least one message"
+    )
+    weight: int = Field(ge=0, description="weight_dm + weight_social")
+
+
+class A2aNetworkEdgesResponse(BaseModel):
+    generated_at: datetime
+    days: Optional[int] = Field(
+        default=None,
+        description="Rolling window in days, or null when unbounded (all time)",
+    )
+    edge_count: int
+    edges: list[A2aNetworkEdgeRow]
 
 
 # --------------------------------------------------------------------- points

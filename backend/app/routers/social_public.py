@@ -4,7 +4,11 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.models import SocialRoom
+from app.models import Agent, SocialRoom
+from app.services.display_name_resolve import (
+    enrich_social_lobby_snapshots,
+    live_display_name_from_snapshot,
+)
 from app.services.social_db import count_social_messages_by_room_since, get_room_messages
 
 # Rolling window for lobby "heat" (message count) and top-N slice; keep in sync with docs.
@@ -12,6 +16,15 @@ SOCIAL_LOBBY_HEAT_HOURS = 24
 SOCIAL_LOBBY_TOP_N = 10
 
 router = APIRouter()
+
+
+def _last_message_sort_value(iso_ts: str | None) -> float:
+    if not iso_ts:
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(iso_ts).timestamp()
+    except ValueError:
+        return float("-inf")
 
 
 @router.get("/v2/social/rooms")
@@ -29,11 +42,12 @@ async def list_social_rooms(request: Request) -> JSONResponse:
     snapshot.sort(
         key=lambda r: (
             -r["heat_24h"],
-            r["last_message_at"] or "",
+            -_last_message_sort_value(r.get("last_message_at")),
             r["name"],
         )
     )
     top = snapshot[:SOCIAL_LOBBY_TOP_N]
+    await enrich_social_lobby_snapshots(session_factory, top)
     return JSONResponse(
         {
             "rooms": top,
@@ -45,37 +59,41 @@ async def list_social_rooms(request: Request) -> JSONResponse:
 
 @router.get("/v2/social/rooms/history")
 async def list_social_rooms_history(request: Request) -> JSONResponse:
-    """Return dissolved rooms created within the last 24 hours, newest first."""
+    """Return rooms dissolved within the last 24 hours, newest first."""
     session_factory = request.app.state.session_factory
     since = datetime.now(timezone.utc) - timedelta(hours=24)
 
     async with session_factory() as session:
         result = await session.execute(
-            select(SocialRoom)
+            select(SocialRoom, Agent)
+            .outerjoin(Agent, SocialRoom.creator_agent_id == Agent.agent_id)
             .where(
-                SocialRoom.created_at >= since,
                 SocialRoom.dissolved_at.is_not(None),
+                SocialRoom.dissolved_at >= since,
             )
-            .order_by(SocialRoom.created_at.desc())
+            .order_by(SocialRoom.dissolved_at.desc())
             .limit(50)
         )
-        rooms = result.scalars().all()
+        room_rows = result.all()
 
     items = [
         {
             "room_id": r.room_id,
             "status": "dissolved",
             "name": r.name,
-            "topic": r.topic,
-            "rules": r.rules,
-            "creator_agent_name": r.creator_agent_name,
+            # Keep lobby discoverability, but do not leak room content hints for
+            # private or non-observable rooms to unauthenticated history readers.
+            "topic": None if (r.is_private or not r.observable) else r.topic,
+            "rules": None if (r.is_private or not r.observable) else r.rules,
+            "creator_agent_id": r.creator_agent_id,
+            "creator_agent_name": live_display_name_from_snapshot("", ag, fallback_id=r.creator_agent_id),
             "total_messages": r.total_messages,
             "created_at": r.created_at.isoformat(),
             "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
             "dissolved_at": r.dissolved_at.isoformat(),
             "dissolution_reason": r.dissolution_reason,
         }
-        for r in rooms
+        for r, ag in room_rows
     ]
     return JSONResponse({"rooms": items})
 

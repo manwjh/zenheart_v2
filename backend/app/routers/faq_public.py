@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -7,18 +8,23 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse, Response
 from jinja2 import TemplateError
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import Settings
 from app.crypto_tokens import generate_agent_id, generate_token, sha256_hex
 from app.deps import DbSession, SettingsDep
-from app.models import Agent, AgentEventLog, AgentPoints, EmailLog
+from app.models import Agent, AgentEventLog, AgentMessage, AgentPoints, EmailLog, SocialMessage
 from app.schemas import (
+    A2aNetworkEdgeRow,
+    A2aNetworkEdgesResponse,
+    AgentActivityFeedItem,
+    AgentActivityFeedResponse,
     AgentCredentialRecoveryRequest,
     AgentCredentialRecoveryResponse,
     AgentDirectoryResponse,
@@ -33,10 +39,12 @@ from app.schemas import (
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message as msgbox_push
 from app.services.points_service import award_points
+from app.services.sovereign_notify import push_msgbox_notify_to_sovereigns
 from app.services.skills_storage import (
     SKILLS_DIR,
     iter_skill_slugs,
     skill_markdown_path,
+    skill_zip_bytes,
 )
 from app.services.template_service import TemplateService
 
@@ -44,7 +52,27 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v2/faq", tags=["faq"])
 
+# Home ticker: whitelist AgentEventLog.event → short public phrase (see GET /agent-activity-feed).
+_AGENT_ACTIVITY_FEED_LABELS: dict[str, str] = {
+    "ws_connected": "connected",
+    "a2a_ws_connected": "connected to Social",
+    "ws_disconnected": "disconnected",
+    "a2a_ws_disconnected": "left Social",
+    "games_ws_connected": "joined Games",
+    "games_ws_disconnected": "left Games",
+    "public_wall_message_posted": "left a trace on the Wall",
+    "a2a_message_sent": "messaged in Social",
+    "a2a_room_created": "opened a Social room",
+    "a2a_room_joined": "joined a Social room",
+    "a2a_room_left": "left a Social room",
+    "news_published_via_ws": "published news",
+    "comment_submitted_via_ws": "commented",
+    "comment_submitted_via_public_http": "commented",
+    "maze_solved": "solved the maze",
+}
+
 DOCS_DIR = Path(__file__).parent.parent.parent.parent / "docs"
+GAME_DIR = Path(__file__).parent.parent.parent.parent / "game"
 
 
 class DocItem(BaseModel):
@@ -133,21 +161,73 @@ def _skill_item_for_slug(slug: str) -> Optional[SkillItem]:
     )
 
 
+def _doc_canonical_slug(path: Path) -> str:
+    """Strip leading NN_ from numbered docs; keeps welcome.md etc. as-is."""
+    stem = path.stem
+    m = re.match(r"^(\d{1,2})_(.+)$", stem)
+    if m:
+        return m.group(2)
+    return stem
+
+
+def _resolve_faq_doc_path(slug: str) -> Path | None:
+    direct = DOCS_DIR / f"{slug}.md"
+    if direct.is_file():
+        return direct
+    for p in DOCS_DIR.glob("*.md"):
+        if p.is_file() and _doc_canonical_slug(p) == slug:
+            return p
+    return None
+
+
+def _resolve_game_doc_path(slug: str) -> Path | None:
+    direct = GAME_DIR / f"{slug}.md"
+    if direct.is_file():
+        return direct
+    for p in GAME_DIR.glob("*.md"):
+        if p.is_file() and _doc_canonical_slug(p) == slug:
+            return p
+    return None
+
+
 @router.get("/docs", response_model=list[DocItem])
 async def list_docs() -> list[DocItem]:
     if not DOCS_DIR.is_dir():
         return []
     items = sorted(DOCS_DIR.glob("*.md"), key=lambda p: p.name)
-    return [DocItem(slug=p.stem, title=_extract_title(p)) for p in items]
+    return [DocItem(slug=_doc_canonical_slug(p), title=_extract_title(p)) for p in items]
 
 
 @router.get("/docs/{slug}", response_class=PlainTextResponse)
 async def get_doc(slug: str) -> str:
     if "/" in slug or "\\" in slug or slug.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid slug")
-    path = DOCS_DIR / f"{slug}.md"
-    if not path.is_file():
+    path = _resolve_faq_doc_path(slug)
+    if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="Doc not found")
+    return path.read_text(encoding="utf-8")
+
+
+@router.get("/game", response_model=list[DocItem])
+async def list_game_docs() -> list[DocItem]:
+    """Markdown under `v2/game/` — per-game rules (POMDP, wire), not platform FAQ."""
+    if not GAME_DIR.is_dir():
+        return []
+    items = sorted(GAME_DIR.glob("*.md"), key=lambda p: p.name)
+    return [
+        DocItem(slug=_doc_canonical_slug(p), title=_extract_title(p))
+        for p in items
+        if p.is_file()
+    ]
+
+
+@router.get("/game/{slug}", response_class=PlainTextResponse)
+async def get_game_doc(slug: str) -> str:
+    if "/" in slug or "\\" in slug or slug.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid slug")
+    path = _resolve_game_doc_path(slug)
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="Game doc not found")
     return path.read_text(encoding="utf-8")
 
 
@@ -159,6 +239,21 @@ async def list_skills() -> list[SkillItem]:
         if item is not None:
             out.append(item)
     return out
+
+
+@router.get("/skills/{slug}/bundle")
+async def get_skill_bundle(slug: str) -> Response:
+    """Full OpenClaw bundle (directory tree) or root-level <slug>.md as a zip file."""
+    if "/" in slug or "\\" in slug or slug.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid slug")
+    data = skill_zip_bytes(slug)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{slug}.zip"'},
+    )
 
 
 @router.get("/skills/{slug}", response_class=PlainTextResponse)
@@ -377,8 +472,8 @@ async def submit_agent_application(
 
     await award_points(request.app.state.session_factory, agent_id, "register")
 
-    # Signal to global governance queue (fire-and-forget).
-    await msgbox_push(
+    # Signal to global governance queue and push live hint in fire-and-forget mode.
+    message_id = await msgbox_push(
         request.app.state.session_factory,
         scope="global",
         from_type="system",
@@ -388,6 +483,16 @@ async def submit_agent_application(
         resource_id=agent_id,
         payload={"agent_name": agent_name, "level": 9, "label": "faq-self-service"},
     )
+    if message_id is not None:
+        asyncio.create_task(
+            push_msgbox_notify_to_sovereigns(
+                request.app.state.session_factory,
+                request.app.state.registry,
+                message_id=message_id,
+                kind="agent_registered",
+                extra={"resource_type": "agent", "resource_id": agent_id, "priority": 3},
+            )
+        )
 
     return AgentSelfApplyResponse(
         ok=True,
@@ -727,6 +832,46 @@ async def get_ai_visitors_last_24h(session: DbSession) -> AgentVisitors24hRespon
     )
 
 
+@router.get("/agent-activity-feed", response_model=AgentActivityFeedResponse)
+async def get_agent_activity_feed(
+    session: DbSession,
+    limit: int = Query(default=16, ge=1, le=32),
+) -> AgentActivityFeedResponse:
+    """Recent agent-facing events for the public home ticker (buffered client-side)."""
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=72)
+    events = tuple(_AGENT_ACTIVITY_FEED_LABELS.keys())
+
+    result = await session.execute(
+        select(AgentEventLog, Agent.agent_name)
+        .outerjoin(Agent, Agent.agent_id == AgentEventLog.agent_id)
+        .where(
+            AgentEventLog.agent_id.is_not(None),
+            AgentEventLog.event.in_(events),
+            AgentEventLog.created_at >= since,
+        )
+        .order_by(AgentEventLog.created_at.desc())
+        .limit(limit)
+    )
+
+    items: list[AgentActivityFeedItem] = []
+    for log_row, name in result.all():
+        label = _AGENT_ACTIVITY_FEED_LABELS.get(log_row.event)
+        if label is None or log_row.agent_id is None:
+            continue
+        items.append(
+            AgentActivityFeedItem(
+                id=str(log_row.id),
+                agent_id=log_row.agent_id,
+                agent_name=name,
+                action=label,
+                created_at=log_row.created_at,
+            )
+        )
+
+    return AgentActivityFeedResponse(items=items)
+
+
 @router.get("/agent-directory", response_model=AgentDirectoryResponse)
 async def get_agent_directory(session: DbSession) -> AgentDirectoryResponse:
     """All registered (non-revoked) agents with registration time, last seen, and points."""
@@ -772,3 +917,121 @@ async def get_agent_directory(session: DbSession) -> AgentDirectoryResponse:
         for row in rows
     ]
     return AgentDirectoryResponse(total=len(agents), agents=agents)
+
+
+@router.get("/a2a-network-edges", response_model=A2aNetworkEdgesResponse)
+async def get_a2a_network_edges(
+    session: DbSession,
+    all_time: bool = Query(
+        default=False,
+        description="If true, do not apply a time window to DM/social data (slower on large DBs).",
+    ),
+    days: int = Query(
+        default=365,
+        ge=1,
+        le=1095,
+        description="When all_time is false: only count DMs and social messages from the last N days.",
+    ),
+) -> A2aNetworkEdgesResponse:
+    """
+    Public aggregate: undirected A2A edges for the network map.
+
+    - **weight_dm** — ``agent_messages`` with ``type=direct_message``, ``scope=agent``; A↔B
+      messages merged into one undirected count; only non-revoked agents.
+    - **weight_social** — number of A2A rooms where both agents have at least one
+      ``social_messages`` row (any content); time-filter applies to which messages are considered.
+
+    No message text is returned. Tweak ``all_time`` / ``days`` to balance completeness vs. query cost.
+    """
+    now = datetime.now(timezone.utc)
+    since: Optional[datetime] = None
+    if not all_time:
+        since = now - timedelta(days=days)
+    response_days: Optional[int] = None if all_time else days
+
+    a_from = aliased(Agent, name="a_from")
+    a_to = aliased(Agent, name="a_to")
+    pair_a = func.least(AgentMessage.from_agent_id, AgentMessage.recipient_id)
+    pair_b = func.greatest(AgentMessage.from_agent_id, AgentMessage.recipient_id)
+    dm_base = (
+        select(pair_a.label("a"), pair_b.label("b"), func.count().label("c"))
+        .select_from(AgentMessage)
+        .join(
+            a_from,
+            and_(a_from.agent_id == AgentMessage.from_agent_id, a_from.revoked_at.is_(None)),
+        )
+        .join(
+            a_to,
+            and_(a_to.agent_id == AgentMessage.recipient_id, a_to.revoked_at.is_(None)),
+        )
+        .where(
+            AgentMessage.scope == "agent",
+            AgentMessage.type == "direct_message",
+            AgentMessage.from_agent_id.is_not(None),
+            AgentMessage.recipient_id.is_not(None),
+            AgentMessage.from_agent_id != AgentMessage.recipient_id,
+        )
+        .group_by(pair_a, pair_b)
+    )
+    if not all_time:
+        assert since is not None
+        dm_base = dm_base.where(AgentMessage.created_at >= since)
+    dm_rows = (await session.execute(dm_base)).mappings().all()
+
+    # Distinct (room, agent) for active senders, then self-join for pairs in the same room.
+    ra_distinct = select(SocialMessage.room_id, SocialMessage.agent_id).join(
+        Agent, Agent.agent_id == SocialMessage.agent_id
+    ).where(Agent.revoked_at.is_(None))
+    if not all_time:
+        assert since is not None
+        ra_distinct = ra_distinct.where(SocialMessage.sent_at >= since)
+    ra_sq = ra_distinct.distinct().subquery("ra")
+    r1 = ra_sq.alias("r1")
+    r2 = ra_sq.alias("r2")
+    soc_a = func.least(r1.c.agent_id, r2.c.agent_id)
+    soc_b = func.greatest(r1.c.agent_id, r2.c.agent_id)
+    so_stmt = (
+        select(soc_a.label("a"), soc_b.label("b"), func.count().label("c"))
+        .select_from(
+            r1.join(
+                r2, and_(r1.c.room_id == r2.c.room_id, r1.c.agent_id < r2.c.agent_id)
+            )
+        )
+        .group_by(soc_a, soc_b)
+    )
+    so_rows = (await session.execute(so_stmt)).mappings().all()
+
+    acc: dict[tuple[str, str], list[int]] = {}
+    for row in dm_rows:
+        key = (str(row["a"]), str(row["b"]))
+        w = int(row["c"] or 0)
+        p = acc.setdefault(key, [0, 0])
+        p[0] = w
+    for row in so_rows:
+        key = (str(row["a"]), str(row["b"]))
+        w = int(row["c"] or 0)
+        p = acc.setdefault(key, [0, 0])
+        p[1] = w
+
+    edges: list[A2aNetworkEdgeRow] = []
+    for (a, b), (wdm, ws) in acc.items():
+        wtot = wdm + ws
+        if wtot < 1:
+            continue
+        edges.append(
+            A2aNetworkEdgeRow(
+                source=a,
+                target=b,
+                weight_dm=wdm,
+                weight_social=ws,
+                weight=wtot,
+            )
+        )
+    edges.sort(key=lambda e: e.weight, reverse=True)
+
+    return A2aNetworkEdgesResponse(
+        generated_at=now,
+        days=response_days,
+        edge_count=len(edges),
+        edges=edges,
+    )

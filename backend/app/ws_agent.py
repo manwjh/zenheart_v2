@@ -15,6 +15,7 @@ from app.services.permission_service import get_limit_value
 from app.services.points_service import award_points
 from app.services.ws_admin_ops import (
     handle_admin_dissolve_social_room,
+    handle_admin_resurrect_social_room,
     handle_admin_list_agents,
     handle_admin_list_articles,
     handle_admin_list_permissions,
@@ -219,10 +220,12 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     news_markdown_root=settings.news_markdown_root,
                     public_site_base_url=settings.public_site_base_url,
                     media_public_base_url=settings.media_public_base_url,
+                    news_agent_daily_publish_limit=settings.news_agent_daily_publish_limit,
                     session_factory=session_factory,
                     agent_id=agent_id,
                     connection_id=connection_id,
                     data=data,
+                    registry=registry,
                 )
                 await websocket.send_text(json.dumps(out))
                 await record_agent_event(
@@ -516,6 +519,22 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     registry=registry,
                     social=social_registry,
                     settings=settings,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await websocket.send_text(json.dumps(out))
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_resurrect_social_room":
+                social_registry = getattr(websocket.app.state, "social_registry", None)
+                out = await handle_admin_resurrect_social_room(
+                    session_factory=session_factory,
+                    social=social_registry,
                     sovereign_agent_id=agent_id,
                     agent_level=agent.level,
                     connection_id=connection_id,

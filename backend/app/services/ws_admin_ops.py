@@ -17,6 +17,7 @@ Frames:
   admin_set_article_category     assign or clear two-level categories on an article
   admin_moderate_article         remove an article and notify the author
   admin_dissolve_social_room     force-dissolve an active A2A chat room
+  admin_resurrect_social_room    restore a dissolved room to the lobby (DB + in-memory)
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ from app.models import Agent, LevelPermission, NewsArticle
 from app.services.agent_event_log import record_agent_event
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.msgbox import push_message
+from app.services.msgbox_notify import push_msgbox_notify_to_agent
 
 if TYPE_CHECKING:
     from app.ws_registry import AgentConnectionRegistry
@@ -342,14 +344,16 @@ async def handle_admin_send_directive(
         detail={"to_agent_id": to_agent_id, "message_id": message_id},
     )
 
-    push_body = {
-        "type": "msgbox_notify",
-        "kind": "sovereign_directive",
-        "message_id": message_id,
-        "from_agent_id": sovereign_agent_id,
-        "preview": preview,
-    }
-    asyncio.create_task(_push(registry, to_agent_id, push_body))
+    asyncio.create_task(
+        push_msgbox_notify_to_agent(
+            registry,
+            to_agent_id,
+            kind="sovereign_directive",
+            message_id=message_id,
+            from_agent_id=sovereign_agent_id,
+            preview=preview,
+        )
+    )
 
     return {
         "type": "admin_send_directive_ok",
@@ -529,8 +533,10 @@ async def handle_admin_list_articles(
         return {"type": "error", "reason": "invalid_admin_list_articles_payload", "detail": exc.errors()}
 
     async with session_factory() as session:
-        query = select(NewsArticle).order_by(
-            NewsArticle.published_at.desc(), NewsArticle.created_at.desc()
+        query = (
+            select(NewsArticle, Agent)
+            .outerjoin(Agent, NewsArticle.publisher_agent_id == Agent.agent_id)
+            .order_by(NewsArticle.published_at.desc(), NewsArticle.created_at.desc())
         )
         if payload.publisher_agent_id:
             query = query.where(NewsArticle.publisher_agent_id == payload.publisher_agent_id.strip())
@@ -544,25 +550,31 @@ async def handle_admin_list_articles(
             except ValueError:
                 pass
         query = query.limit(payload.limit)
-        rows = (await session.execute(query)).scalars().all()
+        rows = (await session.execute(query)).all()
+
+    def _pub_name(art: NewsArticle, ag: Agent | None) -> str:
+        if ag is not None:
+            return ag.agent_name
+        pid = art.publisher_agent_id
+        return (pid[:8] + "…") if len(pid) > 8 else pid
 
     return {
         "type": "admin_list_articles_ok",
         "articles": [
             {
-                "article_id": str(r.id),
-                "title": r.title,
-                "publisher_agent_id": r.publisher_agent_id,
-                "publisher_agent_name": r.publisher_agent_name,
-                "tags": r.tags,
-                "published_at": r.published_at.isoformat(),
-                "like_count": r.like_count,
+                "article_id": str(art.id),
+                "title": art.title,
+                "publisher_agent_id": art.publisher_agent_id,
+                "publisher_agent_name": _pub_name(art, ag),
+                "tags": art.tags,
+                "published_at": art.published_at.isoformat(),
+                "like_count": art.like_count,
                 "category": {
-                    "primary": r.category_level1,
-                    "secondary": r.category_level2,
+                    "primary": art.category_level1,
+                    "secondary": art.category_level2,
                 },
             }
-            for r in rows
+            for art, ag in rows
         ],
         "count": len(rows),
     }
@@ -649,13 +661,6 @@ async def handle_admin_set_article_category(
     }
 
 
-async def _push(registry: "AgentConnectionRegistry", agent_id: str, body: Dict[str, Any]) -> None:
-    try:
-        await registry.send_push(agent_id, body)
-    except Exception:
-        logger.exception("ws_admin_ops: live push failed agent_id=%s", agent_id)
-
-
 # ---------------------------------------------------------------------------
 # admin_moderate_article
 # ---------------------------------------------------------------------------
@@ -727,14 +732,19 @@ async def handle_admin_moderate_article(
         payload={"title": title, "action": "removed", "reason": payload.reason.strip()},
     )
     if message_id:
-        asyncio.create_task(_push(registry, author_id, {
-            "type": "msgbox_notify",
-            "kind": "article_moderated",
-            "message_id": message_id,
-            "article_id": payload.article_id,
-            "title": title,
-            "action": "removed",
-        }))
+        asyncio.create_task(
+            push_msgbox_notify_to_agent(
+                registry,
+                author_id,
+                kind="article_moderated",
+                message_id=message_id,
+                extra={
+                    "article_id": payload.article_id,
+                    "title": title,
+                    "action": "removed",
+                },
+            )
+        )
 
     await record_agent_event(
         session_factory,
@@ -845,4 +855,93 @@ async def handle_admin_dissolve_social_room(
         "name": room.name,
         "dissolved_at": now.isoformat(),
         "member_count": len(member_ids),
+    }
+
+
+# ---------------------------------------------------------------------------
+# admin_resurrect_social_room
+# ---------------------------------------------------------------------------
+
+class _ResurrectSocialRoomPayload(BaseModel):
+    room_id: str = Field(min_length=1, max_length=80)
+    note: str = Field(default="", max_length=500)
+
+
+async def handle_admin_resurrect_social_room(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    social: Any,
+    sovereign_agent_id: str,
+    agent_level: int,
+    connection_id: str,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Re-open a dissolved room: clear DB dissolution and load an empty in-memory room."""
+    err = _check_level0(agent_level)
+    if err:
+        return err
+
+    try:
+        payload = _ResurrectSocialRoomPayload(**data)
+    except ValidationError:
+        return {"type": "error", "reason": "invalid_admin_resurrect_social_room_payload"}
+
+    if social is None:
+        return {"type": "error", "reason": "social_unavailable"}
+
+    existing = await social.get_room(payload.room_id)
+    if existing is not None:
+        return {"type": "error", "reason": "room_already_active"}
+
+    from app.services.display_name_resolve import load_agent_name_map
+    from app.services.social_db import record_room_reopened
+    from app.social_registry import chat_room_from_social_row
+
+    row, reopen_err = await record_room_reopened(session_factory, payload.room_id)
+    if reopen_err == "not_found":
+        return {"type": "error", "reason": "room_not_found"}
+    if reopen_err == "not_dissolved":
+        return {"type": "error", "reason": "room_not_dissolved"}
+    assert row is not None
+
+    async with session_factory() as session:
+        cids = (
+            [row.creator_agent_id]
+            if row.creator_agent_id and row.creator_agent_id != "system"
+            else []
+        )
+        nmap = await load_agent_name_map(session, cids) if cids else {}
+    if row.creator_agent_id == "system":
+        creator_display = "system"
+    else:
+        creator_display = nmap.get(row.creator_agent_id) or (
+            (row.creator_agent_id[:8] + "…")
+            if len(row.creator_agent_id) > 8
+            else row.creator_agent_id
+        )
+    room = chat_room_from_social_row(row, creator_name=creator_display)
+    if not await social.register_resurrected_room(room):
+        return {"type": "error", "reason": "room_already_active"}
+
+    await record_agent_event(
+        session_factory,
+        event="admin_resurrect_social_room_via_ws",
+        agent_id=sovereign_agent_id,
+        connection_id=connection_id,
+        detail={
+            "room_id": room.room_id,
+            "name": room.name,
+            "note": payload.note.strip(),
+        },
+    )
+
+    return {
+        "type": "admin_resurrect_social_room_ok",
+        "room_id": room.room_id,
+        "name": room.name,
+        "topic": room.topic,
+        "rules": room.rules or "",
+        "creator_id": room.creator_id,
+        "created_at": room.created_at.isoformat(),
+        "total_messages": room.message_count,
     }

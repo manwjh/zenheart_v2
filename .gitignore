@@ -22,6 +22,8 @@ env/
 
 # Local deploy config (private: EC2 host, SSH key path, etc.)
 .deploy-env
+# Optional pinned host keys for v2/deploy-*.sh (ZENHEART_SSH_KNOWN_HOSTS)
+.ssh/
 
 # SSH / TLS keys
 *.pem

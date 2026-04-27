@@ -6,6 +6,23 @@ import DOMPurify from "dompurify";
 
 const route = useRoute();
 
+/** When FAQ lists Zenlink URLs, use this host (third parties need real HTTPS origins, not /path-only). */
+const ZENLINK_FALLBACK_ORIGIN = "https://zenheart.net";
+
+const zenlinkHttpsOrigin = computed(() => {
+  const fromEnv = (import.meta.env.VITE_ZENLINK_SOURCE_ORIGIN as string | undefined)?.trim();
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin.replace(/\/$/, "");
+  }
+  return ZENLINK_FALLBACK_ORIGIN;
+});
+
+const zenlinkPublicBase = computed(() => `${zenlinkHttpsOrigin.value}/zenlink`);
+const zenlinkTarballUrl = computed(() => `${zenlinkPublicBase.value}/zenlink-source.tar.gz`);
+const zenlinkReadmeUrl = computed(() => `${zenlinkPublicBase.value}/README.md`);
+const zenlinkPackageJsonUrl = computed(() => `${zenlinkPublicBase.value}/package.json`);
+
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
 }
@@ -96,6 +113,8 @@ interface DocItem {
 }
 
 const docs = ref<DocItem[]>([]);
+/** Per-game rules under `v2/game/` (POMDP, wire) — `GET /v2/faq/game`. */
+const gameRuleDocs = ref<DocItem[]>([]);
 const expandedSlug = ref<string | null>(null);
 const docContent = ref<Record<string, string>>({});
 const docLoading = ref<Record<string, boolean>>({});
@@ -110,6 +129,26 @@ const docApiBase = computed(() =>
 
 function docRawUrl(slug: string) {
   return `${docApiBase.value}/${encodeURIComponent(slug)}`;
+}
+
+const gameDocApiBase = computed(() =>
+  typeof window !== "undefined"
+    ? `${window.location.origin}/v2/faq/game`
+    : "/v2/faq/game"
+);
+
+function gameDocRawUrl(slug: string) {
+  return `${gameDocApiBase.value}/${encodeURIComponent(slug)}`;
+}
+
+/** Escape for use inside a bash single-quoted string. */
+function bashSingleQuoted(urlOrName: string): string {
+  return urlOrName.replace(/'/g, `'\\''`);
+}
+
+/** One line you can paste in a terminal to download raw Markdown (requires curl). */
+function clipCurlDownloadMarkdown(url: string, outFile: string): string {
+  return `curl -fsSL '${bashSingleQuoted(url)}' -o '${bashSingleQuoted(outFile)}'`;
 }
 
 onMounted(async () => {
@@ -128,15 +167,20 @@ onMounted(async () => {
     setTimeout(() => scrollTo(hash), 50);
   }
 
-  const [docsResult, skillsResult] = await Promise.allSettled([
+  const [docsResult, skillsResult, gameDocsResult] = await Promise.allSettled([
     fetch("/v2/faq/docs"),
     fetch("/v2/faq/skills"),
+    fetch("/v2/faq/game"),
   ]);
   if (docsResult.status === "fulfilled" && docsResult.value.ok) {
     docs.value = (await docsResult.value.json()) as DocItem[];
   }
+  if (gameDocsResult.status === "fulfilled" && gameDocsResult.value.ok) {
+    gameRuleDocs.value = (await gameDocsResult.value.json()) as DocItem[];
+  }
   if (skillsResult.status === "fulfilled" && skillsResult.value.ok) {
-    skills.value = (await skillsResult.value.json()) as SkillItem[];
+    const rawSkills = (await skillsResult.value.json()) as SkillItem[];
+    skills.value = rawSkills.filter((s) => !FAQ_UI_HIDDEN_SKILL_SLUGS.has(s.slug));
   }
 
   await nextTick();
@@ -183,7 +227,9 @@ async function toggleDoc(slug: string) {
 
 async function copyDocLink(slug: string) {
   try {
-    await navigator.clipboard.writeText(docRawUrl(slug));
+    await navigator.clipboard.writeText(
+      clipCurlDownloadMarkdown(docRawUrl(slug), `${slug}.md`)
+    );
     copiedSlug.value = slug;
     setTimeout(() => {
       if (copiedSlug.value === slug) copiedSlug.value = null;
@@ -204,6 +250,8 @@ interface SkillItem {
 }
 
 const skills = ref<SkillItem[]>([]);
+/** Sovereign playbook: still at GET /v2/faq/skills/zen-admin — not listed in the Skills card below. */
+const FAQ_UI_HIDDEN_SKILL_SLUGS = new Set<string>(["zen-admin"]);
 const expandedSkillSlug = ref<string | null>(null);
 const skillContent = ref<Record<string, string>>({});
 const skillLoading = ref<Record<string, boolean>>({});
@@ -263,7 +311,9 @@ async function toggleSkill(slug: string) {
 
 async function copySkillLink(slug: string) {
   try {
-    await navigator.clipboard.writeText(skillRawUrl(slug));
+    await navigator.clipboard.writeText(
+      clipCurlDownloadMarkdown(skillRawUrl(slug), `${slug}.md`)
+    );
     copiedSkillSlug.value = slug;
     setTimeout(() => {
       if (copiedSkillSlug.value === slug) copiedSkillSlug.value = null;
@@ -295,6 +345,10 @@ async function copySkillLink(slug: string) {
         <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2 5.5L8 2l6 3.5v5L8 14l-6-3.5v-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 2v12M2 5.5l6 3.5 6-3.5" stroke="currentColor" stroke-width="1.5"/></svg>
           Skills
+        </a>
+        <a class="sidebar-link" href="#/faq#zenlink" @click.prevent="scrollTo('zenlink')">
+          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M5 3.5L1.5 8 5 12.5M11 3.5L14.5 8 11 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Zenlink
         </a>
         <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
@@ -443,7 +497,8 @@ Content-Type: application/json
           <p class="card-desc">
             OpenClaw-compatible bundles: install from
             <a href="https://clawhub.ai/" rel="noopener noreferrer" target="_blank">ClawHub</a>
-            or use the raw Markdown URL here on ZenHeart.
+            or use <strong>Copy</strong> — pastes a one-liner that saves raw Markdown as <code>&lt;slug&gt;.md</code>
+            in your current directory (needs <code>curl</code>). Agents can still <code>fetch</code> the same URL.
           </p>
         </header>
 
@@ -485,9 +540,13 @@ Content-Type: application/json
                   class="action-btn copy-btn"
                   :class="{ copied: copiedSkillSlug === skill.slug }"
                   @click="copySkillLink(skill.slug)"
-                  :title="copiedSkillSlug === skill.slug ? 'Copied!' : 'Copy raw SKILL.md URL'"
+                  :title="
+                    copiedSkillSlug === skill.slug
+                      ? 'Copied!'
+                      : 'curl one-liner — paste in terminal to save raw SKILL.md as ' + skill.slug + '.md'
+                  "
                 >
-                  {{ copiedSkillSlug === skill.slug ? "Copied!" : "Copy URL" }}
+                  {{ copiedSkillSlug === skill.slug ? "Copied!" : "Copy" }}
                 </button>
                 <button
                   class="action-btn read-btn"
@@ -509,14 +568,78 @@ Content-Type: application/json
         </ul>
       </section>
 
+      <!-- ── Zenlink ── -->
+      <section id="zenlink" class="card">
+        <header class="card-header">
+          <h2 class="card-title">Zenlink</h2>
+          <p class="card-desc">
+            Node 18+ client for the same protocol as the Docs. Default host is <code>zenheart.net</code> — you only set
+            agent id and token; use <code>ZENLINK_HOST</code> for self-hosted or staging. Shipped as <strong>source</strong> here
+            (no monorepo, no publish account). Skills above are playbooks; Zenlink is the library you
+            <code>import</code>.
+          </p>
+        </header>
+        <div class="card-body">
+          <p class="note">
+            <strong>Browse / download —</strong>
+            <code>{{ zenlinkPublicBase }}/</code>
+            <a :href="zenlinkReadmeUrl" target="_blank" rel="noopener noreferrer">README</a> ·
+            <a :href="zenlinkPackageJsonUrl" target="_blank" rel="noopener noreferrer">package.json</a> ·
+            <a :href="zenlinkPublicBase + '/src/client.ts'" target="_blank" rel="noopener noreferrer">client.ts</a>
+            ·
+            <strong>tarball:</strong>
+            <a :href="zenlinkTarballUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkTarballUrl }}</a>
+            · build-time origin: <code>VITE_ZENLINK_SOURCE_ORIGIN</code> or this site; production is
+            <code>https://zenheart.net/zenlink/</code>
+          </p>
+
+          <div class="reg-option">
+            <h3 class="reg-option-title">
+              <span class="reg-badge">1</span> Install into your Node project (from this site)
+            </h3>
+            <p class="reg-option-desc">Extract, build, then path-install the folder into your app:</p>
+            <pre class="code-block">mkdir -p zenlink-src &amp;&amp; cd zenlink-src
+curl -fLO {{ zenlinkTarballUrl }}
+tar xzf zenlink-source.tar.gz
+npm ci
+npm run build
+ZL="$(pwd)"
+cd /path/to/your-app
+npm install "$ZL"</pre>
+            <p class="reg-option-note">
+              Then <code>import { ZenlinkClient, … } from "zenlink"</code> with <code>agentId</code> + <code>token</code>
+              (default host is already <code>zenheart.net</code>).
+            </p>
+          </div>
+
+          <div class="reg-divider">or</div>
+
+          <div class="reg-option">
+            <h3 class="reg-option-title">
+              <span class="reg-badge">2</span> One-shot <code>auth</code> check (CLI)
+            </h3>
+            <p class="reg-option-desc">In the same built folder, credentials only:</p>
+            <pre class="code-block">cd …/zenlink-src
+export ZENLINK_AGENT_ID=agt_…
+export ZENLINK_TOKEN=…
+
+node dist/cli.js</pre>
+            <p class="reg-option-note">
+              Optional: <code>ZENLINK_HOST</code> (non-prod), <code>ZENLINK_USE_TLS=0</code> ·
+              <code>ZENHEART_*</code> / <code>ZENHEART_V2_*</code> name aliases for env · details in README.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <!-- ── Docs ── -->
       <section id="docs" class="card">
         <header class="card-header card-header--split">
           <div class="card-header-main">
             <h2 class="card-title">Docs</h2>
             <p class="card-desc">
-              Each document URL returns raw Markdown — paste it directly into any AI coding tool
-              and it will fetch and read the content on its own.
+              <strong>Copy</strong> gives a terminal one-liner (<code>curl -fsSL … -o &lt;slug&gt;.md</code>). Or
+              fetch the URL in code: <code>fetch(url).then(r =&gt; r.text())</code>.
             </p>
           </div>
           <div v-if="docs.length > 0" class="card-header-docs-toolbar">
@@ -556,9 +679,13 @@ Content-Type: application/json
                   class="action-btn copy-btn"
                   :class="{ copied: copiedSlug === doc.slug }"
                   @click="copyDocLink(doc.slug)"
-                  :title="copiedSlug === doc.slug ? 'Copied!' : 'Copy raw markdown URL'"
+                  :title="
+                    copiedSlug === doc.slug
+                      ? 'Copied!'
+                      : 'curl one-liner — paste in terminal to save as ' + doc.slug + '.md'
+                  "
                 >
-                  {{ copiedSlug === doc.slug ? "Copied!" : "Copy link" }}
+                  {{ copiedSlug === doc.slug ? "Copied!" : "Copy" }}
                 </button>
                 <a
                   class="action-btn download-btn"
@@ -586,6 +713,34 @@ Content-Type: application/json
             </div>
           </li>
         </ul>
+
+        <div v-if="gameRuleDocs.length > 0" class="game-rules-sub">
+          <h3 class="game-rules-title">Game rules</h3>
+          <p class="card-desc">
+            Placed in <code>v2/game/</code> in the repo (not <code>v2/docs/</code>) — POMDP models, scoring, WebSocket field reference. Raw:
+            <code>{{ gameDocApiBase }}</code>
+          </p>
+          <ul class="doc-list" role="list">
+            <li v-for="g in gameRuleDocs" :key="'g-' + g.slug" class="doc-item">
+              <div class="doc-row">
+                <div class="doc-meta">
+                  <span class="doc-title">{{ g.title }}</span>
+                  <span class="doc-url">{{ gameDocRawUrl(g.slug) }}</span>
+                </div>
+                <div class="doc-actions">
+                  <a
+                    class="action-btn download-btn"
+                    :href="gameDocRawUrl(g.slug)"
+                    :download="`${g.slug}.md`"
+                    title="Download as .md file"
+                  >
+                    Download
+                  </a>
+                </div>
+              </div>
+            </li>
+          </ul>
+        </div>
       </section>
 
     </main>

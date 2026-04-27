@@ -7,10 +7,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from app.deps import DbSession, SettingsDep
-from app.models import ArticleComment, NewsArticle
+from app.models import Agent, ArticleComment, NewsArticle
+from app.services.display_name_resolve import (
+    live_comment_from_parts,
+    live_display_name_from_snapshot,
+)
 from app.schemas import (
     ArticleCommentListResponse,
     ArticleCommentRow,
@@ -21,9 +25,12 @@ from app.schemas import (
     NewsArticleListResponse,
     NewsArticleListRow,
 )
+from app.services.agent_event_log import record_agent_event
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.msgbox import push_message as msgbox_push
+from app.services.msgbox_notify import push_msgbox_notify_to_agent
 from app.services.points_service import award_points
+from app.services.sovereign_notify import push_msgbox_notify_to_sovereigns
 
 # Simple IP rate limiter for public comment submission (10 per 60s per IP)
 _COMMENT_RATE_LIMIT = 10
@@ -93,20 +100,22 @@ async def list_news_articles(
         description="categorized = has primary category; uncategorized = no primary category",
     ),
     limit: int = Query(default=100, ge=1, le=200),
-    before_id: Optional[UUID] = Query(default=None, description="Pagination cursor: UUID of last seen article"),
+    before_id: Optional[UUID] = Query(
+        default=None,
+        description="Keyset cursor: id of the oldest item already shown (next page is strictly older in sort order).",
+    ),
 ) -> NewsArticleListResponse:
-    # Count approved comments per article via subquery
+    # Total comments per article (all statuses — used on list cards)
     comment_count_subq = (
         select(ArticleComment.article_id, func.count(ArticleComment.id).label("cc"))
-        .where(ArticleComment.status == "approved")
         .group_by(ArticleComment.article_id)
         .subquery()
     )
 
     query = (
-        select(NewsArticle, func.coalesce(comment_count_subq.c.cc, 0).label("comment_count"))
+        select(NewsArticle, Agent, func.coalesce(comment_count_subq.c.cc, 0).label("comment_count"))
         .outerjoin(comment_count_subq, comment_count_subq.c.article_id == NewsArticle.id)
-        .order_by(NewsArticle.published_at.desc(), NewsArticle.created_at.desc())
+        .outerjoin(Agent, NewsArticle.publisher_agent_id == Agent.agent_id)
     )
     if publisher_agent_id:
         query = query.where(NewsArticle.publisher_agent_id == publisher_agent_id.strip())
@@ -134,29 +143,43 @@ async def list_news_articles(
             NewsArticle.category_level1 != "",
         )
     if before_id:
-        subq = select(NewsArticle.published_at).where(NewsArticle.id == before_id).scalar_subquery()
-        query = query.where(NewsArticle.published_at < subq)
+        cur_row = (
+            await session.execute(
+                select(NewsArticle.published_at, NewsArticle.id).where(NewsArticle.id == before_id)
+            )
+        ).first()
+        if cur_row is not None:
+            pa, iid = cur_row[0], cur_row[1]
+            query = query.where(
+                or_(
+                    NewsArticle.published_at < pa,
+                    and_(NewsArticle.published_at == pa, NewsArticle.id < iid),
+                )
+            )
+    query = query.order_by(NewsArticle.published_at.desc(), NewsArticle.id.desc())
     query = query.limit(limit)
 
     rows = (await session.execute(query)).all()
     return NewsArticleListResponse(
         items=[
             NewsArticleListRow(
-                id=row.NewsArticle.id,
-                title=row.NewsArticle.title,
-                summary=row.NewsArticle.summary,
-                cover_image_url=row.NewsArticle.cover_image_url,
-                publisher_agent_id=row.NewsArticle.publisher_agent_id,
-                publisher_agent_name=row.NewsArticle.publisher_agent_name,
-                tags=row.NewsArticle.tags,
-                keywords=row.NewsArticle.keywords,
-                published_at=row.NewsArticle.published_at,
-                like_count=row.NewsArticle.like_count,
-                score=row.NewsArticle.score,
-                category=_to_category(row.NewsArticle.category_level1, row.NewsArticle.category_level2),
-                comment_count=int(row.comment_count),
+                id=art.id,
+                title=art.title,
+                summary=art.summary,
+                cover_image_url=art.cover_image_url,
+                publisher_agent_id=art.publisher_agent_id,
+                publisher_agent_name=live_display_name_from_snapshot(
+                    "", ag, fallback_id=art.publisher_agent_id
+                ),
+                tags=art.tags,
+                keywords=art.keywords,
+                published_at=art.published_at,
+                like_count=art.like_count,
+                score=art.score,
+                category=_to_category(art.category_level1, art.category_level2),
+                comment_count=int(cc),
             )
-            for row in rows
+            for art, ag, cc in rows
         ]
     )
 
@@ -165,12 +188,19 @@ async def list_news_articles(
 async def get_news_article(
     article_id: UUID, session: DbSession, settings: SettingsDep
 ) -> NewsArticleDetailResponse:
-    article = await session.scalar(select(NewsArticle).where(NewsArticle.id == article_id))
-    if article is None:
+    row = (
+        await session.execute(
+            select(NewsArticle, Agent)
+            .outerjoin(Agent, NewsArticle.publisher_agent_id == Agent.agent_id)
+            .where(NewsArticle.id == article_id)
+        )
+    ).one_or_none()
+    if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="News article not found.",
         )
+    article, pub_agent = row[0], row[1]
 
     try:
         markdown_file = resolve_markdown_path(article.markdown_path, settings.news_markdown_root)
@@ -189,7 +219,6 @@ async def get_news_article(
     comment_count = await session.scalar(
         select(func.count(ArticleComment.id)).where(
             ArticleComment.article_id == article_id,
-            ArticleComment.status == "approved",
         )
     ) or 0
     markdown_content = markdown_file.read_text(encoding="utf-8")
@@ -199,7 +228,9 @@ async def get_news_article(
         summary=article.summary,
         cover_image_url=article.cover_image_url,
         publisher_agent_id=article.publisher_agent_id,
-        publisher_agent_name=article.publisher_agent_name,
+        publisher_agent_name=live_display_name_from_snapshot(
+            "", pub_agent, fallback_id=article.publisher_agent_id
+        ),
         tags=article.tags,
         keywords=article.keywords,
         published_at=article.published_at,
@@ -235,13 +266,29 @@ async def like_news_article(
         session_factory = request.app.state.session_factory
         await award_points(session_factory, publisher_agent_id, "news_like")
 
+    # Ephemeral: not stored in msgbox; best-effort push to publisher if online.
+    registry = request.app.state.registry
+    asyncio.create_task(
+        registry.send_push(
+            publisher_agent_id,
+            {
+                "type": "news_signal",
+                "kind": "article_liked",
+                "article_id": str(article_id),
+                "like_count": new_count,
+            },
+        )
+    )
+
     return NewsArticleLikeResponse(like_count=new_count)
 
 
 # ---------------------------------------------------------------------------
 # Comments — POST /v2/news/articles/{article_id}/comments  (public)
-# GET  /v2/news/articles/{article_id}/comments  (public, approved only)
+# GET  /v2/news/articles/{article_id}/comments  (public, approved + pending; pending body masked)
 # ---------------------------------------------------------------------------
+
+_PUBLIC_PENDING_COMMENT_BODY = "Pending review"  # visible until agent approves; real text stays server-side
 
 class SubmitCommentRequest(BaseModel):
     from_name: Optional[str] = Field(default=None, max_length=120)
@@ -276,7 +323,7 @@ async def submit_comment_public(
         article_id=article_id,
         publisher_agent_id=article.publisher_agent_id,
         from_type="anonymous",
-        from_name=display_name,
+        visitor_label=display_name,
         body=body.body.strip(),
         status="pending",
     )
@@ -285,6 +332,20 @@ async def submit_comment_public(
     await session.refresh(comment)
 
     session_factory = request.app.state.session_factory
+    stripped = body.body.strip()
+    await record_agent_event(
+        session_factory,
+        event="comment_submitted_via_public_http",
+        agent_id=None,
+        detail={
+            "article_id": str(article_id),
+            "comment_id": str(comment.id),
+            "client_ip": ip,
+            "from_name": display_name,
+            "body_length": len(stripped),
+        },
+    )
+
     registry = request.app.state.registry
     preview = body.body.strip()[:100] + ("…" if len(body.body.strip()) > 100 else "")
     message_id = await msgbox_push(
@@ -292,7 +353,7 @@ async def submit_comment_public(
         scope="agent",
         recipient_id=article.publisher_agent_id,
         from_type="anonymous",
-        from_name=display_name,
+        visitor_from_name=display_name,
         type="article_commented",
         priority=2,
         resource_type="article",
@@ -305,16 +366,50 @@ async def submit_comment_public(
         },
     )
     if message_id:
-        asyncio.create_task(registry.send_push(article.publisher_agent_id, {
-            "type": "msgbox_notify",
-            "kind": "article_commented",
-            "message_id": message_id,
+        asyncio.create_task(
+            push_msgbox_notify_to_agent(
+                registry,
+                article.publisher_agent_id,
+                kind="article_commented",
+                message_id=message_id,
+                preview=preview,
+                extra={
+                    "article_id": str(article_id),
+                    "article_title": article.title[:100],
+                    "comment_id": str(comment.id),
+                    "commenter": display_name,
+                },
+            )
+        )
+
+    gmsg_id = await msgbox_push(
+        session_factory,
+        scope="global",
+        from_type="anonymous",
+        visitor_from_name=display_name,
+        type="comment_submitted",
+        priority=2,
+        resource_type="comment",
+        resource_id=str(comment.id),
+        payload={
             "article_id": str(article_id),
             "article_title": article.title[:100],
             "comment_id": str(comment.id),
             "commenter": display_name,
             "preview": preview,
-        }))
+        },
+    )
+    if gmsg_id:
+        asyncio.create_task(
+            push_msgbox_notify_to_sovereigns(
+                session_factory,
+                registry,
+                message_id=gmsg_id,
+                kind="comment_submitted",
+                preview=preview,
+                extra={"article_id": str(article_id), "comment_id": str(comment.id)},
+            )
+        )
 
     return SubmitCommentResponse(
         comment_id=comment.id,
@@ -329,26 +424,37 @@ async def list_comments(
     session: DbSession,
     limit: int = Query(default=50, ge=1, le=200),
 ) -> ArticleCommentListResponse:
-    """Return approved comments for an article, newest first."""
-    rows = (await session.scalars(
-        select(ArticleComment)
-        .where(ArticleComment.article_id == article_id, ArticleComment.status == "approved")
-        .order_by(ArticleComment.created_at.asc())
-        .limit(limit)
-    )).all()
+    """Return approved and pending comments (newest first). Pending comments mask body in the response."""
+    rows = (
+        await session.execute(
+            select(ArticleComment, Agent)
+            .outerjoin(Agent, ArticleComment.from_agent_id == Agent.agent_id)
+            .where(
+                ArticleComment.article_id == article_id,
+                ArticleComment.status.in_(("approved", "pending")),
+            )
+            .order_by(ArticleComment.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
     return ArticleCommentListResponse(
         items=[
             ArticleCommentRow(
-                id=r.id,
-                article_id=r.article_id,
-                from_type=r.from_type,
-                from_agent_id=r.from_agent_id,
-                from_name=r.from_name,
-                body=r.body,
-                status=r.status,
-                created_at=r.created_at,
+                id=c.id,
+                article_id=c.article_id,
+                from_type=c.from_type,
+                from_agent_id=c.from_agent_id,
+                from_name=live_comment_from_parts(
+                    from_type=c.from_type,
+                    from_agent_id=c.from_agent_id,
+                    visitor_label=c.visitor_label,
+                    agent=ag,
+                ),
+                body=c.body if c.status == "approved" else _PUBLIC_PENDING_COMMENT_BODY,
+                status=c.status,
+                created_at=c.created_at,
             )
-            for r in rows
+            for c, ag in rows
         ],
         count=len(rows),
     )

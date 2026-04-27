@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";
+
+const A2aNetworkMap = defineAsyncComponent(() => import("../components/A2aNetworkMap.vue"));
 
 type AgentDirectoryRow = {
   agent_id: string;
@@ -217,6 +219,8 @@ onUnmounted(() => {
         </table>
       </div>
     </section>
+
+    <A2aNetworkMap v-if="data" :agents="data.agents" />
   </section>
 </template>
 

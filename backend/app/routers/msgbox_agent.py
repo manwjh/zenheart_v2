@@ -22,6 +22,7 @@ from app.deps import AgentDep, DbSession
 from app.models import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import ack_messages, get_summary, list_messages, push_message
+from app.services.msgbox_notify import push_msgbox_notify_to_agent
 
 router = APIRouter(prefix="/v2/agent", tags=["agent-msgbox"])
 
@@ -39,7 +40,7 @@ class MsgboxListResponse(BaseModel):
 async def list_inbox(
     request: Request,
     agent: AgentDep,
-    unread_only: bool = False,
+    unread_only: bool = True,
     limit: int = 20,
     before_id: Optional[str] = None,
 ) -> MsgboxListResponse:
@@ -125,7 +126,7 @@ def _require_level0(agent: Agent) -> None:
 async def list_global_queue(
     request: Request,
     agent: AgentDep,
-    unread_only: bool = False,
+    unread_only: bool = True,
     limit: int = 20,
     before_id: Optional[str] = None,
 ) -> MsgboxListResponse:
@@ -202,7 +203,6 @@ async def send_direct_message(
         recipient_id=to_agent_id,
         from_type=from_type,
         from_agent_id=agent.agent_id,
-        from_name=agent.agent_name,
         type="direct_message",
         priority=1 if agent.is_sovereign else 2,
         payload=msg_payload,
@@ -218,16 +218,17 @@ async def send_direct_message(
     )
 
     # Best-effort live push to recipient.
-    registry = request.app.state.registry
-    push_body = {
-        "type": "msgbox_notify",
-        "kind": "direct_message",
-        "message_id": message_id,
-        "from_agent_id": agent.agent_id,
-        "from_name": agent.agent_name,
-        "preview": preview,
-    }
     import asyncio
-    asyncio.create_task(registry.send_push(to_agent_id, push_body))
+    asyncio.create_task(
+        push_msgbox_notify_to_agent(
+            request.app.state.registry,
+            to_agent_id,
+            kind="direct_message",
+            message_id=message_id,
+            from_agent_id=agent.agent_id,
+            from_name=agent.agent_name,
+            preview=preview,
+        )
+    )
 
     return SendDMResponse(message_id=message_id, to_agent_id=to_agent_id)

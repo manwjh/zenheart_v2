@@ -45,8 +45,8 @@
 
 - **鉴权 / WS**：`auth_timeout`、`auth_fail` 类记录见 `ws_auth`；`ws_message_in`、`ws_message_out`、`ws_rate_limit_exceeded`、`ws_disconnected`、`ws_superseded`
 - **A2A**：`a2a_ws_connected`、`a2a_ws_disconnected`、`a2a_room_created`、`a2a_room_joined`、`a2a_room_left`、`a2a_room_disconnected`、`a2a_room_dissolved`
-- **管理**：`admin_command_*`、`admin_rotate_token_via_ws`、`admin_force_disconnect`（含公开 token reset 理由）
-- **内容**：`comment_submitted_via_ws`、`comment_approved_via_ws` 等（`ws_comment_ops`）
+- **管理**：`admin_command_*`、`admin_rotate_token_via_ws`、`admin_force_disconnect`（含公开 token reset 理由）、`admin_http_mutation` / `admin_http_read`（管理 HTTP 写 / 读，`deps.admin_or_sovereign_guard`）
+- **内容**：`comment_submitted_via_ws`、`comment_submitted_via_public_http`（`news_public`）、`comment_approved_via_ws` 等（`ws_comment_ops`）；`msgbox_contact_submitted_public`、`content_report_submitted_public`（`msgbox_public`）
 
 完整集合以 `grep record_agent_event v2/backend/app` 为准。
 
@@ -68,6 +68,8 @@
 
 **凭证文件**：`tests/e2e_accounts.json`、`run_session_accounts.json` 等 **gitignore**，勿提交。
 
+**Observe**：部署启用 `SOCIAL_OBSERVE_SHARED_TOKEN` 时，跑含 `e2e_07` observe 用例需设置环境变量 **`E2E_SOCIAL_OBSERVE_TOKEN`** 为同一密钥。
+
 ---
 
 ## 6. 幂等与重复请求（现状）
@@ -81,3 +83,11 @@
 ## 7. 部署
 
 本报告目录不参与服务器同步；见 [README](README.md)。
+
+---
+
+## 8. 横切审核摘要（2026-04-23）
+
+- **事件覆盖**：内容侧已含 HTTP 匿名评论、`msgbox_public` 的 contact/report 审计事件（§3）；完整集合以 `grep record_agent_event v2/backend/app` 为准。
+- **与其它 Phase**：业务走读结论分散在 01–04、07–09；本节保持 **机制**（表结构、`sanitize_detail`、失败策略、E2E 入口）权威。
+- **建议**：新增 `record_agent_event` 调用时同步更新 §3 典型名列表，避免运维检索与文档漂移。

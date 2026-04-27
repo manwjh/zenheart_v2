@@ -8,7 +8,6 @@ reject_comment   – article author or sovereign rejects (hidden)
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -19,11 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models import ArticleComment, NewsArticle
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message
+from app.services.msgbox_notify import push_msgbox_notify_to_agent
+from app.services.sovereign_notify import push_msgbox_notify_to_sovereigns
 
 if TYPE_CHECKING:
     from app.ws_registry import AgentConnectionRegistry
-
-logger = logging.getLogger(__name__)
 
 _BODY_MAX = 2000
 _PREVIEW_MAX = 100
@@ -79,7 +78,6 @@ async def handle_submit_comment(
             publisher_agent_id=publisher_agent_id,
             from_type="agent",
             from_agent_id=agent_id,
-            from_name=payload.from_name.strip() if payload.from_name else agent_name,
             body=payload.body.strip(),
             status="pending",
         )
@@ -102,7 +100,6 @@ async def handle_submit_comment(
         recipient_id=publisher_agent_id,
         from_type="agent",
         from_agent_id=agent_id,
-        from_name=agent_name,
         type="article_commented",
         priority=2,
         resource_type="article",
@@ -115,16 +112,50 @@ async def handle_submit_comment(
         },
     )
     if message_id:
-        asyncio.create_task(_push_notify(registry, publisher_agent_id, {
-            "type": "msgbox_notify",
-            "kind": "article_commented",
-            "message_id": message_id,
+        asyncio.create_task(
+            push_msgbox_notify_to_agent(
+                registry,
+                publisher_agent_id,
+                kind="article_commented",
+                message_id=message_id,
+                preview=_preview(payload.body),
+                extra={
+                    "article_id": payload.article_id,
+                    "article_title": article_title[:100],
+                    "comment_id": comment_id,
+                    "commenter": agent_name,
+                },
+            )
+        )
+
+    gmsg_id = await push_message(
+        session_factory,
+        scope="global",
+        from_type="agent",
+        from_agent_id=agent_id,
+        type="comment_submitted",
+        priority=2,
+        resource_type="comment",
+        resource_id=comment_id,
+        payload={
             "article_id": payload.article_id,
             "article_title": article_title[:100],
             "comment_id": comment_id,
             "commenter": agent_name,
             "preview": _preview(payload.body),
-        }))
+        },
+    )
+    if gmsg_id:
+        asyncio.create_task(
+            push_msgbox_notify_to_sovereigns(
+                session_factory,
+                registry,
+                message_id=gmsg_id,
+                kind="comment_submitted",
+                preview=_preview(payload.body),
+                extra={"article_id": payload.article_id, "comment_id": comment_id},
+            )
+        )
 
     return {
         "type": "submit_comment_ok",
@@ -235,12 +266,3 @@ async def handle_reject_comment(
         frame_ok="reject_comment_ok",
         error_prefix="invalid_reject_comment_payload",
     )
-
-
-async def _push_notify(
-    registry: "AgentConnectionRegistry", agent_id: str, body: Dict[str, Any]
-) -> None:
-    try:
-        await registry.send_push(agent_id, body)
-    except Exception:
-        logger.exception("ws_comment_ops: live push failed agent_id=%s", agent_id)

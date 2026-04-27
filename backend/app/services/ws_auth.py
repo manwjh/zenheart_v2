@@ -1,5 +1,6 @@
 import asyncio
 import json
+import secrets
 from dataclasses import dataclass
 
 from fastapi import WebSocket
@@ -15,6 +16,72 @@ class WebSocketAuthResult:
     agent: Agent
     agent_id: str
     first_message_bytes: int
+
+
+async def verify_agent_auth_payload(
+    session_factory: object,
+    *,
+    agent_id: str,
+    token: str,
+    event_scope: str,
+    byte_length: int,
+) -> Agent | None:
+    """Validate agent_id + raw token against DB. Record events on failure. No WebSocket I/O."""
+    await record_agent_event(
+        session_factory,
+        event="ws_message_in",
+        agent_id=agent_id,
+        detail={
+            "phase": "handshake",
+            "message_type": "auth",
+            "byte_length": byte_length,
+            "scope": event_scope,
+        },
+    )
+
+    async with session_factory() as session:
+        result = await session.execute(select(Agent).where(Agent.agent_id == agent_id))
+        agent = result.scalar_one_or_none()
+
+    if agent is None:
+        await record_agent_event(
+            session_factory,
+            event="auth_unknown_agent",
+            agent_id=agent_id,
+            detail={"scope": event_scope},
+        )
+        return None
+
+    if agent.revoked_at is not None:
+        await record_agent_event(
+            session_factory,
+            event="auth_revoked",
+            agent_id=agent_id,
+            detail={"scope": event_scope},
+        )
+        return None
+
+    if not constant_time_token_equals(sha256_hex(token), agent.token_hash):
+        await record_agent_event(
+            session_factory,
+            event="auth_invalid_token",
+            agent_id=agent_id,
+            detail={"scope": event_scope},
+        )
+        return None
+
+    return agent
+
+
+def verify_observe_shared_token(
+    provided: str,
+    expected: str,
+) -> bool:
+    """Constant-time compare for SOCIAL_OBSERVE_SHARED_TOKEN."""
+    exp = (expected or "").strip()
+    if not exp:
+        return False
+    return secrets.compare_digest((provided or "").strip(), exp)
 
 
 async def authenticate_agent_websocket(
@@ -97,53 +164,29 @@ async def authenticate_agent_websocket(
         await websocket.close(code=1003, reason="invalid_payload")
         return None
 
-    await record_agent_event(
+    agent = await verify_agent_auth_payload(
         session_factory,
-        event="ws_message_in",
         agent_id=agent_id,
-        detail={
-            "phase": "handshake",
-            "message_type": "auth",
-            "byte_length": byte_len,
-            "scope": event_scope,
-        },
+        token=token,
+        event_scope=event_scope,
+        byte_length=byte_len,
     )
-
-    async with session_factory() as session:
-        result = await session.execute(select(Agent).where(Agent.agent_id == agent_id))
-        agent = result.scalar_one_or_none()
-
     if agent is None:
-        await record_agent_event(
-            session_factory,
-            event="auth_unknown_agent",
-            agent_id=agent_id,
-            detail={"scope": event_scope},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "unknown_agent"}))
-        await websocket.close(code=4401, reason="unknown_agent")
-        return None
-
-    if agent.revoked_at is not None:
-        await record_agent_event(
-            session_factory,
-            event="auth_revoked",
-            agent_id=agent_id,
-            detail={"scope": event_scope},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "revoked"}))
-        await websocket.close(code=4403, reason="revoked")
-        return None
-
-    if not constant_time_token_equals(sha256_hex(token), agent.token_hash):
-        await record_agent_event(
-            session_factory,
-            event="auth_invalid_token",
-            agent_id=agent_id,
-            detail={"scope": event_scope},
-        )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_token"}))
-        await websocket.close(code=4401, reason="invalid_token")
+        reason = "unknown_agent"
+        code = 4401
+        if await _agent_exists_revoked_or_bad(session_factory, agent_id, token):
+            # Narrow failure reason for client (same as before)
+            async with session_factory() as session:
+                row = await session.scalar(select(Agent).where(Agent.agent_id == agent_id))
+            if row is None:
+                reason = "unknown_agent"
+            elif row.revoked_at is not None:
+                reason = "revoked"
+                code = 4403
+            else:
+                reason = "invalid_token"
+        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": reason}))
+        await websocket.close(code=code, reason=reason)
         return None
 
     return WebSocketAuthResult(
@@ -151,3 +194,12 @@ async def authenticate_agent_websocket(
         agent_id=agent_id,
         first_message_bytes=byte_len,
     )
+
+
+async def _agent_exists_revoked_or_bad(
+    session_factory: object, agent_id: str, token: str
+) -> bool:
+    """True if we need to disambiguate auth_fail reason (agent row exists)."""
+    async with session_factory() as session:
+        row = await session.scalar(select(Agent).where(Agent.agent_id == agent_id))
+    return row is not None

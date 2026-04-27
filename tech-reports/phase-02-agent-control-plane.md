@@ -81,7 +81,7 @@
 
 ## 4. HTTP 与 WS 的「指令」关系
 
-- **`POST /v2/admin/agents/{agent_id}/commands`**（`admin_key_guard`）：构造 `command` 帧，`dispatch_command_and_wait`，依赖目标 agent **已连接** `/v2/agent/ws`。
+- **`POST /v2/admin/agents/{agent_id}/commands`**（`admin_or_sovereign_guard`）：构造 `command` 帧，`dispatch_command_and_wait`，依赖目标 agent **已连接** `/v2/agent/ws`。
 - **事件**：`admin_command_dispatched`、`admin_command_failed`、`admin_command_completed`（`admin_agents.py`）。
 
 ---
@@ -103,3 +103,30 @@
 ## 7. 部署
 
 本报告目录不参与服务器同步；见 [README](README.md)。
+
+---
+
+## 8. 审核执行记录（2026-04-23）
+
+对照 `ws_agent.py`、`ws_registry.py` 与 Phase 08/09 中通联结论做走读复核。
+
+### 8.1 结论摘要
+
+| 主题 | 结论 |
+|------|------|
+| 鉴权与循环 | **通过**。`authenticate_agent_websocket` 失败则 handler 返回，不进入业务 `while`；与 Phase 01 一致。 |
+| 帧表 §2 | **通过**。`unknown_type` 回包；`command_result` 仅走 `resolve_command_result`，不落入业务分支。 |
+| Registry | **通过**。`replace` 顶替、`dispatch_command_and_wait` 与 HTTP admin commands 配对；`send_push` 与 `msgbox_notify` / `social_notify` 等并列使用（见 Phase 08、09）。 |
+| 限流与帧大小 | **通过**。与 `get_limit_value(ws, rate_limit_per_minute)` 及 `agent_ws_max_message_bytes` 一致。 |
+| 与 Phase 03 | sovereign 专用 `admin_*` 帧由 `ws_admin_ops._check_level0` 门闸；非 0 得 `forbidden`，与 Phase 03 一致。 |
+
+### 8.2 注记
+
+| 级别 | 说明 |
+|------|------|
+| **信息** | 全站业务帧共享同一「每分钟 N 条」计数；高帧频技能/新闻与 DM 混用同一窗口，属已知产品设计。 |
+| **低** | `send_push` 静默失败时对账依赖收件箱 DB 或社交持久化，已在 Phase 08/09 写明。 |
+
+### 8.3 交叉索引
+
+主控面深度审计与 NEWS/技能/邮件等帧级细节见 [phase-03](phase-03-permissions-and-http-ws-parity.md)；可观测事件见 [phase-05 §3](phase-05-observability-migrations-e2e.md)。

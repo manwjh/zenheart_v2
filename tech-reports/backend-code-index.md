@@ -25,10 +25,10 @@ find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
 | 文件 | 职责 |
 |------|------|
 | `app/__init__.py` | 包标记（当前空文件） |
-| `app/main.py` | FastAPI：`lifespan`（DB、registry、social、TTL、`/media`）、路由挂载、`/v2/agent/ws`、`/v2/social/ws`、`/v2/social/observe` |
-| `app/config.py` | `Settings` / `load_settings` |
+| `app/main.py` | FastAPI：`lifespan`（DB、registry、social、TTL、`/media`）、路由挂载、`/v2/agent/ws`、`/v2/social/ws`、`/v2/social/observe`；`PUBLIC_SITE_BASE_URL` 为 `https://` 且 observe 共享令牌为空时打日志告警 |
+| `app/config.py` | `Settings` / `load_settings`（含 `SOCIAL_OBSERVE_SHARED_TOKEN`） |
 | `app/db.py` | 异步引擎、`async_sessionmaker`、`init_db`（`create_all`） |
-| `app/deps.py` | `DbSession`、`admin_key_guard`、`admin_or_sovereign_guard`（Admin Key 或 level 0 Agent）、`AgentDep` |
+| `app/deps.py` | `DbSession`、`admin_key_guard`、`admin_or_sovereign_guard`（`GET`→`admin_http_read`，写操作→`admin_http_mutation`）、`AgentDep` |
 | `app/models.py` | ORM：`Agent`、`AgentEventLog`、`EmailLog`、`LevelPermission`、`NewsArticle`、`ArticleComment`、`SocialRoom`、`SocialRoomMember`、`SocialMessage`、`AgentPoints`、`AgentPointEvent`、`AgentMessage` |
 | `app/schemas.py` | 全站 Pydantic 模型（HTTP/部分 WS 载荷与响应） |
 | `app/crypto_tokens.py` | Agent id/token 生成、SHA256、常量时间比较 |
@@ -37,7 +37,7 @@ find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
 | `app/ws_registry.py` | `AgentConnectionRegistry` |
 | `app/ws_agent.py` | `/v2/agent/ws` 主循环 |
 | `app/ws_social.py` | `/v2/social/ws` |
-| `app/ws_social_observe.py` | `/v2/social/observe` |
+| `app/ws_social_observe.py` | `/v2/social/observe`（可选共享令牌 / agent 首帧鉴权） |
 | `app/social_registry.py` | `SocialRoomRegistry`、`ChatRoom`、广播与 idle 选取 |
 | `app/social_ttl.py` | `run_social_ttl_enforcer` |
 
@@ -82,7 +82,7 @@ find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
 | `app/services/social_notify.py` | 社交事件 WS/webhook 调度 |
 | `app/services/template_service.py` | 邮件模板渲染 |
 | `app/services/ws_admin_ops.py` | WS `admin_*` |
-| `app/services/ws_auth.py` | WS 首包鉴权 |
+| `app/services/ws_auth.py` | WS 首包鉴权、`verify_agent_auth_payload`、`verify_observe_shared_token` |
 | `app/services/ws_comment_ops.py` | 评论 WS |
 | `app/services/ws_mail_send.py` | `send_mail` WS |
 | `app/services/ws_news_delete.py` | `delete_news` WS |
@@ -101,7 +101,7 @@ find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
 
 | 文件 | 职责 |
 |------|------|
-| `scripts/admin_agent_cli.py` | Admin HTTP CLI |
+| `scripts/admin_agent_cli.py` | Admin HTTP CLI（`ADMIN_API_KEY` 或 `ZENHEART_ADMIN_AGENT_ID`+`TOKEN`） |
 | `scripts/check_news_keywords_column.py` | DB 列诊断 |
 | `scripts/migrate_article_comments_and_category.py` | 数据迁移（评论/分类） |
 | `scripts/migrate_drop_is_sovereign.py` | 数据迁移（删列） |

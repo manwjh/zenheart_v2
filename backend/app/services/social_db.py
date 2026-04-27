@@ -10,7 +10,7 @@ an already-accepted session.
 Tables written:
   social_rooms        – room lifecycle, last_message_at, dissolved metadata
   social_room_members – per-agent join/leave history
-  social_messages     – full text of each chat message (for replay on join/subscribe)
+  social_messages     – full text of each chat message (display names from ``agents`` on read)
 """
 from __future__ import annotations
 
@@ -22,6 +22,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import SocialMessage, SocialRoom, SocialRoomMember
+from app.services.display_name_resolve import (
+    enrich_social_message_dicts,
+    load_agent_name_map,
+)
 from app.social_registry import ChatRoom
 
 logger = logging.getLogger(__name__)
@@ -54,7 +58,6 @@ async def create_room_record(
                 topic=room.topic or None,
                 rules=room.rules or None,
                 creator_agent_id=room.creator_id,
-                creator_agent_name=room.creator_name,
                 created_at=room.created_at,
                 max_members=room.max_concurrent_agents,
                 ttl_minutes=row_ttl,
@@ -68,7 +71,6 @@ async def create_room_record(
             session.add(SocialRoomMember(
                 room_id=room.room_id,
                 agent_id=room.creator_id,
-                agent_name=room.creator_name,
                 joined_at=room.created_at,
             ))
             await session.commit()
@@ -82,7 +84,6 @@ async def record_member_join(
     session_factory: async_sessionmaker[AsyncSession],
     room_id: str,
     agent_id: str,
-    agent_name: str,
     joined_at: datetime,
 ) -> bool:
     """Insert a membership row for a newly joined agent.
@@ -94,7 +95,6 @@ async def record_member_join(
             session.add(SocialRoomMember(
                 room_id=room_id,
                 agent_id=agent_id,
-                agent_name=agent_name,
                 joined_at=joined_at,
             ))
             await session.commit()
@@ -138,7 +138,6 @@ async def record_social_message(
     session_factory: async_sessionmaker[AsyncSession],
     room_id: str,
     agent_id: str,
-    agent_name: str,
     text: str,
     mentions: list[str],
     sent_at: datetime,
@@ -149,7 +148,6 @@ async def record_social_message(
             session.add(SocialMessage(
                 room_id=room_id,
                 agent_id=agent_id,
-                agent_name=agent_name,
                 text=text,
                 mentions=mentions or None,
                 sent_at=sent_at,
@@ -185,18 +183,30 @@ async def get_room_messages(
                 .limit(limit)
             )
             rows = result.scalars().all()
-        return [
-            {
-                "id": str(r.id),
-                "room_id": r.room_id,
-                "agent_id": r.agent_id,
-                "agent_name": r.agent_name,
-                "text": r.text,
-                "mentions": r.mentions or [],
-                "sent_at": r.sent_at.isoformat(),
-            }
-            for r in reversed(rows)
-        ]
+            out = [
+                {
+                    "id": str(r.id),
+                    "room_id": r.room_id,
+                    "agent_id": r.agent_id,
+                    "agent_name": "",
+                    "text": r.text,
+                    "mentions": r.mentions or [],
+                    "sent_at": r.sent_at.isoformat(),
+                }
+                for r in reversed(rows)
+            ]
+            agent_ids = {m["agent_id"] for m in out if m.get("agent_id")}
+            if agent_ids:
+                name_map = await load_agent_name_map(session, agent_ids)
+                enrich_social_message_dicts(out, name_map)
+            for m in out:
+                aid = m.get("agent_id")
+                if aid == "anonymous":
+                    m["agent_name"] = "Anonymous"
+                    continue
+                if isinstance(aid, str) and not (m.get("agent_name") or "").strip():
+                    m["agent_name"] = (aid[:8] + "…") if len(aid) > 8 else aid
+            return out
     except Exception:
         logger.exception("social_db: failed to get messages room_id=%s", room_id)
         return []
@@ -231,13 +241,12 @@ async def count_rooms_today(
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
 ) -> int:
-    """Count distinct rooms this agent created or joined since UTC midnight today."""
+    """Count distinct room_ids this agent created or joined since UTC midnight today."""
     today_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     try:
         async with session_factory() as session:
             result = await session.scalar(
-                select(func.count())
-                .select_from(SocialRoomMember)
+                select(func.count(func.distinct(SocialRoomMember.room_id)))
                 .where(
                     SocialRoomMember.agent_id == agent_id,
                     SocialRoomMember.joined_at >= today_utc,
@@ -247,6 +256,41 @@ async def count_rooms_today(
     except Exception:
         logger.exception("social_db: failed to count rooms today agent_id=%s", agent_id)
         return 0
+
+
+async def record_room_reopened(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+) -> tuple[Optional[SocialRoom], Optional[str]]:
+    """Clear dissolution on a row that was previously dissolved.
+
+    Returns ``(row, None)`` on success. On failure returns ``(None, reason)`` where
+    ``reason`` is ``not_found`` or ``not_dissolved``. Public rooms with ``ttl_minutes``
+    get ``expires_at`` recomputed from ``last_message_at`` or ``created_at``.
+    """
+    try:
+        async with session_factory() as session:
+            result = await session.execute(
+                select(SocialRoom).where(SocialRoom.room_id == room_id)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None, "not_found"
+            if row.dissolved_at is None:
+                return None, "not_dissolved"
+
+            row.dissolved_at = None
+            row.dissolution_reason = None
+            if not row.is_private and row.ttl_minutes is not None:
+                anchor = row.last_message_at or row.created_at
+                row.expires_at = anchor + timedelta(minutes=int(row.ttl_minutes))
+
+            await session.commit()
+            await session.refresh(row)
+            return row, None
+    except Exception:
+        logger.exception("social_db: failed to reopen room room_id=%s", room_id)
+        return None, "not_found"
 
 
 async def record_room_dissolved(
