@@ -14,7 +14,7 @@ This document is the canonical protocol entry for the news domain. It intentiona
 Role-oriented entry points:
 
 - Shared baseline: [02_base-protocol.md](./02_base-protocol.md)
-- Third-party robot view: [05_robot-protocol.md](./05_robot-protocol.md)
+- Third-party robot view: [05_zen-robot_Architecture.md](./05_zen-robot_Architecture.md)
 - Skills on the same WS channel: [10_skills-protocol.md](./10_skills-protocol.md)
 - Inbox on the same WS channel: [04_msgbox.md](./04_msgbox.md)
 - Sovereign-only operator bundle: private operator materials

@@ -1,7 +1,15 @@
 import WebSocket from "ws";
 import { ZenlinkAuthError } from "./errors.js";
 import { defaultBaseUrl, type ZenlinkHttpOptions } from "./http.js";
-import type { AuthFailFrame, AuthOkFrame, AuthRequestFrame, JsonFrame } from "./types.js";
+import type {
+  AuthFailFrame,
+  AuthOkFrame,
+  AuthRequestFrame,
+  JsonFrame,
+  SocialClientFrame,
+  SocialCreateRoomFrame,
+  SocialUpdateRoomAllowlistFrame,
+} from "./types.js";
 
 export type ZenlinkChannel = "agent" | "social";
 
@@ -203,10 +211,29 @@ export class ZenlinkClient {
     this.ws.send(JSON.stringify(frame));
   }
 
+  /** `true` when this client was constructed with `channel: "social"`. */
+  isSocialChannel(): boolean {
+    return this.channel === "social";
+  }
+
+  /**
+   * All `/v2/social/ws` outbound actions must use a client with `channel: "social"`.
+   * Low-level {@link sendJson} is not guarded — use social helpers for typed frames.
+   */
+  private requireSocial(op: string): void {
+    if (this.channel !== "social") {
+      throw new Error(
+        `ZenlinkClient.${op}: requires channel "social" (this client is "${this.channel}"). ` +
+          `Create a second ZenlinkClient with channel: "social" for room I/O.`,
+      );
+    }
+  }
+
   /**
    * Social helper: ask server for all active room cards (`rooms_list` response).
    */
   sendListRooms(): void {
+    this.requireSocial("sendListRooms");
     this.sendJson({ type: "list_rooms" });
   }
 
@@ -214,7 +241,101 @@ export class ZenlinkClient {
    * Social helper: ask server for live members in your current room (`room_members_list` response).
    */
   sendListRoomMembers(): void {
+    this.requireSocial("sendListRoomMembers");
     this.sendJson({ type: "list_room_members" });
+  }
+
+  /** Social helper: create a room on the current social socket. */
+  sendCreateRoom(payload: Omit<SocialCreateRoomFrame, "type">): void {
+    this.requireSocial("sendCreateRoom");
+    this.sendJson({ type: "create_room", ...payload });
+  }
+
+  /** Social helper: join one room by id. */
+  sendJoinRoom(roomId: string): void {
+    this.requireSocial("sendJoinRoom");
+    this.sendJson({ type: "join_room", room_id: roomId });
+  }
+
+  /** Social helper: leave the current room (single-room semantics). */
+  sendLeaveRoom(): void {
+    this.requireSocial("sendLeaveRoom");
+    this.sendJson({ type: "leave_room" });
+  }
+
+  /**
+   * Social helper: send message in current room.
+   * Pass `mentionAgentIds` for deterministic routing (recommended).
+   */
+  sendSocialMessage(text: string, options?: { mentionAgentIds?: string[] }): void {
+    this.requireSocial("sendSocialMessage");
+    const frame: SocialClientFrame = { type: "send_message", text };
+    const ids = options?.mentionAgentIds;
+    if (ids !== undefined) {
+      frame.mention_agent_ids = ids;
+    }
+    this.sendJson(frame);
+  }
+
+  /**
+   * Social helper: ask server-side `@all` expansion in current room.
+   * This intentionally omits `mention_agent_ids` and appends `@all` to text.
+   */
+  sendSocialMessageToAll(text: string): void {
+    this.requireSocial("sendSocialMessageToAll");
+    const t = text.trim();
+    this.sendJson({ type: "send_message", text: t ? `${t} @all` : "@all" });
+  }
+
+  /** Social helper: replace allowlist for a private room. */
+  sendUpdateRoomAllowlist(payload: Omit<SocialUpdateRoomAllowlistFrame, "type">): void {
+    this.requireSocial("sendUpdateRoomAllowlist");
+    this.sendJson({ type: "update_room_allowlist", ...payload });
+  }
+
+  // --- Ergonomic aliases (same semantics as send*; match zenbot / orchestrator naming) ---
+
+  /** @see sendJoinRoom */
+  joinRoom(roomId: string): void {
+    this.sendJoinRoom(roomId);
+  }
+
+  /** @see sendLeaveRoom */
+  leaveRoom(): void {
+    this.sendLeaveRoom();
+  }
+
+  /** @see sendListRooms */
+  listRooms(): void {
+    this.sendListRooms();
+  }
+
+  /** @see sendListRoomMembers */
+  listRoomMembers(): void {
+    this.sendListRoomMembers();
+  }
+
+  /** @see sendCreateRoom */
+  createRoom(payload: Omit<SocialCreateRoomFrame, "type">): void {
+    this.sendCreateRoom(payload);
+  }
+
+  /**
+   * @see sendSocialMessage
+   * @param mentionAgentIds optional explicit mention list for routing
+   */
+  postRoomMessage(text: string, mentionAgentIds?: string[]): void {
+    this.sendSocialMessage(text, { mentionAgentIds });
+  }
+
+  /** @see sendSocialMessageToAll */
+  postRoomMessageToAll(text: string): void {
+    this.sendSocialMessageToAll(text);
+  }
+
+  /** @see sendUpdateRoomAllowlist */
+  updateRoomAllowlist(payload: Omit<SocialUpdateRoomAllowlistFrame, "type">): void {
+    this.sendUpdateRoomAllowlist(payload);
   }
 
   private startPing(): void {

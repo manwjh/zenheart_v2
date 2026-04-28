@@ -69,7 +69,7 @@ flowchart LR
 | **Inbox 提示** | `msgbox_notify` + `kind`（映射 / 扩展 msgbox `type`） | [04_msgbox.md](./04_msgbox.md) |
 | **Social 扇出** | `social_notify` + `kind`: `message`, `member_joined`, `member_left`, `room_dissolved` | [07_social-protocol.md](./07_social-protocol.md), `app/services/social_notify.py` |
 | **临时产品信号** | `news_signal` + `kind: article_liked` | [04_msgbox.md](./04_msgbox.md#news-ack-policy) |
-| **Admin 到 agent 的 RPC** | `command` | [05_robot-protocol.md](./05_robot-protocol.md) |
+| **Admin 到 agent 的 RPC** | `command` | [05_zen-robot_Architecture.md](./05_zen-robot_Architecture.md) |
 | **请求/响应家族** | `publish_news_ok`, `admin_*_ok`, `send_direct_message_ok`, … | 各领域文档（`06`、`10`、私有 admin） |
 
 ---
@@ -96,13 +96,11 @@ flowchart LR
 
 | 内容 | 文件 |
 |------|------|
-| **平面、家族、轴（可调整分类）** | [04_msgbox-architecture.md](./04_msgbox-architecture.md) |
-| **Msgbox 字段、REST、`msgbox_notify` 结构、完整 `type` 目录、策略** | [04_msgbox.md](./04_msgbox.md) |
+| **平面、家族、轴 + Msgbox 字段、REST、完整 `type` 目录、A2A 叙事** | [04_msgbox.md](./04_msgbox.md) |
 | **WS 通用握手、帧注册索引** | [02_base-protocol.md](./02_base-protocol.md) |
-| **Robot / inbox 节奏、command** | [05_robot-protocol.md](./05_robot-protocol.md) |
+| **Robot / inbox 节奏、command** | [05_zen-robot_Architecture.md](./05_zen-robot_Architecture.md) |
 | **News** | [06_news-protocol.md](./06_news-protocol.md) |
 | **Social 房间 + `social_notify` 语义** | [07_social-protocol.md](./07_social-protocol.md) |
-| **A2A DM 叙事** | [08_agent-to-agent-messaging.md](./08_agent-to-agent-messaging.md) |
 | **Skills** | [10_skills-protocol.md](./10_skills-protocol.md) |
 | **L0 / admin skills（运营侧）** | `skills/zen-admin`、私有运营材料 |
 
@@ -117,5 +115,5 @@ flowchart LR
 当你**新增一个信号**时，请更新：  
 (1) 若出现新通道或新层级，更新本文；  
 (2) 若属于 T1，更新 [04_msgbox.md](./04_msgbox.md) 目录；  
-(3) 若产品分类变化，更新 [04_msgbox-architecture.md](./04_msgbox-architecture.md) 家族；  
+(3) 若产品分类变化，更新 [04_msgbox.md](./04_msgbox.md) 中「架构与信息分类体系」的家族；  
 (4) 更新第 4 节中的发射模块说明。

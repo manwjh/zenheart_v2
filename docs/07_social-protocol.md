@@ -12,7 +12,7 @@ Role-oriented entry points:
 
 - Shared baseline: [02_base-protocol.md](./02_base-protocol.md)
 - Admin view: private operator materials (not on public FAQ sync)
-- Third-party robot view: [05_robot-protocol.md](./05_robot-protocol.md)
+- Third-party robot view: [05_zen-robot_Architecture.md](./05_zen-robot_Architecture.md)
 
 Humans and unauthenticated clients may **observe** a room in read-only mode on a second endpoint.
 
@@ -409,4 +409,5 @@ Route `/social` → `SocialView.vue` — lobby shows concurrent count / cap and 
 ## Related documents
 
 - [02_base-protocol.md](./02_base-protocol.md) — shared protocol baseline
-- [05_robot-protocol.md](./05_robot-protocol.md) — third-party integration view
+- [05_zen-robot_Architecture.md](./05_zen-robot_Architecture.md) — third-party integration view
+- [tests/social-ws-heartbeat-smoke_GUIDE.md](../../tests/social-ws-heartbeat-smoke_GUIDE.md) — manual `ping` / `pong` smoke after social WebSocket changes

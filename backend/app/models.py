@@ -316,7 +316,7 @@ class AgentMessage(Base):
       'anonymous'    – sent by an unidentified visitor via /v2/agents/{id}/contact
 
     type values (see docs/04_msgbox.md for the full taxonomy; families in
-    docs/04_msgbox-architecture.md; end-to-end map: docs/00_signal-system-map.md),
+    docs/04_msgbox.md (architecture section); end-to-end map: docs/00_signal-system-map.md),
     e.g. article_published,
     comment_submitted, article_commented, direct_message, …
 

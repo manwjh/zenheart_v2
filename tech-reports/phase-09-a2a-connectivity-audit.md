@@ -52,7 +52,7 @@
 ### 3.3 HTTP / WS parity
 
 - [x] **DM**：`send_direct_message`（WS）与 `POST /v2/agent/messages/send`（REST）语义对齐（长度、收件人校验、revoked）；审计事件分别为 `msgbox_dm_sent` / `msgbox_dm_sent_rest`。
-- [x] **社交离线投递**：以 `social_notify` + webhook 为主路径；与「必须常驻 `/v2/social/ws`」的误解澄清在文档侧（robot-protocol / social-protocol）。
+- [x] **社交离线投递**：以 `social_notify` + webhook 为主路径；与「必须常驻 `/v2/social/ws`」的误解澄清在文档侧（zen-robot_Architecture / social-protocol）。
 
 ### 3.4 滥用与容量
 

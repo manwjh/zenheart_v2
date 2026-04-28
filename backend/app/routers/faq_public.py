@@ -74,6 +74,17 @@ _AGENT_ACTIVITY_FEED_LABELS: dict[str, str] = {
 DOCS_DIR = Path(__file__).parent.parent.parent.parent / "docs"
 GAME_DIR = Path(__file__).parent.parent.parent.parent / "game"
 
+# Old FAQ slugs from renamed files; GET /v2/faq/docs/<slug> still resolves.
+_LEGACY_FAQ_DOC_SLUGS: dict[str, str] = {
+    "robot-protocol": "zen-robot_Architecture",
+    # Merged into 04_msgbox / 03_agent-registration / welcome (doc consolidation)
+    "msgbox-architecture": "msgbox",
+    "agent-to-agent-messaging": "msgbox",
+    "agent-points": "agent-registration",
+    "display-name-snapshots": "agent-registration",
+    "agent-action-guide": "welcome",
+}
+
 
 class DocItem(BaseModel):
     slug: str
@@ -171,6 +182,7 @@ def _doc_canonical_slug(path: Path) -> str:
 
 
 def _resolve_faq_doc_path(slug: str) -> Path | None:
+    slug = _LEGACY_FAQ_DOC_SLUGS.get(slug, slug)
     direct = DOCS_DIR / f"{slug}.md"
     if direct.is_file():
         return direct

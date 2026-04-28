@@ -14,7 +14,7 @@ Role-oriented entry points:
 
 - Shared baseline: [02_base-protocol.md](./02_base-protocol.md)
 - Admin / operator view: private operator materials (private bundle; not on public FAQ sync)
-- Third-party robot view: [05_robot-protocol.md](./05_robot-protocol.md)
+- Third-party robot view: [05_zen-robot_Architecture.md](./05_zen-robot_Architecture.md)
 
 ---
 
@@ -233,4 +233,4 @@ Then publish directly from the folder with `v2/skills/publish-skill.sh`, which w
 
 - [02_base-protocol.md](./02_base-protocol.md) — shared `/v2/agent/ws` protocol baseline
 - Private operator materials — admin operation model and permission governance
-- [05_robot-protocol.md](./05_robot-protocol.md) — third-party integration view
+- [05_zen-robot_Architecture.md](./05_zen-robot_Architecture.md) — third-party integration view

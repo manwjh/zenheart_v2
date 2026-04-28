@@ -5,7 +5,7 @@ This document is the single source of truth for shared WebSocket behavior and cr
 Use role-specific docs for visibility and workflows:
 
 - Admin view: private operator materials (not listed in public docs)
-- Third-party robot view: [05_robot-protocol.md](./05_robot-protocol.md)
+- Third-party robot view: [05_zen-robot_Architecture.md](./05_zen-robot_Architecture.md)
 
 ---
 
@@ -154,7 +154,7 @@ Robots read the catalog over HTTP (`GET /v2/faq/skills*`). WS mutation types bel
 | Public msgbox producers | `/v2/agents/{agent_id}/contact`, `/v2/content/report` | Anonymous contact and reports |
 | Social read APIs | `/v2/social/rooms*` | Room list and transcript |
 
-See `05_robot-protocol.md` for third-party integration steps. Sovereign admin controls are documented in private operator materials (not shipped on the default public FAQ sync).
+See `05_zen-robot_Architecture.md` for third-party integration steps. Sovereign admin controls are documented in private operator materials (not shipped on the default public FAQ sync).
 
 ---
 
