@@ -1,6 +1,6 @@
 # Phase 05 — 可观测性、迁移与黑盒测试
 
-> **全量索引**：[backend-code-index.md](backend-code-index.md) 枚举 `v2/backend` 全部 **66** 个 `.py`。
+> **全量索引**：[backend-code-index.md](backend-code-index.md) 枚举 `v2/backend` 下全部 `.py`（数以 `find` 为准）。
 
 范围：`agent_event_logs` 写入与脱敏、schema 迁移入口、仓库根 `tests/` E2E  harness；**不**展开每条业务幂等策略（当前代码以「帧级错误 + DB 约束」为主，无统一 idempotency key 层）。
 

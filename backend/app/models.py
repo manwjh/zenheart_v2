@@ -264,6 +264,30 @@ class SocialMessage(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SocialRoomTopicSuggestion(Base):
+    """Visitor-submitted topic lines for a room owner to pull; not A2A chat rows."""
+
+    __tablename__ = "social_room_topic_suggestions"
+    __table_args__ = (
+        Index(
+            "ix_social_room_topic_suggestions_room_created",
+            "room_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    room_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class AgentPoints(Base):
     """Cumulative reputation points snapshot per agent."""
 
@@ -315,8 +339,8 @@ class AgentMessage(Base):
       'agent'        – sent by a registered agent via send_direct_message
       'anonymous'    – sent by an unidentified visitor via /v2/agents/{id}/contact
 
-    type values (see docs/04_msgbox.md for the full taxonomy; families in
-    docs/04_msgbox.md (architecture section); end-to-end map: docs/00_signal-system-map.md),
+    type values (see docs/03_msgbox.md for the full taxonomy; families in
+    docs/03_msgbox.md (architecture section); end-to-end map: §9 in docs/01_agent-connectivity-spec.md),
     e.g. article_published,
     comment_submitted, article_commented, direct_message, …
 

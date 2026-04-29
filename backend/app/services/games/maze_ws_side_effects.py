@@ -1,7 +1,7 @@
 """
-Maze-only side effects for /v2/games/ws: spectator snapshot updates and post-solve agent events.
+Maze-only side effects for /v2/games/ws: live spectator snapshot updates and post-solve agent events.
 
-Keeps ws_games.py free of MazeSession / fog / POMDP scoring imports.
+Keeps games_ws.py free of MazeSession / fog / POMDP scoring imports.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from app.services.games.maze_observation import maze_state_for_spectators
 from app.services.games.maze_pomdp_evaluation import evaluate_maze_episode
 from app.services.games.maze_session import MazeSession
 from app.services.games.pomdp_maze import GAME_ID
-from app.services.games_spectator_registry import GamesSpectatorRegistry
+from app.services.games_live_registry import GamesLiveRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +21,7 @@ class MazeSideEffectContext:
     connection_id: str
     agent_id: str
     session_factory: object
-    spectator_registry: GamesSpectatorRegistry
+    live_registry: GamesLiveRegistry
 
 
 async def apply_maze_ws_side_effects(
@@ -34,7 +34,7 @@ async def apply_maze_ws_side_effects(
         return
     mt = frame.get("type")
     if mt == "game_state" and isinstance(new_sess, MazeSession):
-        await ctx.spectator_registry.publish_maze(
+        await ctx.live_registry.publish_maze(
             ctx.connection_id,
             agent_id=ctx.agent_id,
             state=maze_state_for_spectators(new_sess),

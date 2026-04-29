@@ -1,6 +1,6 @@
 # Phase 03 — 权限模型与 HTTP / WebSocket 能力对照
 
-> **全量索引**：[backend-code-index.md](backend-code-index.md) 枚举 `v2/backend` 全部 **66** 个 `.py`。
+> **全量索引**：[backend-code-index.md](backend-code-index.md)（`.py` 总数以仓库为准）。
 
 范围：`level_permissions` 语义、`check_permission` / `get_limit_value` 使用点、**level 0（sovereign）** 在 WS admin 帧上的门闸、以及「仅 HTTP 管理密钥」与「Agent 凭证」两条治理轴的差异。
 
@@ -21,10 +21,10 @@
 | `v2/backend/app/routers/media_agent.py` | `AgentDep` 上传等 |
 | `v2/backend/app/routers/mail.py` | `POST /send`、`GET /stats`（`admin_or_sovereign_guard`）；`init_mail_app` |
 | `v2/backend/app/routers/admin_agents.py` | 管理 agent CRUD、rotate、revoke、**commands**（路由级 `admin_or_sovereign_guard`） |
-| `v2/backend/app/services/ws_news_*.py` | `news` 模块 `check_permission` |
-| `v2/backend/app/services/ws_skills_*.py` | `skills` 模块 `check_permission` |
+| `v2/backend/app/services/ws_news.py` | `news` 模块 `check_permission` |
+| `v2/backend/app/services/ws_skills.py` | `skills` 模块 `check_permission` |
 | `v2/backend/app/services/ws_mail_send.py` | `mail` / `send` |
-| `v2/backend/app/ws_social.py` | `social`：`create_room`、`join_room`、`send_message` |
+| `v2/backend/app/services/ws_social_inbound.py` | `social`：`create_room`、`join_room`、`send_message`（经 `ws_agent` 派发） |
 | `v2/backend/app/ws_agent.py` | `ws` 限流读 `get_limit_value(..., "ws", "rate_limit_per_minute")` |
 | `v2/backend/app/ws_social_observe.py` | 同上（观察者通道限流） |
 | `v2/backend/app/services/ws_comment_ops.py` | 评论审核：**无** `check_permission`；规则为「publisher 或 level 0」 |
@@ -61,12 +61,12 @@
 
 | module | action | 调用文件 / 上下文 |
 |--------|--------|-------------------|
-| news | publish | `ws_news_publish.py` |
-| news | update_own / update_any | `ws_news_update.py`（先 own，再 any） |
-| news | delete_own / delete_any | `ws_news_delete.py` |
+| news | publish | `ws_news.py` |
+| news | update_own / update_any | `ws_news.py`（先 own，再 any） |
+| news | delete_own / delete_any | `ws_news.py` |
 | mail | send | `ws_mail_send.py`（注释说明批量邮件可走 HTTP admin） |
-| skills | publish / update / delete | `ws_skills_publish.py` 等 |
-| social | create_room / join_room / send_message | `ws_social.py` |
+| skills | publish / update / delete | `ws_skills.py` |
+| social | create_room / join_room / send_message | `ws_social_inbound.py` |
 
 ---
 
@@ -74,8 +74,8 @@
 
 | module | action | 用途 |
 |--------|--------|------|
-| social | rooms_per_day | `ws_social.py`：`create_room` / `join_room` 前；**仅当 `level > 0`** 时强制日上限（level 0 不套用该 cap） |
-| ws | rate_limit_per_minute | `ws_agent.py`、`ws_social.py`、`ws_social_observe.py` |
+| social | rooms_per_day | `ws_social_inbound.py`：`create_room` / `join_room` 前；**仅当 `level > 0`** 时强制日上限（level 0 不套用该 cap） |
+| ws | rate_limit_per_minute | `ws_agent.py`、`ws_social_observe.py`、`games_ws.py` |
 
 默认日上限回退：`_DEFAULT_ROOMS_PER_DAY = 10`（当 DB 无 `limit_value` 时）。
 

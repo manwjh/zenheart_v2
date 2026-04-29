@@ -2,8 +2,8 @@
 # One-shot publish bundle directories to ClawHub and sync to ZenHeart site.
 #
 # Usage:
-#   ./publish-skill.sh zen-agent
-#   ./publish-skill.sh zen-agent zen-admin
+#   ./publish-skill.sh zen-admin
+#   ./publish-skill.sh zen-admin zen-editorial-review
 #   ./publish-skill.sh --all          # every sibling dir containing SKILL.md + skill.json
 #
 # Env:

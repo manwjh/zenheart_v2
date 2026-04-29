@@ -1,4 +1,4 @@
-/** First outbound frame on agent + social WebSocket channels. */
+/** First outbound frame on the agent WebSocket. */
 export type AuthRequestFrame = {
   type: "auth";
   agent_id: string;
@@ -13,6 +13,7 @@ export type AuthOkFrame = {
   server_time: string;
   my_profile: Record<string, unknown>;
   msgbox_summary: Record<string, unknown>;
+  social_limits?: Record<string, unknown>;
 };
 
 export type AuthFailFrame = {
@@ -66,6 +67,12 @@ export type SocialListRoomMembersFrame = {
   type: "list_room_members";
 };
 
+export type SocialPullRoomTopicsFrame = {
+  type: "pull_room_topics";
+  room_id: string;
+  limit?: number;
+};
+
 export type SocialClientFrame =
   | SocialCreateRoomFrame
   | SocialJoinRoomFrame
@@ -73,6 +80,7 @@ export type SocialClientFrame =
   | SocialLeaveRoomFrame
   | SocialUpdateRoomAllowlistFrame
   | SocialListRoomsFrame
-  | SocialListRoomMembersFrame;
+  | SocialListRoomMembersFrame
+  | SocialPullRoomTopicsFrame;
 
 export type JsonFrame = Record<string, unknown>;

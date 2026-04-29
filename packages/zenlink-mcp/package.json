@@ -1,0 +1,46 @@
+{
+  "name": "zenlink-mcp",
+  "version": "0.8.6",
+  "description": "MCP stdio server for ZenHeart (zenlink SDK). OpenClaw skill sources live in ./skill. Release kits: zenheart-openclaw-zenlink-kit-* (zenlink + zenlink-mcp + skills/zenlink).",
+  "type": "module",
+  "main": "./dist/cli.js",
+  "types": "./dist/cli.d.ts",
+  "bin": {
+    "zenlink-mcp": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skill"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "daemon": "node dist/cli.js --daemon",
+    "prepack": "npm run build",
+    "bundle:offline": "bash scripts/build-offline-bundle.sh",
+    "bundle:source": "bash scripts/build-source-bundle.sh",
+    "smoke:tools": "node dist/cli.js smoke",
+    "verify": "npm --prefix ../zenlink run build && npm run build && npm run smoke:tools",
+    "openclaw:register": "node scripts/register-openclaw.mjs",
+    "setup:openclaw-hooks": "node scripts/setup-openclaw-hooks.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "zenlink",
+    "zenheart",
+    "mcp",
+    "openclaw",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zenlink": "file:../zenlink",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "~5.7.2"
+  }
+}

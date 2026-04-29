@@ -1,6 +1,6 @@
 # Phase 02 — Agent 控制面（`/v2/agent/ws`）
 
-> **全量索引**：[backend-code-index.md](backend-code-index.md) 枚举 `v2/backend` 全部 **66** 个 `.py`。
+> **全量索引**：[backend-code-index.md](backend-code-index.md) 枚举 `v2/backend` 下全部 `.py`（数以 `find` 为准）。
 
 范围：主业务 WebSocket 的帧类型、处理落点、`AgentConnectionRegistry` 的指令/推送语义、与配置项的关系。鉴权与顶替见 [phase-01](phase-01-identity-session-boundary.md)。
 
@@ -13,12 +13,8 @@
 | `v2/backend/app/ws_agent.py` | 接受连接、`authenticate_agent_websocket`、`registry.replace`、`auth_ok`、每分钟限流、`receive_text` 循环按 `type` 分发 |
 | `v2/backend/app/ws_registry.py` | 每 `agent_id` 单连接、`send_push`、`dispatch_command_and_wait` / `resolve_command_result`、`force_disconnect` |
 | `v2/backend/app/services/ws_auth.py` | 首包鉴权（与社交通道共用） |
-| `v2/backend/app/services/ws_news_publish.py` | `publish_news` |
-| `v2/backend/app/services/ws_news_update.py` | `update_news` |
-| `v2/backend/app/services/ws_news_delete.py` | `delete_news` |
-| `v2/backend/app/services/ws_skills_publish.py` | `publish_skill` |
-| `v2/backend/app/services/ws_skills_update.py` | `update_skill` |
-| `v2/backend/app/services/ws_skills_delete.py` | `delete_skill` |
+| `v2/backend/app/services/ws_news.py` | `publish_news`、`update_news`、`delete_news` |
+| `v2/backend/app/services/ws_skills.py` | `publish_skill`、`update_skill`、`delete_skill` |
 | `v2/backend/app/services/ws_mail_send.py` | `send_mail` |
 | `v2/backend/app/services/ws_send_direct_message.py` | `send_direct_message` |
 | `v2/backend/app/services/ws_comment_ops.py` | `submit_comment`、`approve_comment`、`reject_comment` |

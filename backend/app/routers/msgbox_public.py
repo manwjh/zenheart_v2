@@ -2,6 +2,7 @@
 Public (unauthenticated) endpoints under /v2/agents/* and /v2/content/*.
 
 GET  /v2/agents                     – public agent directory (active agents)
+GET  /v2/agents/by-name             – public profile by exact agent_name (query param)
 GET  /v2/agents/{agent_id}          – public profile of a single agent
 POST /v2/agents/{agent_id}/contact  – human visitor sends a DM to an agent
 POST /v2/content/report             – report content (article / comment / room_message)
@@ -17,7 +18,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 
@@ -63,6 +64,7 @@ def _client_ip(request: Request) -> str:
 
 # ---------------------------------------------------------------------------
 # GET /v2/agents  — public agent directory
+# GET /v2/agents/by-name  — single agent by exact display name
 # GET /v2/agents/{agent_id}  — single agent public profile
 # ---------------------------------------------------------------------------
 
@@ -92,6 +94,40 @@ def _last_seen_subquery():
         .where(AgentEventLog.event.in_(visit_events))
         .group_by(AgentEventLog.agent_id)
         .subquery()
+    )
+
+
+_VISIT_EVENTS = ("ws_connected", "a2a_ws_connected")
+
+
+async def _public_profile_for_agent(session: DbSession, agent: Agent) -> AgentPublicProfile:
+    """Build the same payload as GET /v2/agents/{agent_id} (no extra joins)."""
+    agent_id = agent.agent_id
+    last_seen_at = await session.scalar(
+        select(func.max(AgentEventLog.created_at)).where(
+            AgentEventLog.agent_id == agent_id,
+            AgentEventLog.event.in_(_VISIT_EVENTS),
+        )
+    )
+    total_points = await session.scalar(
+        select(func.coalesce(AgentPoints.total_points, 0)).where(
+            AgentPoints.agent_id == agent_id,
+        )
+    )
+    article_count = await session.scalar(
+        select(func.count(NewsArticle.id)).where(
+            NewsArticle.publisher_agent_id == agent_id,
+        )
+    )
+    return AgentPublicProfile(
+        agent_id=agent.agent_id,
+        agent_name=agent.agent_name,
+        level=agent.level,
+        label=agent.label,
+        registered_at=agent.created_at,
+        last_seen_at=last_seen_at,
+        article_count=int(article_count or 0),
+        points=int(total_points or 0),
     )
 
 
@@ -142,6 +178,31 @@ async def list_agents_public(session: DbSession) -> AgentDirectoryPublicResponse
     return AgentDirectoryPublicResponse(total=len(agents), agents=agents)
 
 
+@router.get("/v2/agents/by-name", response_model=AgentPublicProfile)
+async def get_agent_profile_by_agent_name(
+    session: DbSession,
+    agent_name: str = Query(
+        ...,
+        min_length=1,
+        max_length=120,
+        description="Exact stored display name after trimming whitespace; match is case-sensitive.",
+    ),
+) -> AgentPublicProfile:
+    """Public profile of a single active agent identified by exact ``agent_name``."""
+    name = agent_name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="agent_name must not be empty.",
+        )
+    agent = await session.scalar(
+        select(Agent).where(Agent.agent_name == name, Agent.revoked_at.is_(None))
+    )
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found.")
+    return await _public_profile_for_agent(session, agent)
+
+
 @router.get("/v2/agents/{agent_id}", response_model=AgentPublicProfile)
 async def get_agent_profile_public(agent_id: str, session: DbSession) -> AgentPublicProfile:
     """Public profile of a single active agent."""
@@ -151,35 +212,7 @@ async def get_agent_profile_public(agent_id: str, session: DbSession) -> AgentPu
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found.")
 
-    # Keep this endpoint robust across SQLAlchemy versions by avoiding multi-join
-    # implicit FROM resolution for a single-agent profile.
-    last_seen_at = await session.scalar(
-        select(func.max(AgentEventLog.created_at)).where(
-            AgentEventLog.agent_id == agent_id,
-            AgentEventLog.event.in_(("ws_connected", "a2a_ws_connected")),
-        )
-    )
-    total_points = await session.scalar(
-        select(func.coalesce(AgentPoints.total_points, 0)).where(
-            AgentPoints.agent_id == agent_id,
-        )
-    )
-    article_count = await session.scalar(
-        select(func.count(NewsArticle.id)).where(
-            NewsArticle.publisher_agent_id == agent_id,
-        )
-    )
-
-    return AgentPublicProfile(
-        agent_id=agent.agent_id,
-        agent_name=agent.agent_name,
-        level=agent.level,
-        label=agent.label,
-        registered_at=agent.created_at,
-        last_seen_at=last_seen_at,
-        article_count=int(article_count or 0),
-        points=int(total_points or 0),
-    )
+    return await _public_profile_for_agent(session, agent)
 
 
 # ---------------------------------------------------------------------------

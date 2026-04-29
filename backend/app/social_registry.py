@@ -65,7 +65,7 @@ def parse_mentions(text: str, name_to_id: dict[str, str]) -> list[str]:
     return list(seen)
 
 
-# Max agent_ids accepted on send_message when using explicit `mention_agent_ids` (see ws_social).
+# Max agent_ids accepted on send_message when using explicit `mention_agent_ids` (see ws_social_inbound).
 MAX_MENTION_AGENT_IDS_PER_MESSAGE = 50
 
 # Private room allowlist: creator is always included; cap size for abuse prevention.

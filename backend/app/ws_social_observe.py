@@ -7,7 +7,8 @@ or the same { "type": "auth", "agent_id", "token" } used on /v2/agent/ws.
 
 When the env is unset or empty, the socket accepts traffic immediately (local dev only).
 
-Observers cannot send messages into rooms (no join/create/send).
+Visitors may enqueue topic suggestions (`submit_topic_suggestion`) for the room
+creator to pull on `/v2/agent/ws` (`pull_room_topics`). Those lines are not A2A chat.
 """
 from __future__ import annotations
 
@@ -15,8 +16,6 @@ import asyncio
 import json
 import time
 from collections import deque
-from datetime import datetime, timezone
-
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
@@ -24,7 +23,11 @@ from app.models import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import get_limit_value
 from app.services.display_name_resolve import enrich_member_dicts_live, enrich_social_lobby_snapshots
-from app.services.social_db import get_room_messages, record_social_message
+from app.services.social_db import (
+    get_room_messages,
+    parse_client_iso_datetime,
+    record_room_topic_suggestion,
+)
 from app.services.ws_auth import verify_agent_auth_payload, verify_observe_shared_token
 from app.social_registry import SocialRoomRegistry
 
@@ -156,8 +159,8 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
 
     async def _heartbeat_loop() -> None:
         nonlocal last_pong_at
-        interval = float(settings.social_ws_ping_interval_seconds)
-        timeout = float(settings.social_ws_pong_timeout_seconds)
+        interval = float(settings.agent_ws_presence_ping_interval_seconds)
+        timeout = float(settings.agent_ws_presence_pong_timeout_seconds)
         while True:
             await asyncio.sleep(interval)
             now = time.monotonic()
@@ -228,7 +231,11 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     }))
                     continue
 
-                recent_messages = await get_room_messages(session_factory, room.room_id)
+                raw_since = data.get("messages_since")
+                since = parse_client_iso_datetime(raw_since)
+                recent_messages = await get_room_messages(
+                    session_factory, room.room_id, since=since
+                )
                 members = room.member_list()
                 await enrich_member_dicts_live(session_factory, members)
                 anchor = room.idle_anchor()
@@ -261,13 +268,13 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     "room_id": room_id,
                 }))
 
-            elif msg_type == "send_message_anonymous":
+            elif msg_type == "submit_topic_suggestion":
                 room_id = data.get("room_id", "")
                 text = data.get("text", "")
                 if not isinstance(room_id, str) or not room_id or not isinstance(text, str) or not (1 <= len(text) <= 4000):
                     await websocket.send_text(json.dumps({
                         "type": "error",
-                        "reason": "invalid_send_message_payload",
+                        "reason": "invalid_submit_topic_payload",
                         "detail": "room_id and text(1-4000) are required",
                     }))
                     continue
@@ -281,7 +288,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                 if room.is_private:
                     await websocket.send_text(json.dumps({
                         "type": "error",
-                        "reason": "observer_cannot_send_private_room",
+                        "reason": "topic_suggestions_disabled_private_room",
                     }))
                     continue
                 if not room.observable:
@@ -290,25 +297,17 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                         "reason": "not_observable",
                     }))
                     continue
-                sent_at = datetime.now(timezone.utc).isoformat()
-                frame = {
-                    "type": "message",
+                ok = await record_room_topic_suggestion(session_factory, room_id, text.strip())
+                if not ok:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "reason": "persistence_failed",
+                    }))
+                    continue
+                await websocket.send_text(json.dumps({
+                    "type": "submit_topic_suggestion_ok",
                     "room_id": room_id,
-                    "agent_id": "anonymous",
-                    "agent_name": "Anonymous",
-                    "text": text,
-                    "sent_at": sent_at,
-                    "mentions": [],
-                }
-                await social.broadcast_to_room(room_id, frame)
-                await record_social_message(
-                    session_factory,
-                    room_id=room_id,
-                    agent_id="anonymous",
-                    text=text,
-                    mentions=[],
-                    sent_at=datetime.fromisoformat(sent_at),
-                )
+                }))
 
             else:
                 if msg_type in ("send_message", "create_room", "join_room", "leave_room"):

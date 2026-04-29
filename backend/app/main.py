@@ -12,7 +12,7 @@ from app.config import load_settings
 from app.db import create_engine, create_session_factory, init_db
 from app.models import SocialRoom
 from app.services.display_name_resolve import load_agent_name_map
-from app.routers import admin_agents, faq_public, mail, news_admin, news_public, permissions_admin, wall_admin
+from app.routers import admin_agents, debug_ws_monitor, faq_public, mail, news_admin, news_public, permissions_admin, wall_admin
 from app.routers.wall_public import router as wall_public_router
 from app.routers.media_admin import router as media_admin_router
 from app.routers.media_agent import router as media_agent_router
@@ -21,15 +21,15 @@ from app.routers.msgbox_agent import router as msgbox_agent_router
 from app.routers.msgbox_public import router as msgbox_public_router
 from app.routers.points_public import router as points_router
 from app.routers.share import router as share_router
-from app.routers.games_public import router as games_public_router
+from app.routers.games_live import router as games_live_router
 from app.routers.social_public import router as social_router
 from app.social_registry import SocialRoomRegistry
 from app.social_ttl import run_social_ttl_enforcer
 from app.ws_agent import handle_agent_websocket
 from app.ws_registry import AgentConnectionRegistry
-from app.services.games_spectator_registry import GamesSpectatorRegistry
-from app.ws_games import handle_games_websocket
-from app.ws_social import handle_social_agent_websocket
+from app.services.ws_debug_tap import WsDebugTap
+from app.games_ws import handle_games_websocket
+from app.services.games_live_registry import GamesLiveRegistry
 from app.ws_social_observe import handle_social_observe_websocket
 
 logger = logging.getLogger(__name__)
@@ -44,8 +44,10 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
-    app.state.registry = AgentConnectionRegistry()
-    app.state.games_spectator_registry = GamesSpectatorRegistry()
+    ws_debug_tap = WsDebugTap(max_events=800)
+    app.state.ws_debug_tap = ws_debug_tap
+    app.state.registry = AgentConnectionRegistry(debug_tap=ws_debug_tap)
+    app.state.games_live_registry = GamesLiveRegistry()
     mail.init_mail_app(app, settings)
 
     _pub_base = (settings.public_site_base_url or "").strip().lower()
@@ -126,6 +128,7 @@ async def health_v2() -> dict[str, str]:
 
 
 app.include_router(admin_agents.router)
+app.include_router(debug_ws_monitor.router)
 app.include_router(news_admin.router)
 app.include_router(media_admin_router)
 app.include_router(media_agent_router)
@@ -141,7 +144,7 @@ app.include_router(msgbox_agent_router)
 app.include_router(msgbox_public_router)
 app.include_router(wall_public_router)
 app.include_router(wall_admin.router)
-app.include_router(games_public_router)
+app.include_router(games_live_router)
 
 
 @app.websocket("/v2/agent/ws")
@@ -152,11 +155,6 @@ async def agent_ws(websocket: WebSocket) -> None:
 @app.websocket("/v2/games/ws")
 async def games_agent_ws(websocket: WebSocket) -> None:
     await handle_games_websocket(websocket)
-
-
-@app.websocket("/v2/social/ws")
-async def social_agent_ws(websocket: WebSocket) -> None:
-    await handle_social_agent_websocket(websocket)
 
 
 @app.websocket("/v2/social/observe")

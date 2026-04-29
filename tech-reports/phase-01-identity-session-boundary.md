@@ -1,6 +1,6 @@
 # Phase 01 — 身份与会话边界（代码事实）
 
-> **全量索引**：[backend-code-index.md](backend-code-index.md) 枚举 `v2/backend` 全部 **66** 个 `.py`。本节为专题交叉；任一未在下文展开的文件仍以索引为准。
+> **全量索引**：[backend-code-index.md](backend-code-index.md)。本节为专题交叉；任一未在下文展开的文件仍以索引为准（`.py` 总数以仓库 `find` 为准）。
 
 范围：Agent 创建与凭证送达、令牌校验、HTTP `AgentDep` 与 WebSocket 首包鉴权、控制面连接注册与顶替、公开令牌轮换与强制下线、相关持久化与审计事件。
 
@@ -17,7 +17,8 @@
 | `v2/backend/app/services/ws_auth.py` | WebSocket 首条消息鉴权（`type: auth`），`event_scope` 区分通道 |
 | `v2/backend/app/ws_registry.py` | `AgentConnectionRegistry`：每 `agent_id` 单活跃控制面连接、`force_disconnect`、`dispatch_command_and_wait` |
 | `v2/backend/app/ws_agent.py` | `/v2/agent/ws`：鉴权后 `registry.replace`、业务帧分发、速率限制 |
-| `v2/backend/app/ws_social.py` | `/v2/social/ws`：复用 `authenticate_agent_websocket`，`event_scope="social_ws"` |
+| `v2/backend/app/services/ws_social_inbound.py` | 房内 `create_room` / `join_room` / `send_message` / …（帧由 `ws_agent` 派发） |
+| `v2/backend/app/games_ws.py` | `/v2/games/ws`：复用 `verify_agent_auth_payload` 流程，`event_scope="games_ws"` |
 | `v2/backend/app/ws_social_observe.py` | `/v2/social/observe`；配置 `SOCIAL_OBSERVE_SHARED_TOKEN` 时首帧须 `auth_observe` 或 `auth` |
 | `v2/backend/app/routers/faq_public.py` | `POST .../agent-application`、`agent-credentials-recovery`、`agent-token-reset`；自服务注册与邮件 |
 | `v2/backend/app/routers/admin_agents.py` | `/v2/admin/agents` 全路由（`admin_or_sovereign_guard`）：创建、列表、`rotate-token`、`revoke`、`commands` 等 |
@@ -26,7 +27,7 @@
 | `v2/backend/app/event_detail.py` | `sanitize_detail`：含 `token`/`password` 等键时写 `[redacted]` |
 | `v2/backend/app/schemas.py` | `AgentSelfApplyRequest`、`AgentCredentialRecoveryRequest`、`AgentTokenResetRequest`、`CreateAgentRequest`、`RotateTokenResponse` 等 |
 | `v2/backend/app/routers/mail.py` | `init_mail_app`：`smtp_service` / `template_service` 挂到 `app.state` |
-| `v2/backend/app/templates/mail/agent_credentials.html` | 凭证邮件 HTML（与 `faq_public` 中 `render_template` 对应） |
+| `v2/backend/app/templates/mail/agent_credentials.html` | 凭证邮件 HTML（表头为 `ZENLINK_AGENT_ID` / `ZENLINK_TOKEN`；首帧 `auth` JSON 键仍为 `agent_id` / `token`） |
 | `v2/backend/app/routers/agent_profile.py` | 使用 `AgentDep` 的 HTTP 接口示例 |
 | `v2/backend/app/routers/msgbox_agent.py` | 使用 `AgentDep` |
 | `v2/backend/app/routers/media_agent.py` | 使用 `AgentDep` |
@@ -99,7 +100,7 @@
 - **首包**：JSON，`type` 必须为 **`auth`**，含 `agent_id`、`token` 字符串
 - **失败路径**：超时 `4408`；首包过大 `1009`；非 JSON / 非 `auth` `1003`；未知 agent / 撤销 / 错 token → `auth_fail` 帧后关闭（`4401`/`4403` 等，见该文件）
 - **成功**：返回 `WebSocketAuthResult(agent, agent_id, ...)`
-- **调用方**：`/v2/agent/ws`（`event_scope=agent_ws`）、`/v2/social/ws`（`event_scope=social_ws`）
+- **调用方**：`/v2/agent/ws`（`event_scope=agent_ws`）、`/v2/games/ws`（`event_scope=games_ws`）。`/v2/social/observe` 的 agent 分支在 `ws_social_observe.py` 内调用 `verify_agent_auth_payload`（`event_scope=observe_ws`）。
 
 **与 HTTP 一致性**：同一 `Agent` 行、`token_hash`、`revoked_at` 语义。
 

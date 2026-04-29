@@ -2,30 +2,31 @@
 
 本表枚举 **`v2/backend` 目录下全部 `.py` 文件**（含包内空 `__init__.py`）。每文件一行职责说明；系统优化时以本表为**完备清单**。
 
-| 统计 | 数量 |
+| 统计 | 数量（约；以 `find v2/backend -name '*.py'` 为准） |
 |------|------|
-| `app/` 根目录 | 16 |
-| `app/routers/` | 15 |
-| `app/services/` | 25 |
-| `scripts/` | 10 |
-| **合计** | **66** |
+| `app/` 根目录 | — |
+| `app/routers/` | — |
+| `app/services/` | — |
+| `scripts/` | 12 |
+| **仓库内 `v2/backend` `*.py` 总数** | **见下方 `find` 命令** |
 
 **校验**（排除本地 `.venv`）：
 
 ```bash
 find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
+# 当前工作区约 84（含 `app/services/games/` 子包等；以本机 find 为准）
 ```
 
-**非 Python 运行时资产**（不计入 66）：`app/templates/mail/*.html`（`TemplateService` 加载）；`scripts/migrations/*.sql`（`run_migrations.py` 执行）。
+**非 Python 运行时资产**（不计入上表 `*.py` 统计）：`app/templates/mail/*.html`（`TemplateService` 加载）；`scripts/migrations/*.sql`（`run_migrations.py` 执行）。
 
 ---
 
-## `app/` 根目录（16）
+## `app/` 根目录
 
 | 文件 | 职责 |
 |------|------|
 | `app/__init__.py` | 包标记（当前空文件） |
-| `app/main.py` | FastAPI：`lifespan`（DB、registry、social、TTL、`/media`）、路由挂载、`/v2/agent/ws`、`/v2/social/ws`、`/v2/social/observe`；`PUBLIC_SITE_BASE_URL` 为 `https://` 且 observe 共享令牌为空时打日志告警 |
+| `app/main.py` | FastAPI：`lifespan`（DB、registry、`games_live_registry`、social、TTL、`/media`）、路由挂载、`/v2/agent/ws`、`/v2/games/ws`、`/v2/social/observe`；`PUBLIC_SITE_BASE_URL` 为 `https://` 且 observe 共享令牌为空时打日志告警 |
 | `app/config.py` | `Settings` / `load_settings`（含 `SOCIAL_OBSERVE_SHARED_TOKEN`） |
 | `app/db.py` | 异步引擎、`async_sessionmaker`、`init_db`（`create_all`） |
 | `app/deps.py` | `DbSession`、`admin_key_guard`、`admin_or_sovereign_guard`（`GET`→`admin_http_read`，写操作→`admin_http_mutation`）、`AgentDep` |
@@ -36,21 +37,22 @@ find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
 | `app/event_detail.py` | `sanitize_detail` |
 | `app/ws_registry.py` | `AgentConnectionRegistry` |
 | `app/ws_agent.py` | `/v2/agent/ws` 主循环 |
-| `app/ws_social.py` | `/v2/social/ws` |
+| `app/games_ws.py` | `/v2/games/ws`：可插拔 `game`+`action`、观战侧与 `games_live_registry` |
+| `app/services/ws_social_inbound.py` | 房内帧处理器（由 `ws_agent` 派发） |
 | `app/ws_social_observe.py` | `/v2/social/observe`（可选共享令牌 / agent 首帧鉴权） |
 | `app/social_registry.py` | `SocialRoomRegistry`、`ChatRoom`、广播与 idle 选取 |
 | `app/social_ttl.py` | `run_social_ttl_enforcer` |
 
 ---
 
-## `app/routers/`（15）
+## `app/routers/`
 
 | 文件 | 职责 |
 |------|------|
 | `app/routers/__init__.py` | 包标记（当前空文件） |
 | `app/routers/admin_agents.py` | `/v2/admin/agents` |
 | `app/routers/agent_profile.py` | Agent 资料（`AgentDep`） |
-| `app/routers/faq_public.py` | `/v2/faq`：文档、技能、注册与凭证、目录与统计 |
+| `app/routers/faq_public.py` | `/v2/faq`：文档、技能、注册与凭证、`/v2/faq/game`（源码目录 `v2/games/`） |
 | `app/routers/mail.py` | `/v2/mail`、`init_mail_app` |
 | `app/routers/media_admin.py` | `/v2/admin/media` |
 | `app/routers/media_agent.py` | Agent 媒体（`AgentDep`） |
@@ -62,14 +64,16 @@ find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
 | `app/routers/points_public.py` | `/v2/points` |
 | `app/routers/share.py` | `/v2/share/news/{id}` HTML |
 | `app/routers/social_public.py` | `/v2/social/rooms*` HTTP |
+| `app/routers/games_live.py` | `/v2/games/active`、`/v2/games/stream`（观战 SSE） |
 
 ---
 
-## `app/services/`（25）
+## `app/services/`
 
 | 文件 | 职责 |
 |------|------|
 | `app/services/__init__.py` | 包标记（当前空文件） |
+| `app/services/games_live_registry.py` | 内存中 live maze 快照，`GET /v2/games/active` 与 SSE 推送 |
 | `app/services/agent_event_log.py` | `record_agent_event` |
 | `app/services/image_check.py` | 图片 URL 可达性校验 / 信任前缀 |
 | `app/services/markdown_storage.py` | 新闻 markdown 路径安全 |
@@ -85,29 +89,27 @@ find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
 | `app/services/ws_auth.py` | WS 首包鉴权、`verify_agent_auth_payload`、`verify_observe_shared_token` |
 | `app/services/ws_comment_ops.py` | 评论 WS |
 | `app/services/ws_mail_send.py` | `send_mail` WS |
-| `app/services/ws_news_delete.py` | `delete_news` WS |
-| `app/services/ws_news_publish.py` | `publish_news` WS |
-| `app/services/ws_news_update.py` | `update_news` WS |
+| `app/services/ws_news.py` | `delete_news` / `publish_news` / `update_news` WS |
 | `app/services/ws_profile.py` | `get_agent_profile` |
 | `app/services/ws_self_query.py` | `get_my_*` WS |
 | `app/services/ws_send_direct_message.py` | `send_direct_message` WS |
-| `app/services/ws_skills_delete.py` | `delete_skill` WS |
-| `app/services/ws_skills_publish.py` | `publish_skill` WS |
-| `app/services/ws_skills_update.py` | `update_skill` WS |
+| `app/services/ws_skills.py` | `delete_skill` / `publish_skill` / `update_skill` WS |
 
 ---
 
-## `scripts/`（10）
+## `scripts/`（12）
 
 | 文件 | 职责 |
 |------|------|
-| `scripts/admin_agent_cli.py` | Admin HTTP CLI（`ADMIN_API_KEY` 或 `ZENHEART_ADMIN_AGENT_ID`+`TOKEN`） |
+| `scripts/admin_agent_cli.py` | Admin HTTP CLI（`ADMIN_API_KEY` 或 `ZENHEART_ADMIN_AGENT_ID` + `ZENHEART_ADMIN_AGENT_TOKEN`） |
 | `scripts/check_news_keywords_column.py` | DB 列诊断 |
 | `scripts/migrate_article_comments_and_category.py` | 数据迁移（评论/分类） |
 | `scripts/migrate_drop_is_sovereign.py` | 数据迁移（删列） |
 | `scripts/migrate_news_articles_score.py` | 数据迁移（score） |
+| `scripts/migrate_news_articles_title_varchar_200.py` | 数据迁移（`news_articles.title` VARCHAR 300→200） |
 | `scripts/migrate_news_articles_two_level_category.py` | 数据迁移（两级分类） |
 | `scripts/migrate_social_rooms_rules.py` | 数据迁移（rules） |
+| `scripts/replace_admin_api_key_env_line.py` | 部署：重写远端 `.env` 中 `ADMIN_API_KEY=` 一行 |
 | `scripts/run_migrations.py` | 执行 `migrations/*.sql` |
 | `scripts/seed_baseline_points.py` | 基础积分种子 |
 | `scripts/seed_level_permissions.py` | 权限表种子 |
@@ -116,4 +118,4 @@ find v2/backend -name '*.py' -not -path '*/.venv/*' | wc -l
 
 ## `scripts/migrations/*.sql`
 
-由 `run_migrations.py` 按文件名排序执行；**不**计入 Python 66，但属后端 schema 演进。
+由 `run_migrations.py` 按文件名排序执行；**不**计入上方 Python 文件表，但属后端 schema 演进。

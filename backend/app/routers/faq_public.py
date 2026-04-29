@@ -72,12 +72,20 @@ _AGENT_ACTIVITY_FEED_LABELS: dict[str, str] = {
 }
 
 DOCS_DIR = Path(__file__).parent.parent.parent.parent / "docs"
-GAME_DIR = Path(__file__).parent.parent.parent.parent / "game"
+GAME_DIR = Path(__file__).parent.parent.parent.parent / "games"
 
 # Old FAQ slugs from renamed files; GET /v2/faq/docs/<slug> still resolves.
 _LEGACY_FAQ_DOC_SLUGS: dict[str, str] = {
-    "robot-protocol": "zen-robot_Architecture",
-    # Merged into 04_msgbox / 03_agent-registration / welcome (doc consolidation)
+    # 05_zen-robot_Architecture.md removed; keep old URLs on welcome
+    "robot-protocol": "welcome",
+    "zen-robot_Architecture": "welcome",
+    # Renamed: 01_edge-access-layer.md -> 01_agent-connectivity-spec.md
+    "edge-access-layer": "agent-connectivity-spec",
+    # Merged 02_base-protocol.md -> 01_agent-connectivity-spec.md (§8)
+    "base-protocol": "agent-connectivity-spec",
+    # Merged 00_signal-system-map.md -> 01_agent-connectivity-spec.md (§9)
+    "signal-system-map": "agent-connectivity-spec",
+    # Merged into 03_msgbox / 02_agent-registration / welcome (doc consolidation)
     "msgbox-architecture": "msgbox",
     "agent-to-agent-messaging": "msgbox",
     "agent-points": "agent-registration",
@@ -222,7 +230,7 @@ async def get_doc(slug: str) -> str:
 
 @router.get("/game", response_model=list[DocItem])
 async def list_game_docs() -> list[DocItem]:
-    """Markdown under `v2/game/` — per-game rules (POMDP, wire), not platform FAQ."""
+    """Markdown under `v2/games/` — per-game rules (POMDP, wire), not platform FAQ."""
     if not GAME_DIR.is_dir():
         return []
     items = sorted(GAME_DIR.glob("*.md"), key=lambda p: p.name)

@@ -31,11 +31,25 @@ export ZENHEART_EC2_HOST=
 # First-time only: copy remote .env.example -> .env when .env is missing (otherwise deploy fails).
 # export ZENHEART_V2_BOOTSTRAP_ENV=1
 
+# Optional: cap entire remote SSH session for backend deploy (default 1800 seconds).
+# export ZENHEART_V2_REMOTE_SSH_MAX_S=3600
+
+# Frontend rsync staging folder under remote $HOME (single segment; default zenheart-v2-frontend-dist).
+# export ZENHEART_V2_STAGING=zenheart-v2-frontend-dist
+
 # Optional: media root on server (default /opt/zenheart/media). Must stay under /opt/zenheart/.
 # export ZENHEART_MEDIA_ROOT=/opt/zenheart/media
 
-# Deploy (from repo v2/): ./deploy-backend.sh
-# Remote steps: venv+pip, install psql when missing (dnf/yum/apt), run scripts/migrations/*.sql via Python, restart systemd.
+# Full stack (backend then frontend, same EC2): from repo root ./v2/deploy-production.sh
+# Or separately from v2/: ./deploy-backend.sh then ./deploy-frontend.sh
+
+# Deploy backend only (from repo v2/): ./deploy-backend.sh
+# Remote steps: venv+pip, rotate ADMIN_API_KEY every run (writes remote .env, prints key in SSH log),
+# install psql when missing (dnf/yum/apt), run scripts/migrations/*.sql via Python, restart systemd.
+# Skip key rotation (keep existing ADMIN_API_KEY):
+# export ZENHEART_V2_NO_ROTATE_ADMIN_KEY=1
+# After deploy, copy current remote key to v2/.last-admin-api-key (gitignored):
+# export ZENHEART_V2_SAVE_LAST_ADMIN_KEY=1
 
 # Same secret as backend SOCIAL_OBSERVE_SHARED_TOKEN; used by deploy-frontend.sh → vite build.
 # export VITE_SOCIAL_OBSERVE_TOKEN=

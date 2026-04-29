@@ -1,7 +1,7 @@
 """
 Async helpers for persisting A2A social room data to the database.
 
-Room **creation** and **join** on ``/v2/social/ws`` use :func:`create_room_record` and
+Room **creation** and **join** (inbound on ``/v2/agent/ws``) use :func:`create_room_record` and
 :func:`record_member_join` as **strict** calls: they return ``True``/``False``, and the
 handler rolls back in-memory state if persistence fails. Other writers (messages,
 leave, dissolve) remain best-effort with logging so a single DB blip does not tear down
@@ -11,17 +11,25 @@ Tables written:
   social_rooms        – room lifecycle, last_message_at, dissolved metadata
   social_room_members – per-agent join/leave history
   social_messages     – full text of each chat message (display names from ``agents`` on read)
+  social_room_topic_suggestions – visitor topic lines for the room creator (not chat)
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import func, select, update
+import uuid
+
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import SocialMessage, SocialRoom, SocialRoomMember
+from app.models import (
+    SocialMessage,
+    SocialRoom,
+    SocialRoomMember,
+    SocialRoomTopicSuggestion,
+)
 from app.services.display_name_resolve import (
     enrich_social_message_dicts,
     load_agent_name_map,
@@ -168,19 +176,43 @@ async def record_social_message(
         )
 
 
+def parse_client_iso_datetime(raw: object) -> Optional[datetime]:
+    """Parse an ISO8601 instant from the client (e.g. local midnight as UTC) to aware UTC."""
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
 async def get_room_messages(
     session_factory: async_sessionmaker[AsyncSession],
     room_id: str,
     limit: int = 50,
+    since: Optional[datetime] = None,
 ) -> list[dict]:
-    """Return the most recent messages for a room, ordered oldest-first."""
+    """Return the most recent messages for a room, ordered oldest-first.
+
+    When ``since`` is set, only rows with ``sent_at >= since`` are considered (e.g. viewer's local day).
+    """
     try:
         async with session_factory() as session:
+            stmt = select(SocialMessage).where(SocialMessage.room_id == room_id)
+            if since is not None:
+                stmt = stmt.where(SocialMessage.sent_at >= since)
             result = await session.execute(
-                select(SocialMessage)
-                .where(SocialMessage.room_id == room_id)
-                .order_by(SocialMessage.sent_at.desc())
-                .limit(limit)
+                stmt.order_by(SocialMessage.sent_at.desc()).limit(limit)
             )
             rows = result.scalars().all()
             out = [
@@ -350,3 +382,83 @@ async def update_room_allowlist(
     except Exception:
         logger.exception("social_db: failed to update allowlist room_id=%s", room_id)
         return False
+
+
+async def record_room_topic_suggestion(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    text: str,
+) -> bool:
+    """Persist a visitor topic line; does not touch A2A chat history."""
+    try:
+        async with session_factory() as session:
+            session.add(
+                SocialRoomTopicSuggestion(
+                    id=uuid.uuid4(),
+                    room_id=room_id,
+                    text=text,
+                )
+            )
+            await session.commit()
+        return True
+    except Exception:
+        logger.exception(
+            "social_db: failed to record topic suggestion room_id=%s",
+            room_id,
+        )
+        return False
+
+
+async def fetch_and_pop_topic_suggestions_for_creator(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    room_id: str,
+    agent_id: str,
+    limit: int,
+) -> tuple[Optional[str], list[dict[str, Any]]]:
+    """Return pending topic rows for ``room_id`` if ``agent_id`` is the room creator, then delete them.
+
+    Returns ``(error_reason, [])`` on auth/lookup failure, else ``(None, topics)``.
+    """
+    lim = max(1, min(int(limit), 500))
+    try:
+        async with session_factory() as session:
+            row = await session.scalar(
+                select(SocialRoom).where(SocialRoom.room_id == room_id)
+            )
+            if row is None:
+                return "room_not_found", []
+            if row.creator_agent_id != agent_id:
+                return "not_room_creator", []
+            result = await session.execute(
+                select(SocialRoomTopicSuggestion)
+                .where(SocialRoomTopicSuggestion.room_id == room_id)
+                .order_by(SocialRoomTopicSuggestion.created_at.asc())
+                .limit(lim)
+            )
+            rows = result.scalars().all()
+            if not rows:
+                await session.commit()
+                return None, []
+            ids = [r.id for r in rows]
+            await session.execute(
+                delete(SocialRoomTopicSuggestion).where(
+                    SocialRoomTopicSuggestion.id.in_(ids)
+                )
+            )
+            await session.commit()
+            out: list[dict[str, Any]] = [
+                {
+                    "id": str(r.id),
+                    "text": r.text,
+                    "created_at": r.created_at.isoformat(),
+                }
+                for r in rows
+            ]
+            return None, out
+    except Exception:
+        logger.exception(
+            "social_db: failed to fetch topic suggestions room_id=%s",
+            room_id,
+        )
+        return "persistence_failed", []

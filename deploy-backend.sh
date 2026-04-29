@@ -10,6 +10,10 @@ BACKEND="$V2_ROOT/backend"
 
 die() { echo "error: $*" >&2; exit 1; }
 
+# Optional: rotate ADMIN_API_KEY on every deploy (default on). Writes to remote .env before restart,
+# prints new key in the SSH transcript. Disable: export ZENHEART_V2_NO_ROTATE_ADMIN_KEY=1
+# Copy last key to repo (gitignored): export ZENHEART_V2_SAVE_LAST_ADMIN_KEY=1
+#
 # Remote paths touched with sudo rm/rsync must stay under /opt/zenheart to limit blast radius.
 require_opt_zenheart_path() {
   local p="$1" name="$2"
@@ -17,6 +21,15 @@ require_opt_zenheart_path() {
   [[ "$p" == /opt/zenheart/* ]] || die "$name must be under /opt/zenheart/ (got: $p)"
   [[ "$p" != *..* ]] || die "$name must not contain .. (got: $p)"
 }
+
+# Optional local deploy secrets (gitignored). Copy from .deploy-env.example.
+# Must load before SSH host-key check so ZENHEART_SSH_KNOWN_HOSTS from .deploy-env applies.
+if [[ -f "$V2_ROOT/.deploy-env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$V2_ROOT/.deploy-env"
+  set +a
+fi
 
 # SSH: require a pinned host key file, or explicit opt-in to accept-new (TOFU / MITM on first connect).
 SSH_HOSTKEY_ARGS=()
@@ -31,14 +44,6 @@ elif [[ "${ZENHEART_SSH_ACCEPT_NEW:-0}" == "1" ]]; then
   SSH_HOSTKEY_ARGS=(-o StrictHostKeyChecking=accept-new)
 else
   die "SSH host key: set ZENHEART_SSH_KNOWN_HOSTS to a known_hosts file, or set ZENHEART_SSH_ACCEPT_NEW=1 (less safe). Example: mkdir -p \"$V2_ROOT/.ssh\" && ssh-keyscan -H \"\$ZENHEART_EC2_HOST\" >>\"$V2_ROOT/.ssh/known_hosts\" && export ZENHEART_SSH_KNOWN_HOSTS=\"$V2_ROOT/.ssh/known_hosts\""
-fi
-
-# Optional local deploy secrets (gitignored). Copy from .deploy-env.example.
-if [[ -f "$V2_ROOT/.deploy-env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$V2_ROOT/.deploy-env"
-  set +a
 fi
 
 ZENHEART_EC2_KEY="${ZENHEART_EC2_KEY:-$REPO_ROOT/aws/zenheart-ec2.pem}"
@@ -143,14 +148,14 @@ if [[ -d "$V2_ROOT/skills" ]]; then
   "${SCP_CMD[@]}" "$SKILLS_ARCHIVE_LOCAL" "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$SKILLS_ARCHIVE_NAME"
 fi
 
-# Per-game rules (POMDP, etc.); FAQ serves GET /v2/faq/game/* from here.
-GAME_ARCHIVE_NAME="${ZENHEART_V2_GAME_ARCHIVE_NAME:-zenheart-v2-game.tar.gz}"
+# Per-game rules (POMDP, etc.); FAQ serves GET /v2/faq/game/* from here (dir on disk: v2/games/).
+GAME_ARCHIVE_NAME="${ZENHEART_V2_GAME_ARCHIVE_NAME:-zenheart-v2-games.tar.gz}"
 SYNCED_GAME=0
-if [[ -d "$V2_ROOT/game" ]]; then
+if [[ -d "$V2_ROOT/games" ]]; then
   SYNCED_GAME=1
-  GAME_ARCHIVE_LOCAL="$TMP_ARCHIVE_DIR/game.tar.gz"
-  echo "[v2-backend] pack game rules → $GAME_ARCHIVE_LOCAL"
-  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$TAR_CREATE_CMD" -C "$V2_ROOT/game" -czf "$GAME_ARCHIVE_LOCAL" .
+  GAME_ARCHIVE_LOCAL="$TMP_ARCHIVE_DIR/games.tar.gz"
+  echo "[v2-backend] pack games rules → $GAME_ARCHIVE_LOCAL"
+  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$TAR_CREATE_CMD" -C "$V2_ROOT/games" -czf "$GAME_ARCHIVE_LOCAL" .
   echo "[v2-backend] upload game rules archive → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$GAME_ARCHIVE_NAME"
   "${SCP_CMD[@]}" "$GAME_ARCHIVE_LOCAL" "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$GAME_ARCHIVE_NAME"
 fi
@@ -174,6 +179,7 @@ _CMD+=(
   "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST"
   env REMOTE_DIR="$REMOTE_DIR" SERVICE_NAME="$SERVICE_NAME" SKIP_NGINX="$ZENHEART_V2_SKIP_NGINX" \
     ZENHEART_MEDIA_ROOT="${ZENHEART_MEDIA_ROOT:-}" \
+    ZENHEART_V2_NO_ROTATE_ADMIN_KEY="${ZENHEART_V2_NO_ROTATE_ADMIN_KEY:-0}" \
     ZENHEART_V2_BOOTSTRAP_ENV="${ZENHEART_V2_BOOTSTRAP_ENV:-0}" \
     BACKEND_ARCHIVE_NAME="$BACKEND_ARCHIVE_NAME" \
     SYNCED_DOCS="$SYNCED_DOCS" DOCS_ARCHIVE_NAME="$DOCS_ARCHIVE_NAME" \
@@ -241,8 +247,8 @@ if [[ "${SYNCED_SKILLS:-0}" == "1" && -n "${SKILLS_ARCHIVE_NAME:-}" && -f "$HOME
 fi
 
 if [[ "${SYNCED_GAME:-0}" == "1" && -n "${GAME_ARCHIVE_NAME:-}" && -f "$HOME/$GAME_ARCHIVE_NAME" ]]; then
-  GAME_REMOTE="$(dirname "$REMOTE_DIR")/game"
-  echo "[v2-backend] install game rules → $GAME_REMOTE/"
+  GAME_REMOTE="$(dirname "$REMOTE_DIR")/games"
+  echo "[v2-backend] install games rules → $GAME_REMOTE/"
   sudo rm -rf "$GAME_REMOTE"
   sudo mkdir -p "$GAME_REMOTE"
   sudo tar "${TAR_WARN_FLAGS[@]}" -xzf "$HOME/$GAME_ARCHIVE_NAME" -C "$GAME_REMOTE"
@@ -289,6 +295,23 @@ if command -v timeout &>/dev/null; then
 else
   "$REMOTE_DIR/.venv/bin/pip" install --upgrade pip -q
   "$REMOTE_DIR/.venv/bin/pip" install -r "$REMOTE_DIR/requirements.txt" -q
+fi
+
+# Rotate ADMIN_API_KEY before migrations/restart so the running process loads the new key.
+if [[ "${ZENHEART_V2_NO_ROTATE_ADMIN_KEY:-0}" != "1" ]]; then
+  echo "[v2-backend] rotate ADMIN_API_KEY in $REMOTE_DIR/.env (skip: ZENHEART_V2_NO_ROTATE_ADMIN_KEY=1)"
+  _admin_key="$("$REMOTE_DIR/.venv/bin/python" -c "import secrets; print(secrets.token_urlsafe(48))")"
+  "$REMOTE_DIR/.venv/bin/python" "$REMOTE_DIR/scripts/replace_admin_api_key_env_line.py" "$REMOTE_DIR/.env" "$_admin_key"
+  chmod 600 "$REMOTE_DIR/.env"
+  echo ""
+  echo "=============================================================================="
+  echo "[v2-backend] NEW ADMIN_API_KEY (written to $REMOTE_DIR/.env) — header X-Admin-Key"
+  echo "=============================================================================="
+  printf '%s\n' "$_admin_key"
+  echo "=============================================================================="
+  echo ""
+else
+  echo "[v2-backend] skip ADMIN_API_KEY rotation (ZENHEART_V2_NO_ROTATE_ADMIN_KEY=1)"
 fi
 
 # Optional: install psql for ad-hoc SQL on the host (migrations use Python + asyncpg).
@@ -422,6 +445,17 @@ if [[ $_SSH_EC -eq 124 ]]; then
 fi
 [[ $_SSH_EC -eq 0 ]] || exit "$_SSH_EC"
 
+if [[ "${ZENHEART_V2_SAVE_LAST_ADMIN_KEY:-0}" == "1" ]]; then
+  _lah="$V2_ROOT/.last-admin-api-key"
+  if "${SSH_CMD[@]}" "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST" \
+    "grep '^ADMIN_API_KEY=' ${REMOTE_DIR}/.env | sed -n 's/^ADMIN_API_KEY=//p'" >"$_lah" 2>/dev/null; then
+    chmod 600 "$_lah" 2>/dev/null || true
+    echo "[v2-backend] copied remote ADMIN_API_KEY value → $_lah (chmod 600; gitignored)"
+  else
+    echo "[v2-backend] warn: could not fetch ADMIN_API_KEY to $_lah" >&2
+  fi
+fi
+
 echo "[v2-backend] deploy-backend.sh done"
 echo "[v2-backend] admin CLI: $REMOTE_DIR/scripts/admin_agent_cli.py"
-echo "[v2-backend] agent WS protocol: v2/docs/06_news-protocol.md"
+echo "[v2-backend] agent WS protocol: v2/docs/01_agent-connectivity-spec.md"

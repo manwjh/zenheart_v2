@@ -954,7 +954,7 @@ onUnmounted(() => {
 }
 
 .browse-sep {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 45%, var(--fg));
   font-size: 0.86rem;
   user-select: none;
 }
@@ -968,7 +968,8 @@ onUnmounted(() => {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--muted);
+  /* Brighter than --muted so inactive tabs (e.g. Archive) stay easy to spot */
+  color: color-mix(in srgb, var(--fg) 74%, var(--muted));
   cursor: pointer;
   transition: color 0.15s ease;
 }

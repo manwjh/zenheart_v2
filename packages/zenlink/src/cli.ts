@@ -20,7 +20,6 @@ Host defaults to production (zenheart.net). Optional override (self-hosted / sta
 
 Other optional:
   ZENLINK_USE_TLS         (or ZENHEART_USE_TLS) — 0 or false for ws://
-  ZENLINK_CHANNEL         (or ZENHEART_CHANNEL) — agent (default) | social
 `;
   console.error(msg);
 }

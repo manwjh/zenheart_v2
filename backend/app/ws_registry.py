@@ -1,9 +1,13 @@
 import asyncio
 import json
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from starlette.websockets import WebSocket
+
+if TYPE_CHECKING:
+    from app.services.ws_debug_tap import WsDebugTap
 
 
 @dataclass
@@ -11,13 +15,26 @@ class AgentConnection:
     websocket: WebSocket
     connection_id: str
     send_lock: asyncio.Lock
+    opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentConnectionRegistry:
-    def __init__(self) -> None:
+    def __init__(self, debug_tap: Optional["WsDebugTap"] = None) -> None:
         self._lock = asyncio.Lock()
         self._connections_by_agent_id: Dict[str, AgentConnection] = {}
         self._pending_command_results: Dict[tuple[str, str], asyncio.Future[dict[str, Any]]] = {}
+        self.debug_tap = debug_tap
+
+    async def list_connections_debug(self) -> List[Dict[str, Any]]:
+        async with self._lock:
+            return [
+                {
+                    "agent_id": aid,
+                    "connection_id": c.connection_id,
+                    "opened_at": c.opened_at.isoformat(),
+                }
+                for aid, c in sorted(self._connections_by_agent_id.items())
+            ]
 
     async def replace(
         self, agent_id: str, websocket: WebSocket, connection_id: str
@@ -69,8 +86,18 @@ class AgentConnectionRegistry:
             if not future.done():
                 future.set_exception(RuntimeError(close_reason))
         try:
+            raw = json.dumps(message, ensure_ascii=False)
             async with connection.send_lock:
-                await connection.websocket.send_text(json.dumps(message))
+                await connection.websocket.send_text(raw)
+            tap = self.debug_tap
+            if tap is not None and isinstance(message, dict):
+                await tap.record_outbound_dict(
+                    channel="agent_ws",
+                    agent_id=agent_id,
+                    connection_id=connection.connection_id,
+                    payload=message,
+                    raw=raw,
+                )
             await connection.websocket.close(code=close_code, reason=close_reason)
         except Exception:
             pass
@@ -92,8 +119,18 @@ class AgentConnectionRegistry:
             self._pending_command_results[(agent_id, request_id)] = result_future
 
         try:
+            raw = json.dumps(message, ensure_ascii=False)
             async with connection.send_lock:
-                await connection.websocket.send_text(json.dumps(message))
+                await connection.websocket.send_text(raw)
+            tap = self.debug_tap
+            if tap is not None and isinstance(message, dict):
+                await tap.record_outbound_dict(
+                    channel="agent_ws",
+                    agent_id=agent_id,
+                    connection_id=connection.connection_id,
+                    payload=message,
+                    raw=raw,
+                )
         except Exception as exc:
             async with self._lock:
                 self._pending_command_results.pop((agent_id, request_id), None)
@@ -131,9 +168,17 @@ class AgentConnectionRegistry:
         if connection is None:
             return False
         try:
+            raw = json.dumps(payload, ensure_ascii=False)
             async with connection.send_lock:
-                await connection.websocket.send_text(
-                    json.dumps(payload, ensure_ascii=False)
+                await connection.websocket.send_text(raw)
+            tap = self.debug_tap
+            if tap is not None:
+                await tap.record_outbound_dict(
+                    channel="agent_ws",
+                    agent_id=agent_id,
+                    connection_id=connection.connection_id,
+                    payload=payload,
+                    raw=raw,
                 )
             return True
         except Exception:

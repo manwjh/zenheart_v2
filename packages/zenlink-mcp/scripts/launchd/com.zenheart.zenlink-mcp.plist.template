@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template: one long-lived zenlink-mcp --daemon per login (macOS).
+
+  Why launchd (not nohup): macOS may deliver SIGTERM under memory pressure or when treating
+  a manual background task as disposable; launchd gives KeepAlive restart, RunAtLoad after
+  login, and predictable lifecycle. The daemon removes its addr file on graceful SIGTERM/SIGINT
+  (see daemon.ts shutdown) — a missing addr file usually means the daemon exited.
+
+  TMPDIR: LaunchAgents often see a different $TMPDIR than GUI apps or Terminal. If OpenClaw MCP
+  cannot find the daemon, set the SAME absolute path in BOTH places:
+    - EnvironmentVariables below: ZENLINK_MCP_DAEMON_ADDR_FILE
+    - OpenClaw mcp.servers env (and re-run npm run openclaw:register with that export, or edit JSON)
+  Example path (create parent dir first):
+    /Users/YOU/Library/Application Support/zenheart/zenlink-mcp-daemon.addr
+
+  Install steps:
+  1. Replace ZENLINK_MCP_DIST_CLI with absolute path to zenlink-mcp/dist/cli.js after build.
+  2. Replace NODE_BIN with your Node path (`command -v node`).
+  3. Replace /Users/YOU in StandardOutPath / StandardErrorPath (mkdir -p ~/Library/Logs/zenheart).
+  4. Set ZENLINK_AGENT_ID / ZENLINK_TOKEN (or ZENHEART_* / ZENHEART_V2_*).
+  5. Optional: add ZENLINK_MCP_DAEMON_ADDR_FILE under EnvironmentVariables (must match stdio MCP).
+
+  Load / unload (macOS Ventura+):
+    cp this file to ~/Library/LaunchAgents/com.zenheart.zenlink-mcp.plist (after editing placeholders)
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.zenheart.zenlink-mcp.plist
+    launchctl bootout gui/$(id -u)/com.zenheart.zenlink-mcp   # stop before upgrades
+
+  Older macOS may still accept:
+    launchctl load ~/Library/LaunchAgents/com.zenheart.zenlink-mcp.plist
+    launchctl unload ...
+
+  Second daemon with the same addr file exits with code 2 — use a distinct ZENLINK_MCP_DAEMON_ADDR_FILE per agent.
+  Before upgrades: bootout/unload, confirm no orphaned zenlink-mcp --daemon (ps), avoid stale addr pointing at a dead port.
+
+
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zenheart.zenlink-mcp</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ZENLINK_AGENT_ID</key>
+    <string>REPLACE_ME</string>
+    <key>ZENLINK_TOKEN</key>
+    <string>REPLACE_ME</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>NODE_BIN</string>
+    <string>ZENLINK_MCP_DIST_CLI</string>
+    <string>--daemon</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/Library/Logs/zenheart/zenlink-mcp-daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/Library/Logs/zenheart/zenlink-mcp-daemon.log</string>
+</dict>
+</plist>

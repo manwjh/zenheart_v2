@@ -117,7 +117,7 @@ def maze_state_for_spectators(ms: MazeSession) -> dict[str, Any]:
         "visibility": "full",
         "player_path": _player_path_json(ms),
     }
-    if s.games_spectator_show_template_id and ms.template_id >= 0:
+    if s.games_live_show_template_id and ms.template_id >= 0:
         out["template_id"] = ms.template_id
     if ms.run_elapsed_seconds is not None:
         out["elapsed_seconds"] = ms.run_elapsed_seconds

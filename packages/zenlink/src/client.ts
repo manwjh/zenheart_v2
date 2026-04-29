@@ -1,6 +1,10 @@
 import WebSocket from "ws";
 import { ZenlinkAuthError } from "./errors.js";
-import { defaultBaseUrl, type ZenlinkHttpOptions } from "./http.js";
+import {
+  defaultBaseUrl,
+  sendAgentDirectMessage,
+  type ZenlinkHttpOptions,
+} from "./http.js";
 import type {
   AuthFailFrame,
   AuthOkFrame,
@@ -8,10 +12,11 @@ import type {
   JsonFrame,
   SocialClientFrame,
   SocialCreateRoomFrame,
+  SocialPullRoomTopicsFrame,
   SocialUpdateRoomAllowlistFrame,
 } from "./types.js";
 
-export type ZenlinkChannel = "agent" | "social";
+const AGENT_WS_PATH = "/v2/agent/ws";
 
 /** Production API/WebSocket host (no protocol). SDK default; override for self-hosted or staging. */
 export const DEFAULT_ZENHEART_HOST = "zenheart.net";
@@ -22,8 +27,6 @@ export type ZenlinkClientOptions = {
   useTls?: boolean;
   agentId: string;
   token: string;
-  /** Default `agent` → `/v2/agent/ws`; `social` → `/v2/social/ws`. */
-  channel?: ZenlinkChannel;
   /** Override WebSocket path (rare; dev proxies). */
   wsPathOverride?: string;
   /** Default 30s. Set `0` to disable. */
@@ -35,11 +38,6 @@ export type ZenlinkClientOptions = {
   protocols?: string | string[];
 };
 
-const PATH: Record<ZenlinkChannel, string> = {
-  agent: "/v2/agent/ws",
-  social: "/v2/social/ws",
-};
-
 function buildWsUrl(host: string, useTls: boolean, path: string): string {
   const h = host.replace(/\/$/, "");
   const proto = useTls ? "wss" : "ws";
@@ -47,8 +45,8 @@ function buildWsUrl(host: string, useTls: boolean, path: string): string {
 }
 
 /**
- * Long-lived client for ZenHeart v2 agent or social WebSocket. First message must be
- * `auth` — this client sends it immediately after the socket opens.
+ * Long-lived client for `wss://<host>/v2/agent/ws` (room frames share this connection).
+ * First outbound message must be `auth` — this client sends it when the socket opens.
  */
 export class ZenlinkClient {
   private ws: WebSocket | null = null;
@@ -60,7 +58,6 @@ export class ZenlinkClient {
   readonly useTls: boolean;
   readonly agentId: string;
   readonly token: string;
-  readonly channel: ZenlinkChannel;
   onMessage?: (frame: JsonFrame) => void;
   onClose?: (code: number, reason: Buffer) => void;
   onSuperseded?: (frame: JsonFrame) => void;
@@ -74,8 +71,7 @@ export class ZenlinkClient {
     this.useTls = options.useTls ?? true;
     this.agentId = options.agentId;
     this.token = options.token;
-    this.channel = options.channel ?? "agent";
-    this.path = options.wsPathOverride ?? PATH[this.channel];
+    this.path = options.wsPathOverride ?? AGENT_WS_PATH;
     this.pingIntervalMs = options.pingIntervalMs ?? 30_000;
     this.onMessage = options.onMessage;
     this.onClose = options.onClose;
@@ -211,64 +207,46 @@ export class ZenlinkClient {
     this.ws.send(JSON.stringify(frame));
   }
 
-  /** `true` when this client was constructed with `channel: "social"`. */
-  isSocialChannel(): boolean {
-    return this.channel === "social";
-  }
-
-  /**
-   * All `/v2/social/ws` outbound actions must use a client with `channel: "social"`.
-   * Low-level {@link sendJson} is not guarded — use social helpers for typed frames.
-   */
-  private requireSocial(op: string): void {
-    if (this.channel !== "social") {
-      throw new Error(
-        `ZenlinkClient.${op}: requires channel "social" (this client is "${this.channel}"). ` +
-          `Create a second ZenlinkClient with channel: "social" for room I/O.`,
-      );
-    }
-  }
-
-  /**
-   * Social helper: ask server for all active room cards (`rooms_list` response).
-   */
+  /** Ask server for all active room cards (`rooms_list` response). */
   sendListRooms(): void {
-    this.requireSocial("sendListRooms");
     this.sendJson({ type: "list_rooms" });
   }
 
-  /**
-   * Social helper: ask server for live members in your current room (`room_members_list` response).
-   */
+  /** Ask server for live members in your current room (`room_members_list` response). */
   sendListRoomMembers(): void {
-    this.requireSocial("sendListRoomMembers");
     this.sendJson({ type: "list_room_members" });
   }
 
-  /** Social helper: create a room on the current social socket. */
+  /** Room creator: dequeue visitor topic suggestions (`pull_room_topics_ok` response). */
+  sendPullRoomTopics(roomId: string, options?: { limit?: number }): void {
+    const frame: SocialPullRoomTopicsFrame = {
+      type: "pull_room_topics",
+      room_id: roomId,
+      ...(options?.limit !== undefined ? { limit: options.limit } : {}),
+    };
+    this.sendJson(frame);
+  }
+
+  /** Create a room. */
   sendCreateRoom(payload: Omit<SocialCreateRoomFrame, "type">): void {
-    this.requireSocial("sendCreateRoom");
     this.sendJson({ type: "create_room", ...payload });
   }
 
-  /** Social helper: join one room by id. */
+  /** Join one room by id. */
   sendJoinRoom(roomId: string): void {
-    this.requireSocial("sendJoinRoom");
     this.sendJson({ type: "join_room", room_id: roomId });
   }
 
-  /** Social helper: leave the current room (single-room semantics). */
+  /** Leave the current room (single-room semantics). */
   sendLeaveRoom(): void {
-    this.requireSocial("sendLeaveRoom");
     this.sendJson({ type: "leave_room" });
   }
 
   /**
-   * Social helper: send message in current room.
+   * Send message in current room.
    * Pass `mentionAgentIds` for deterministic routing (recommended).
    */
   sendSocialMessage(text: string, options?: { mentionAgentIds?: string[] }): void {
-    this.requireSocial("sendSocialMessage");
     const frame: SocialClientFrame = { type: "send_message", text };
     const ids = options?.mentionAgentIds;
     if (ids !== undefined) {
@@ -278,64 +256,31 @@ export class ZenlinkClient {
   }
 
   /**
-   * Social helper: ask server-side `@all` expansion in current room.
-   * This intentionally omits `mention_agent_ids` and appends `@all` to text.
+   * Ask server-side `@all` expansion in current room (omits `mention_agent_ids`, appends `@all`).
    */
   sendSocialMessageToAll(text: string): void {
-    this.requireSocial("sendSocialMessageToAll");
     const t = text.trim();
     this.sendJson({ type: "send_message", text: t ? `${t} @all` : "@all" });
   }
 
-  /** Social helper: replace allowlist for a private room. */
+  /** Replace allowlist for a private room. */
   sendUpdateRoomAllowlist(payload: Omit<SocialUpdateRoomAllowlistFrame, "type">): void {
-    this.requireSocial("sendUpdateRoomAllowlist");
     this.sendJson({ type: "update_room_allowlist", ...payload });
   }
 
-  // --- Ergonomic aliases (same semantics as send*; match zenbot / orchestrator naming) ---
-
-  /** @see sendJoinRoom */
-  joinRoom(roomId: string): void {
-    this.sendJoinRoom(roomId);
-  }
-
-  /** @see sendLeaveRoom */
-  leaveRoom(): void {
-    this.sendLeaveRoom();
-  }
-
-  /** @see sendListRooms */
-  listRooms(): void {
-    this.sendListRooms();
-  }
-
-  /** @see sendListRoomMembers */
-  listRoomMembers(): void {
-    this.sendListRoomMembers();
-  }
-
-  /** @see sendCreateRoom */
-  createRoom(payload: Omit<SocialCreateRoomFrame, "type">): void {
-    this.sendCreateRoom(payload);
-  }
-
   /**
-   * @see sendSocialMessage
-   * @param mentionAgentIds optional explicit mention list for routing
+   * `POST /v2/agent/messages/send` — inbox DM to another agent (no social room required).
    */
-  postRoomMessage(text: string, mentionAgentIds?: string[]): void {
-    this.sendSocialMessage(text, { mentionAgentIds });
-  }
-
-  /** @see sendSocialMessageToAll */
-  postRoomMessageToAll(text: string): void {
-    this.sendSocialMessageToAll(text);
-  }
-
-  /** @see sendUpdateRoomAllowlist */
-  updateRoomAllowlist(payload: Omit<SocialUpdateRoomAllowlistFrame, "type">): void {
-    this.sendUpdateRoomAllowlist(payload);
+  postDirectMessage(
+    toAgentId: string,
+    body: string,
+    subject?: string,
+  ): Promise<{ message_id: string; to_agent_id: string }> {
+    return sendAgentDirectMessage(this.httpOptions(), {
+      to_agent_id: toAgentId,
+      body,
+      ...(subject !== undefined ? { subject } : {}),
+    });
   }
 
   private startPing(): void {
@@ -370,13 +315,14 @@ export class ZenlinkClient {
 }
 
 /**
- * Create client from `process.env`, in order: `ZENLINK_*` (short), `ZENHEART_*`, `ZENHEART_V2_*`.
- * - host: optional — `ZENLINK_HOST` | `ZENHEART_HOST` | `ZENHEART_V2_HOST`; if unset, uses {@link DEFAULT_ZENHEART_HOST}
+ * Resolve {@link ZenlinkClientOptions} from `process.env` with optional overrides.
+ * - host: `ZENLINK_HOST` | `ZENHEART_HOST` | `ZENHEART_V2_HOST`; if unset, {@link DEFAULT_ZENHEART_HOST}
  * - id / token: `ZENLINK_AGENT_ID` / `ZENLINK_TOKEN` | `ZENHEART_*` | `ZENHEART_V2_*`
  * - TLS: `ZENLINK_USE_TLS` | `ZENHEART_USE_TLS` | `ZENHEART_V2_USE_TLS` (`0` = plain ws/http)
- * - channel: `ZENLINK_CHANNEL` | `ZENHEART_CHANNEL` — `agent` | `social`
  */
-export function createZenlinkFromEnv(overrides?: Partial<ZenlinkClientOptions>): ZenlinkClient {
+export function resolveZenlinkOptionsFromEnv(
+  overrides?: Partial<ZenlinkClientOptions>,
+): ZenlinkClientOptions {
   const host =
     overrides?.host ??
     process.env["ZENLINK_HOST"] ??
@@ -389,12 +335,19 @@ export function createZenlinkFromEnv(overrides?: Partial<ZenlinkClientOptions>):
     process.env["ZENHEART_AGENT_ID"] ??
     process.env["ZENHEART_V2_AGENT_ID"];
   if (!agentId) {
-    throw new Error("ZENLINK_AGENT_ID, ZENHEART_AGENT_ID, or ZENHEART_V2_AGENT_ID is required");
+    throw new Error(
+      "Agent id required: set ZENLINK_AGENT_ID, ZENHEART_AGENT_ID, or ZENHEART_V2_AGENT_ID",
+    );
   }
   const token =
-    overrides?.token ?? process.env["ZENLINK_TOKEN"] ?? process.env["ZENHEART_TOKEN"] ?? process.env["ZENHEART_V2_TOKEN"];
+    overrides?.token ??
+    process.env["ZENLINK_TOKEN"] ??
+    process.env["ZENHEART_TOKEN"] ??
+    process.env["ZENHEART_V2_TOKEN"];
   if (!token) {
-    throw new Error("ZENLINK_TOKEN, ZENHEART_TOKEN, or ZENHEART_V2_TOKEN is required");
+    throw new Error(
+      "Agent token required: set ZENLINK_TOKEN, ZENHEART_TOKEN, or ZENHEART_V2_TOKEN",
+    );
   }
   const tlsEnv = (overrides?.useTls === undefined
     ? process.env["ZENLINK_USE_TLS"] ??
@@ -407,12 +360,12 @@ export function createZenlinkFromEnv(overrides?: Partial<ZenlinkClientOptions>):
       : tlsEnv === "0" || String(tlsEnv).toLowerCase() === "false"
         ? false
         : true;
-  const ch = (overrides?.channel ??
-    (process.env["ZENLINK_CHANNEL"] as ZenlinkChannel | undefined) ??
-    (process.env["ZENHEART_CHANNEL"] as ZenlinkChannel | undefined) ??
-    "agent") as ZenlinkChannel;
-  if (ch !== "agent" && ch !== "social") {
-    throw new Error("ZENLINK_CHANNEL / ZENHEART_CHANNEL must be 'agent' or 'social'");
-  }
-  return new ZenlinkClient({ ...overrides, host, agentId, token, useTls, channel: ch });
+  return { ...overrides, host, agentId, token, useTls };
+}
+
+/**
+ * Create client from `process.env`, in order: `ZENLINK_*` (short), `ZENHEART_*`, `ZENHEART_V2_*`.
+ */
+export function createZenlinkFromEnv(overrides?: Partial<ZenlinkClientOptions>): ZenlinkClient {
+  return new ZenlinkClient(resolveZenlinkOptionsFromEnv(overrides));
 }

@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ZenHeart — 第三方 Agent 接入观测</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2028;
+      --border: #2d3748;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --in: #38bdf8;
+      --out: #a78bfa;
+      --accent: #34d399;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    h1 { margin: 0; font-size: 1rem; font-weight: 600; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    label { color: var(--muted); }
+    input[type="password"], input[type="text"] {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.35rem 0.5rem;
+      min-width: 220px;
+    }
+    button {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--accent);
+      padding: 0.35rem 0.75rem;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(240px, 320px) 1fr;
+      gap: 0;
+      min-height: calc(100vh - 56px);
+    }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+    }
+    .pane {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .pane:last-child { border-right: none; }
+    .pane h2 {
+      margin: 0;
+      padding: 0.6rem 1rem;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    #conn-body { overflow: auto; flex: 1; padding: 0.75rem 1rem; }
+    #log { overflow: auto; flex: 1; padding: 0.5rem 0; margin: 0; list-style: none; }
+    #log li {
+      padding: 0.35rem 1rem;
+      border-bottom: 1px solid #1e293b;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #log li.in { border-left: 3px solid var(--in); }
+    #log li.out { border-left: 3px solid var(--out); }
+    .meta { color: var(--muted); font-size: 11px; }
+    .status { color: var(--muted); font-size: 12px; }
+    .poll-line { margin-left: 0.35rem; color: var(--muted); font-size: 12px; }
+    .ok-msg { color: #34d399; font-size: 12px; }
+    .warn-msg { color: #fbbf24; font-size: 12px; }
+    .err { color: #f87171; }
+    .hint { color: var(--muted); font-size: 11px; max-width: 720px; }
+    .muted { color: var(--muted); }
+    .conn-item {
+      padding: 0.45rem 0.5rem;
+      margin-bottom: 0.35rem;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      line-height: 1.35;
+    }
+    .conn-item:hover { background: #1e293b; border-color: var(--border); }
+    .conn-item.selected {
+      border-color: var(--accent);
+      background: rgba(52, 211, 153, 0.08);
+    }
+    .conn-item .title { color: var(--accent); font-weight: 600; }
+    .conn-sub {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin: 0.65rem 0 0.35rem;
+    }
+    .pane-head-extra {
+      font-weight: normal;
+      color: var(--muted);
+      font-size: 11px;
+      margin-left: 0.35rem;
+    }
+    .pane h2.pane-head-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .pane-head-row .pane-head-main {
+      flex: 1;
+      min-width: 10rem;
+    }
+    #clear-log { flex-shrink: 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>第三方 Agent 接入观测</h1>
+    <div class="row">
+      <label for="key">Admin API Key</label>
+      <input id="key" type="password" autocomplete="off" placeholder="X-Admin-Key" />
+      <button type="button" id="save">保存到浏览器</button>
+      <span id="save-hint"></span>
+      <span id="poll-hint" class="poll-line"></span>
+    </div>
+  </header>
+  <p class="hint" style="margin:0.5rem 1.25rem 0;">
+    <strong>定位</strong>：运维侧<strong>旁观</strong>第三方 agent（外部进程）与 ZenHeart 之间已建立的<strong>真实</strong> WebSocket；本页<strong>不会在浏览器里模拟或发起任何 WebSocket</strong>，只通过 Admin 接口轮询服务端对线路的<strong>镜像记录</strong>。
+    覆盖 <code>/v2/agent/ws</code> 等已接入通道及服务端推送/命令；<code>ping</code>/<code>pong</code>（presence）已省略；A2A 部分独立下发帧未必在此列表。
+  </p>
+  <p class="hint" style="margin:0 1.25rem 0.5rem;">
+    <strong>左栏</strong>：registry 快照，当前仍挂在服务端上的 <strong>agent_id</strong> 连接。<strong>右栏</strong>：服务端环形缓冲内的出入站节选（与本页缓冲一致，含断开不久仍残留在缓冲内的会话）。
+    点某第三方 agent 则右侧<strong>只看该主体的协议轨迹</strong>；「全部」则所有主体混排。左栏在线为 0 而右侧曾有 <code>auth_ok</code>，多半是已下线或重连间歇，正常。
+  </p>
+  <main>
+    <section class="pane">
+      <h2>第三方 Agent · 在线连接 <span id="conn-count">0</span></h2>
+      <div id="conn-body"></div>
+    </section>
+    <section class="pane">
+      <h2 class="pane-head-row">
+        <span class="pane-head-main">服务端观测到的帧 <span id="log-head-extra" class="pane-head-extra"></span></span>
+        <button type="button" id="clear-log" title="清空本页已展示的帧（服务端环形缓冲仍在；仅不再显示历史已拉取条目，新产生的帧会继续出现）">清空</button>
+      </h2>
+      <ul id="log"></ul>
+    </section>
+  </main>
+  <script>
+    const ZH_FEED_OK = ___ZH_FEED___;
+    const KEY_STORAGE = 'zenheart_admin_debug_ws_key';
+    const elKey = document.getElementById('key');
+    const elSave = document.getElementById('save');
+    const elSaveHint = document.getElementById('save-hint');
+    const elPollHint = document.getElementById('poll-hint');
+    const elConn = document.getElementById('conn-body');
+    const elConnCount = document.getElementById('conn-count');
+    const elLog = document.getElementById('log');
+    const elLogHeadExtra = document.getElementById('log-head-extra');
+    const elClearLog = document.getElementById('clear-log');
+
+    /** 与后端 WsDebugTap max_events 对齐，仅用于本页展示缓冲 */
+    const MAX_BUFFER = 800;
+    /** 右侧列表只渲染最近若干条，避免刷屏 */
+    const MAX_DISPLAY = 50;
+    const eventBuffer = [];
+    const seenSeq = new Set();
+    /** null = 显示全部；否则为 agent_id 字符串 */
+    let selectedAgentId = null;
+    var lastConns = [];
+    /** agent_id → 登记名（由 /feed 的 agent_names 增量合并） */
+    var agentNameById = {};
+
+    function saveHintTail(v) {
+      const t = (v || '').trim();
+      if (!t.length) return '';
+      return ' <span style="opacity:0.75">（密钥尾字符：…' + escapeHtml(t.slice(-4)) + '）</span>';
+    }
+
+    function renderSaveBanner() {
+      const k = sessionStorage.getItem(KEY_STORAGE);
+      const cur = elKey.value.trim();
+      const hasStored = k && String(k).length > 0;
+      if (!hasStored && !cur) {
+        elSaveHint.innerHTML = '<span class="warn-msg">① 粘贴 Admin API Key → ② 点「保存到浏览器」→ ③ 见绿色 ✓「密钥已保存在本浏览器」后，才开始从服务端<strong>同步观测快照</strong>（本页不建立 WebSocket）。</span>';
+        return;
+      }
+      if (!hasStored && cur) {
+        elSaveHint.innerHTML = '<span class="warn-msg">已输入但未保存：请点击「保存到浏览器」。</span>';
+        return;
+      }
+      elSaveHint.innerHTML =
+        '<span class="ok-msg">✓ 密钥已保存在本浏览器（仅本标签页同源有效）' +
+        saveHintTail(k) +
+        '</span>';
+    }
+
+    elKey.value = sessionStorage.getItem(KEY_STORAGE) || '';
+    elKey.addEventListener('input', function () {
+      renderSaveBanner();
+    });
+    renderSaveBanner();
+
+    elSave.addEventListener('click', function () {
+      var v = elKey.value.trim();
+      sessionStorage.setItem(KEY_STORAGE, v);
+      renderSaveBanner();
+      elPollHint.innerHTML =
+        '<span class="ok-msg">已接收保存指令，正在拉取接口…</span>';
+    });
+
+    elClearLog.addEventListener('click', function () {
+      eventBuffer.length = 0;
+      seenSeq.clear();
+      since = 0;
+      renderConnections(lastConns);
+      refreshLog();
+    });
+
+    let since = 0;
+    let timer = null;
+
+    function mergeIntoBuffer(events) {
+      for (const e of events) {
+        if (seenSeq.has(e.seq)) continue;
+        seenSeq.add(e.seq);
+        eventBuffer.push(e);
+      }
+      eventBuffer.sort(function (a, b) {
+        return a.seq - b.seq;
+      });
+      while (eventBuffer.length > MAX_BUFFER) {
+        var drop = eventBuffer.shift();
+        if (drop) seenSeq.delete(drop.seq);
+      }
+    }
+
+    function htmlAgentCue(aid) {
+      if (!aid) return '—';
+      var n = (agentNameById[aid] || '').trim();
+      if (n) return escapeHtml(n) + ' <span class="meta">' + escapeHtml(aid) + '</span>';
+      return escapeHtml(aid);
+    }
+
+    function eventLiHtml(e) {
+      const ch = e.channel || '';
+      const dir = e.direction || '';
+      const mt = e.msg_type != null ? String(e.msg_type) : '?';
+      return (
+        '<span class="meta">#' +
+        e.seq +
+        ' ' +
+        escapeHtml(String(e.ts || '')) +
+        '</span> ' +
+        '<strong>' +
+        escapeHtml(ch) +
+        '</strong> ' +
+        escapeHtml(dir) +
+        ' ' +
+        '<span style="color:#fbbf24">' +
+        escapeHtml(mt) +
+        '</span> ' +
+        '<span class="meta">' +
+        htmlAgentCue(e.agent_id) +
+        ' ' +
+        truncateId(e.connection_id) +
+        '</span> ' +
+        '<span class="meta">' +
+        e.byte_len +
+        ' B</span><br/>' +
+        escapeHtml(e.preview || '')
+      );
+    }
+
+    function filteredEvents() {
+      if (selectedAgentId == null) return eventBuffer;
+      return eventBuffer.filter(function (e) {
+        return (e.agent_id || '') === selectedAgentId;
+      });
+    }
+
+    function refreshLog() {
+      var list = filteredEvents();
+      var displayList =
+        list.length > MAX_DISPLAY ? list.slice(list.length - MAX_DISPLAY) : list;
+      elLog.innerHTML = '';
+      for (var i = 0; i < displayList.length; i++) {
+        var e = displayList[i];
+        var li = document.createElement('li');
+        li.className = e.direction === 'out' ? 'out' : 'in';
+        li.innerHTML = eventLiHtml(e);
+        elLog.appendChild(li);
+      }
+      elLog.scrollTop = elLog.scrollHeight;
+
+      var total = eventBuffer.length;
+      var n = list.length;
+      var capHint = n > MAX_DISPLAY ? ' · 列表仅末 ' + MAX_DISPLAY + ' 条' : '';
+      if (selectedAgentId == null) {
+        elLogHeadExtra.textContent =
+          total > 0
+            ? '（缓冲 ' + total + ' 条 · 全部第三方' + capHint + '）'
+            : '（尚无观测记录）';
+      } else {
+        var selLabel = selectedAgentId;
+        var nx = agentNameById[selectedAgentId];
+        if ((nx || '').trim()) selLabel = nx.trim() + ' · ' + selectedAgentId;
+        elLogHeadExtra.textContent =
+          '（第三方 ' +
+          selLabel +
+          ' · ' +
+          n +
+          ' / ' +
+          total +
+          ' 条' +
+          capHint +
+          '）';
+      }
+    }
+
+    function truncateId(id) {
+      if (!id) return '';
+      return id.length > 12 ? id.slice(0, 8) + '…' : id;
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function agentIdsFromBuffer() {
+      var out = [];
+      var s = {};
+      for (var i = 0; i < eventBuffer.length; i++) {
+        var aid = eventBuffer[i].agent_id;
+        if (aid && !s[aid]) {
+          s[aid] = true;
+          out.push(aid);
+        }
+      }
+      return out.sort();
+    }
+
+    function renderConnections(conns) {
+      elConnCount.textContent = String(conns.length);
+
+      var onlineSet = {};
+      var parts = [];
+
+      parts.push(
+        '<div class="conn-item' +
+          (selectedAgentId == null ? ' selected' : '') +
+          '" data-agent="" role="button" tabindex="0">' +
+          '<div class="title">全部</div>' +
+          '<div class="meta">各第三方 agent 混排（缓冲 ' +
+          eventBuffer.length +
+          ' 条）</div></div>'
+      );
+
+      for (var oi = 0; oi < conns.length; oi++) {
+        onlineSet[conns[oi].agent_id] = true;
+      }
+
+      if (conns.length) {
+        parts.push('<div class="conn-sub">第三方 · 当前在线</div>');
+        for (var ci = 0; ci < conns.length; ci++) {
+          var c = conns[ci];
+          var sel = selectedAgentId === c.agent_id ? ' selected' : '';
+          var nm = (c.agent_name || agentNameById[c.agent_id] || '').trim();
+          var titleBlock =
+            nm.length > 0
+              ? '<div class="title">' +
+                escapeHtml(nm) +
+                '</div><div class="meta">id · ' +
+                escapeHtml(c.agent_id) +
+                '</div>'
+              : '<div class="title">' + escapeHtml(c.agent_id) + '</div>';
+          parts.push(
+            '<div class="conn-item' +
+              sel +
+              '" data-agent="' +
+              encodeURIComponent(c.agent_id) +
+              '" role="button" tabindex="0">' +
+              titleBlock +
+              '<div class="meta">conn ' +
+              escapeHtml(c.connection_id) +
+              '</div>' +
+              '<div class="meta">opened ' +
+              escapeHtml(c.opened_at) +
+              '</div></div>'
+          );
+        }
+      } else {
+        parts.push(
+          '<p class="muted" style="margin:0 0 0.5rem 0">快照中无在线第三方 agent。若右侧仍有 <code>auth_ok</code>，多半是刚断开或间歇重连；可在下方「仅历史」选中对应 agent_id 回看轨迹。</p>'
+        );
+      }
+
+      var hist = agentIdsFromBuffer().filter(function (id) {
+        return !onlineSet[id];
+      });
+      if (hist.length) {
+        parts.push('<div class="conn-sub">仅缓冲中有（第三方当前未在线）</div>');
+        for (var hi = 0; hi < hist.length; hi++) {
+          var hid = hist[hi];
+          var hsel = selectedAgentId === hid ? ' selected' : '';
+          var hnm = (agentNameById[hid] || '').trim();
+          var histTitle =
+            hnm.length > 0
+              ? '<div class="title">' +
+                escapeHtml(hnm) +
+                '</div><div class="meta">id · ' +
+                escapeHtml(hid) +
+                '</div>'
+              : '<div class="title">' + escapeHtml(hid) + '</div>';
+          parts.push(
+            '<div class="conn-item' +
+              hsel +
+              '" data-agent="' +
+              encodeURIComponent(hid) +
+              '" role="button" tabindex="0">' +
+              histTitle +
+              '<div class="meta">仅此第三方 agent 在本页缓冲内的帧</div></div>'
+          );
+        }
+      }
+
+      elConn.innerHTML = parts.join('');
+    }
+
+    function selectAgentFromDataAttr(raw) {
+      if (raw === null || raw === '') {
+        selectedAgentId = null;
+        return;
+      }
+      try {
+        selectedAgentId = decodeURIComponent(raw);
+      } catch (err) {
+        selectedAgentId = raw;
+      }
+    }
+
+    elConn.addEventListener('click', function (ev) {
+      var el = ev.target && ev.target.closest ? ev.target.closest('.conn-item') : null;
+      if (!el || !elConn.contains(el)) return;
+      selectAgentFromDataAttr(el.getAttribute('data-agent'));
+      renderConnections(lastConns);
+      refreshLog();
+    });
+
+    elConn.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      var el = ev.target && ev.target.closest ? ev.target.closest('.conn-item') : null;
+      if (!el || !elConn.contains(el)) return;
+      ev.preventDefault();
+      selectAgentFromDataAttr(el.getAttribute('data-agent'));
+      renderConnections(lastConns);
+      refreshLog();
+    });
+
+    function isoTimeCn() {
+      var d = new Date();
+      return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + ('00' + d.getMilliseconds()).slice(-3);
+    }
+
+    async function tick() {
+      if (!ZH_FEED_OK) {
+        elPollHint.innerHTML =
+          '<span class="err">轮询不可用：服务端未开启 DEBUG_WS_MONITOR_ENABLED（或未重启）。</span>';
+        return;
+      }
+      const raw = sessionStorage.getItem(KEY_STORAGE);
+      if (!raw) {
+        elPollHint.innerHTML =
+          '<span class="err">无法进行轮询：请填写 Key、点保存，直至上方显示绿色 ✓。</span>';
+        renderSaveBanner();
+        return;
+      }
+
+      try {
+        const r = await fetch('/v2/admin/debug/ws/feed?since=' + since, {
+          headers: { 'X-Admin-Key': raw },
+        });
+        if (!r.ok) {
+          var hint = '';
+          if (r.status === 403) {
+            hint = ' ：密钥不对，或关闭了 DEBUG_WS_MONITOR；请核对服务器 .env 的 ADMIN_API_KEY。';
+          } else if (r.status === 422) {
+            hint = ' ：缺少请求头 X-Admin-Key（异常情况）。';
+          }
+          elPollHint.innerHTML =
+            '<span class="err">✗ [ ' + isoTimeCn() + ' ] HTTP ' + r.status + hint + ' </span>';
+          return;
+        }
+        var data = await r.json();
+        var conns = data.connections || [];
+        Object.assign(agentNameById, data.agent_names || {});
+        lastConns = conns;
+        var evs = data.events || [];
+        if (evs.length) {
+          mergeIntoBuffer(evs);
+          var last = evs[evs.length - 1];
+          if (last && typeof last.seq === 'number') since = last.seq;
+        }
+        renderConnections(conns);
+        refreshLog();
+        elPollHint.innerHTML =
+          '<span class="ok-msg">●</span> [ ' +
+          isoTimeCn() +
+          ' ] 观测已同步 — 在线第三方 ' +
+          (data.connections || []).length +
+          ' · seq ' +
+          since +
+          (typeof data.max_seq === 'number' ? ' · 缓冲末 seq ' + data.max_seq : '');
+      } catch (e) {
+        elPollHint.innerHTML =
+          '<span class="err">✗ [ ' + isoTimeCn() + ' ] 请求失败：' + escapeHtml(String(e)) + '</span>';
+      }
+    }
+
+    timer = setInterval(tick, 1000);
+    tick();
+  </script>
+</body>
+</html>

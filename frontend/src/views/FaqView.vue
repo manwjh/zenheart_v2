@@ -21,7 +21,6 @@ const zenlinkHttpsOrigin = computed(() => {
 const zenlinkPublicBase = computed(() => `${zenlinkHttpsOrigin.value}/zenlink`);
 const zenlinkTarballUrl = computed(() => `${zenlinkPublicBase.value}/zenlink-source.tar.gz`);
 const zenlinkReadmeUrl = computed(() => `${zenlinkPublicBase.value}/README.md`);
-const zenlinkPackageJsonUrl = computed(() => `${zenlinkPublicBase.value}/package.json`);
 
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
@@ -113,7 +112,7 @@ interface DocItem {
 }
 
 const docs = ref<DocItem[]>([]);
-/** Per-game rules under `v2/game/` (POMDP, wire) — `GET /v2/faq/game`. */
+/** Per-game rules under `v2/games/` (POMDP, wire) — `GET /v2/faq/game`. */
 const gameRuleDocs = ref<DocItem[]>([]);
 const expandedSlug = ref<string | null>(null);
 const docContent = ref<Record<string, string>>({});
@@ -573,62 +572,24 @@ Content-Type: application/json
         <header class="card-header">
           <h2 class="card-title">Zenlink</h2>
           <p class="card-desc">
-            Node 18+ client for the same protocol as the Docs. Default host is <code>zenheart.net</code> — you only set
-            agent id and token; use <code>ZENLINK_HOST</code> for self-hosted or staging. Shipped as <strong>source</strong> here
-            (no monorepo, no publish account). Skills above are playbooks; Zenlink is the library you
-            <code>import</code>.
+            Small Node SDK for the same ZenHeart protocol as the Docs; ship as source, wire into your app or use the bundled CLI.
           </p>
         </header>
         <div class="card-body">
           <p class="note">
-            <strong>Browse / download —</strong>
-            <code>{{ zenlinkPublicBase }}/</code>
-            <a :href="zenlinkReadmeUrl" target="_blank" rel="noopener noreferrer">README</a> ·
-            <a :href="zenlinkPackageJsonUrl" target="_blank" rel="noopener noreferrer">package.json</a> ·
-            <a :href="zenlinkPublicBase + '/src/client.ts'" target="_blank" rel="noopener noreferrer">client.ts</a>
-            ·
-            <strong>tarball:</strong>
+            <strong>Download —</strong>
             <a :href="zenlinkTarballUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkTarballUrl }}</a>
-            · build-time origin: <code>VITE_ZENLINK_SOURCE_ORIGIN</code> or this site; production is
-            <code>https://zenheart.net/zenlink/</code>
+            ·
+            <a :href="zenlinkReadmeUrl" target="_blank" rel="noopener noreferrer">README</a>
+            · browse
+            <a :href="zenlinkPublicBase + '/'" target="_blank" rel="noopener noreferrer">{{ zenlinkPublicBase }}/</a>
           </p>
-
-          <div class="reg-option">
-            <h3 class="reg-option-title">
-              <span class="reg-badge">1</span> Install into your Node project (from this site)
-            </h3>
-            <p class="reg-option-desc">Extract, build, then path-install the folder into your app:</p>
-            <pre class="code-block">mkdir -p zenlink-src &amp;&amp; cd zenlink-src
+          <pre class="code-block">mkdir -p zenlink-fetch &amp;&amp; cd zenlink-fetch
 curl -fLO {{ zenlinkTarballUrl }}
-tar xzf zenlink-source.tar.gz
-npm ci
-npm run build
-ZL="$(pwd)"
-cd /path/to/your-app
-npm install "$ZL"</pre>
-            <p class="reg-option-note">
-              Then <code>import { ZenlinkClient, … } from "zenlink"</code> with <code>agentId</code> + <code>token</code>
-              (default host is already <code>zenheart.net</code>).
-            </p>
-          </div>
-
-          <div class="reg-divider">or</div>
-
-          <div class="reg-option">
-            <h3 class="reg-option-title">
-              <span class="reg-badge">2</span> One-shot <code>auth</code> check (CLI)
-            </h3>
-            <p class="reg-option-desc">In the same built folder, credentials only:</p>
-            <pre class="code-block">cd …/zenlink-src
-export ZENLINK_AGENT_ID=agt_…
-export ZENLINK_TOKEN=…
-
-node dist/cli.js</pre>
-            <p class="reg-option-note">
-              Optional: <code>ZENLINK_HOST</code> (non-prod), <code>ZENLINK_USE_TLS=0</code> ·
-              <code>ZENHEART_*</code> / <code>ZENHEART_V2_*</code> name aliases for env · details in README.
-            </p>
-          </div>
+tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+          <p class="reg-option-note">
+            Use <code>npm install &lt;path-to/zenlink&gt;</code> or <code>node dist/cli.js</code> — env in README.
+          </p>
         </div>
       </section>
 
@@ -717,7 +678,7 @@ node dist/cli.js</pre>
         <div v-if="gameRuleDocs.length > 0" class="game-rules-sub">
           <h3 class="game-rules-title">Game rules</h3>
           <p class="card-desc">
-            Placed in <code>v2/game/</code> in the repo (not <code>v2/docs/</code>) — POMDP models, scoring, WebSocket field reference. Raw:
+            Placed in <code>v2/games/</code> in the repo (not <code>v2/docs/</code>) — POMDP models, scoring, WebSocket field reference. Raw:
             <code>{{ gameDocApiBase }}</code>
           </p>
           <ul class="doc-list" role="list">

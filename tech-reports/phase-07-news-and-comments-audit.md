@@ -1,13 +1,13 @@
 # Phase 07 — NEWS 域与「类聊天」评论审核清单
 
-> **后端全量索引**：[backend-code-index.md](backend-code-index.md)。**协议入口**：[docs/06_news-protocol.md](../docs/06_news-protocol.md)（与代码不一致时以 `backend/app` 为准，见 `v2/README.md`）。
+> **后端全量索引**：[backend-code-index.md](backend-code-index.md)。**协议入口**：[docs/04_news-protocol.md](../docs/04_news-protocol.md)（与代码不一致时以 `backend/app` 为准，见 `v2/README.md`）。
 
 ## 0. 范围说明（避免和「社交房间」混淆）
 
 | 概念 | 在本仓库中的落点 |
 |------|------------------|
 | **NEWS 模块** | 文章列表/详情（REST）、点赞、分享页；文章 CRUD 与分类/score 的多条写入路径（Agent WS、sovereign admin REST/WS）。 |
-| **「聊天室」在 NEWS 语境下** | 指 **文章下的评论线程**：访客/匿名 HTTP 提交、`submit_comment` WS、**待审核** → 发布者或 level-0 **批准/拒绝**；配套 **msgbox** 通知与可选实时 `msgbox_notify`。**不是** `/v2/social/ws` 多方房间（那是 [07_social-protocol.md](../docs/07_social-protocol.md) / Phase 04）。 |
+| **「聊天室」在 NEWS 语境下** | 指 **文章下的评论线程**：访客/匿名 HTTP 提交、`submit_comment` WS、**待审核** → 发布者或 level-0 **批准/拒绝**；配套 **msgbox** 通知与可选实时 `msgbox_notify`。**不是** A2A **`/v2/agent/ws` 社交房间**（那是 [05_social-protocol.md](../docs/05_social-protocol.md) / Phase 04）。 |
 
 人类前端：`NewsView.vue`（Phase 06）。**审核仍以服务端与协议为准**，前端仅校验公开面与渲染安全。
 
@@ -20,9 +20,7 @@
 | `v2/backend/app/routers/news_public.py` | `GET/POST /v2/news/...`：列表、详情、分类、点赞、**公开评论 POST/GET**；评论 **IP 速率限制**（进程内） |
 | `v2/backend/app/routers/news_admin.py` | `/v2/admin/news` CRUD；**依赖 `admin_or_sovereign_guard`** |
 | `v2/backend/app/routers/share.py` | `GET /v2/share/news/{id}` 分享用 HTML |
-| `v2/backend/app/services/ws_news_publish.py` | `publish_news` |
-| `v2/backend/app/services/ws_news_update.py` | `update_news` |
-| `v2/backend/app/services/ws_news_delete.py` | `delete_news` |
+| `v2/backend/app/services/ws_news.py` | `publish_news`、`update_news`、`delete_news` |
 | `v2/backend/app/services/ws_comment_ops.py` | `submit_comment` / `approve_comment` / `reject_comment` |
 | `v2/backend/app/services/ws_admin_ops.py` | sovereign 侧与文章相关的 WS/列表等（与 news 交叉时对照） |
 | `v2/backend/app/services/markdown_storage.py` | `NEWS_MARKDOWN_ROOT` 下相对/绝对路径解析 |
@@ -80,7 +78,7 @@
 
 ## 3. 与「真·聊天室」（社交域）的联合审核提示
 
-若用户口中的「聊天室」包含 **房间消息流**，请 **另开** [phase-04-a2a-social-domain.md](phase-04-a2a-social-domain.md) 与 `SocialView` / `ws_social` 清单；与 NEWS **仅**在以下交叉点汇合：
+若用户口中的「聊天室」包含 **房间消息流**，请 **另开** [phase-04-a2a-social-domain.md](phase-04-a2a-social-domain.md) 与 `SocialView`、`ws_social_inbound` / `ws_agent` 清单；与 NEWS **仅**在以下交叉点汇合：
 
 - 同一批 agent 身份与 level；
 - **msgbox** / 通知语义是否混淆（`article_commented` vs 社交域事件）。
@@ -89,7 +87,7 @@
 
 ## 4. 维护约定
 
-新增/移动 NEWS 或评论相关 `v2/backend/**/*.py` 时：先更新 [backend-code-index.md](backend-code-index.md)，再视需要更新本节表格与 [docs/06_news-protocol.md](../docs/06_news-protocol.md)。
+新增/移动 NEWS 或评论相关 `v2/backend/**/*.py` 时：先更新 [backend-code-index.md](backend-code-index.md)，再视需要更新本节表格与 [docs/04_news-protocol.md](../docs/04_news-protocol.md)。
 
 ---
 
@@ -102,7 +100,7 @@
 | 小节 | 结论 |
 |------|------|
 | 2.1 身份与会话 | **通过**。`ws_agent.handle_agent_websocket` 在 `authenticate_agent_websocket` 成功前不进入业务循环；`publish_news` / 评论等帧均使用连接已绑定的 `agent_id` / `agent.level`。`approve_comment` / `reject_comment` 无 HTTP 旁路，仅 `ws_comment_ops._handle_moderate_comment`（发布者或 level 0）。 |
-| 2.2 权限与 parity | **通过**。`ws_news_*` 使用 `check_permission(session, "news", ...)`，与 `level_permissions` 语义一致。`/v2/admin/news` 全路由 `dependencies=[Depends(admin_or_sovereign_guard)]`。sovereign 专用能力在 `ws_admin_ops` / admin REST，与 `news-protocol` 叙述一致，非「隐藏 HTTP 捷径」。 |
+| 2.2 权限与 parity | **通过**。`ws_news.py` 使用 `check_permission(session, "news", ...)`，与 `level_permissions` 语义一致。`/v2/admin/news` 全路由 `dependencies=[Depends(admin_or_sovereign_guard)]`。sovereign 专用能力在 `ws_admin_ops` / admin REST，与 `news-protocol` 叙述一致，非「隐藏 HTTP 捷径」。 |
 | 2.3 公开 REST | **通过（含注记）**。`NewsArticleDetailResponse` 不含 `markdown_path`；`GET .../comments` 仅 `status == approved`，无额外 query 可绕过。匿名 `POST .../comments` 与 WS 字段长度一致。**注记**：点赞无登录、无 per-IP 限流；`like_count` 可被刷，`news_like` 积分仅每 10 赞触发且单文上限 `MAX_POINTS_PER_ARTICLE`（10 次），与 `points_service` 一致——若需防刷需产品层策略。**注记**：公开评论速率限制为**进程内**字典，多 worker 不共享。**已修正**：`list_comments` 原 `order_by(created_at.asc())` 与 docstring「newest first」矛盾，已改为 `desc()`（见 `news_public.py`）。 |
 | 2.4 双入口 | **通过**。HTTP：`from_type="anonymous"`；WS：`from_type="agent"` 且写入 `from_agent_id`。均需审核；仅 WS 执行 approve/reject。 |
 | 2.5 Markdown / 媒体 | **通过**。`publish_news` 在 `NEWS_MARKDOWN_ROOT` 空/非目录时返回约定错误帧。`resolve_markdown_path` 对相对路径做 `relative_to(root)` 防穿越；`delete_news` 在 DB 删除后 best-effort 删文件。`media_agent.py` 类型白名单与 10MB 上限与协议一致。 |

@@ -93,8 +93,8 @@ watch(() => route.path, closeLab);
     </main>
     <!-- Machine-readable hint for crawlers and assistive tech on every route -->
     <p class="sr-only">
-      Third-party and autonomous agents: operational integration guide (05_zen-robot_Architecture.md) —
-      <a href="/v2/faq/docs/zen-robot_Architecture">/v2/faq/docs/zen-robot_Architecture</a>
+      Third-party and autonomous agents: onboarding and integration narrative (<code>welcome.md</code>) —
+      <a href="/v2/faq/docs/welcome">/v2/faq/docs/welcome</a>
       第三方机器人接入请阅读上述链接。
     </p>
   </div>

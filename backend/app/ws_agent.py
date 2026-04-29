@@ -4,7 +4,7 @@ import time
 import uuid
 from collections import deque
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -36,18 +36,28 @@ from app.services.ws_comment_ops import (
 from app.services.ws_auth import authenticate_agent_websocket
 from app.services.ws_self_query import handle_get_my_articles, handle_get_my_rooms
 from app.services.ws_mail_send import handle_send_mail_ws_message
-from app.services.ws_news_delete import handle_delete_news_ws_message
-from app.services.ws_news_publish import handle_publish_news_ws_message
-from app.services.ws_news_update import handle_update_news_ws_message
+from app.services.ws_news import (
+    handle_delete_news_ws_message,
+    handle_publish_news_ws_message,
+    handle_update_news_ws_message,
+)
 from app.services.ws_send_direct_message import handle_send_direct_message_ws_message
-from app.services.ws_skills_delete import handle_delete_skill_ws_message
-from app.services.ws_skills_publish import handle_publish_skill_ws_message
-from app.services.ws_skills_update import handle_update_skill_ws_message
+from app.services.ws_skills import (
+    handle_delete_skill_ws_message,
+    handle_publish_skill_ws_message,
+    handle_update_skill_ws_message,
+)
+from app.services.ws_social_inbound import (
+    cleanup_social_room_on_disconnect,
+    dispatch_room_inbound_frame,
+)
+from app.social_registry import SocialRoomRegistry
 from app.ws_registry import AgentConnectionRegistry
 
 
 async def handle_agent_websocket(websocket: WebSocket) -> None:
     settings = websocket.app.state.settings
+    social: SocialRoomRegistry = websocket.app.state.social_registry
     registry: AgentConnectionRegistry = websocket.app.state.registry
     session_factory = websocket.app.state.session_factory
 
@@ -66,6 +76,19 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
     agent = auth.agent
 
     connection_id = str(uuid.uuid4())
+    tap = getattr(websocket.app.state, "ws_debug_tap", None)
+
+    async def agent_send_json(payload: dict[str, Any]) -> None:
+        raw = json.dumps(payload, ensure_ascii=False)
+        await websocket.send_text(raw)
+        if tap is not None:
+            await tap.record_outbound_dict(
+                channel="agent_ws",
+                agent_id=agent_id,
+                connection_id=connection_id,
+                payload=payload,
+                raw=raw,
+            )
 
     previous = await registry.replace(agent_id, websocket, connection_id)
     if previous is not None and previous is not websocket:
@@ -114,8 +137,13 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
         "server_time": datetime.now(timezone.utc).isoformat(),
         "my_profile": my_profile,
         "msgbox_summary": msgbox_summary,
+        "social_limits": {
+            "max_concurrent_agents_per_room": social.max_concurrent_agents,
+            "max_concurrent_observers_per_room": social.max_concurrent_observers,
+            "room_idle_hours": settings.social_room_idle_hours,
+        },
     }
-    await websocket.send_text(json.dumps(auth_ok_body))
+    await agent_send_json(auth_ok_body)
     await record_agent_event(
         session_factory,
         event="ws_message_out",
@@ -138,6 +166,29 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
     rate_limit = db_rate_limit if db_rate_limit is not None else settings.agent_ws_rate_limit_per_minute
     rate_window: deque[float] = deque(maxlen=rate_limit if rate_limit > 0 else None)
 
+    last_pong_at = time.monotonic()
+
+    async def _heartbeat_server_ping_loop() -> None:
+        nonlocal last_pong_at, disconnect_reason
+        interval = float(settings.agent_ws_presence_ping_interval_seconds)
+        timeout = float(settings.agent_ws_presence_pong_timeout_seconds)
+        while True:
+            await asyncio.sleep(interval)
+            now = time.monotonic()
+            if (now - last_pong_at) > timeout:
+                disconnect_reason = "pong_timeout"
+                try:
+                    await websocket.close(code=4008, reason="pong_timeout")
+                except Exception:
+                    pass
+                return
+            try:
+                await websocket.send_text(json.dumps({"type": "ping"}))
+            except Exception:
+                return
+
+    heartbeat_task = asyncio.create_task(_heartbeat_server_ping_loop())
+
     disconnect_reason: Optional[str] = None
     try:
         while True:
@@ -149,9 +200,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                 now = time.monotonic()
                 rate_window.append(now)
                 if len(rate_window) == rate_limit and (now - rate_window[0]) < 60.0:
-                    await websocket.send_text(
-                        json.dumps({"type": "error", "reason": "rate_limit_exceeded"})
-                    )
+                    await agent_send_json({"type": "error", "reason": "rate_limit_exceeded"})
                     await record_agent_event(
                         session_factory,
                         event="ws_rate_limit_exceeded",
@@ -184,8 +233,14 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     detail={"phase": "data", "parse": "invalid_json", "byte_length": msg_bytes},
                 )
-                out = json.dumps({"type": "error", "reason": "invalid_json"})
-                await websocket.send_text(out)
+                if tap is not None:
+                    await tap.record_inbound_parse_error(
+                        channel="agent_ws",
+                        agent_id=agent_id,
+                        connection_id=connection_id,
+                        byte_len=msg_bytes,
+                    )
+                await agent_send_json({"type": "error", "reason": "invalid_json"})
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -206,8 +261,16 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     "byte_length": msg_bytes,
                 },
             )
+            if tap is not None and isinstance(data, dict):
+                await tap.record_inbound_dict(
+                    channel="agent_ws",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    byte_len=msg_bytes,
+                    data=data,
+                )
             if msg_type == "ping":
-                await websocket.send_text(json.dumps({"type": "pong"}))
+                await agent_send_json({"type": "pong"})
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -215,6 +278,21 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     detail={"message_type": "pong"},
                 )
+            elif msg_type == "pong":
+                last_pong_at = time.monotonic()
+            elif await dispatch_room_inbound_frame(
+                websocket,
+                social,
+                session_factory,
+                registry,
+                settings,
+                agent_id,
+                agent.agent_name,
+                agent.level,
+                msg_type,
+                data,
+            ):
+                pass
             elif msg_type == "publish_news":
                 out = await handle_publish_news_ws_message(
                     news_markdown_root=settings.news_markdown_root,
@@ -227,7 +305,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     data=data,
                     registry=registry,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -245,7 +323,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -261,7 +339,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -278,7 +356,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     agent_level=agent.level,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -293,7 +371,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -308,7 +386,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -323,7 +401,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -339,7 +417,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -354,7 +432,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     agent_level=agent.level,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -371,7 +449,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -388,7 +466,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -404,7 +482,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -421,7 +499,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -434,7 +512,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     session_factory=session_factory,
                     agent_level=agent.level,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -448,7 +526,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -462,7 +540,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -474,7 +552,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     agent_level=agent.level,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -490,7 +568,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     data=data,
                     news_markdown_root=settings.news_markdown_root,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -506,7 +584,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -524,7 +602,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -540,7 +618,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -555,7 +633,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -569,7 +647,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -583,7 +661,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -595,7 +673,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     agent_id=agent_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -607,7 +685,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     agent_id=agent_id,
                     data=data,
                 )
-                await websocket.send_text(json.dumps(out))
+                await agent_send_json(out)
                 await record_agent_event(
                     session_factory, event="ws_message_out", agent_id=agent_id,
                     connection_id=connection_id,
@@ -616,9 +694,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
             elif msg_type == "command_result":
                 request_id = data.get("request_id")
                 if not isinstance(request_id, str) or not request_id:
-                    await websocket.send_text(
-                        json.dumps({"type": "error", "reason": "invalid_command_result"})
-                    )
+                    await agent_send_json({"type": "error", "reason": "invalid_command_result"})
                     await record_agent_event(
                         session_factory,
                         event="ws_message_out",
@@ -636,9 +712,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     detail={"request_id": request_id, "delivered": delivered},
                 )
                 if not delivered:
-                    await websocket.send_text(
-                        json.dumps({"type": "error", "reason": "unknown_request_id"})
-                    )
+                    await agent_send_json({"type": "error", "reason": "unknown_request_id"})
                     await record_agent_event(
                         session_factory,
                         event="ws_message_out",
@@ -647,7 +721,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                         detail={"message_type": "error", "reason": "unknown_request_id"},
                     )
             else:
-                await websocket.send_text(json.dumps({"type": "error", "reason": "unknown_type"}))
+                await agent_send_json({"type": "error", "reason": "unknown_type"})
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -658,6 +732,22 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         disconnect_reason = "client_disconnect"
     finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        await cleanup_social_room_on_disconnect(
+            social=social,
+            session_factory=session_factory,
+            registry=registry,
+            settings=settings,
+            agent_id=agent_id,
+            agent_name=agent.agent_name,
+            connection_id=connection_id,
+        )
         if disconnect_reason is not None:
             await record_agent_event(
                 session_factory,

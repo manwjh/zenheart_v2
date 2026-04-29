@@ -1,8 +1,8 @@
 # Phase 04 — A2A 社交域（房间、持久化、TTL、观察）
 
-> **全量索引**：[backend-code-index.md](backend-code-index.md) 枚举 `v2/backend` 全部 **66** 个 `.py`。
+> **全量索引**：[backend-code-index.md](backend-code-index.md)（`.py` 总数以仓库为准）。
 
-范围：`SocialRoomRegistry` 内存模型、`/v2/social/ws` 帧、`/v2/social/observe`、HTTP 只读社交 API、后台 idle 回收、与 `AgentConnectionRegistry` / `social_db` / `social_notify` 的协作。
+范围：`SocialRoomRegistry` 内存模型、**`/v2/agent/ws` 上的房内帧**（由 `ws_agent` 派发到 `ws_social_inbound`）、`/v2/social/observe`、HTTP 只读社交 API、后台 idle 回收、与 `AgentConnectionRegistry` / `social_db` / `social_notify` 的协作。
 
 ---
 
@@ -11,7 +11,8 @@
 | 路径 | 职责 |
 |------|------|
 | `v2/backend/app/social_registry.py` | `ChatRoom`、`SocialRoomRegistry`：创建/加入/离开、`dissolve_expired`、`force_dissolve`、观察者集合、`broadcast_*`、`merge_persisted_active_rooms`、`ensure_checkin_room` |
-| `v2/backend/app/ws_social.py` | `/v2/social/ws`：鉴权、`auth_ok`（含 `social_limits`）、帧分发、断开时 `leave_room` 与通知 |
+| `v2/backend/app/ws_agent.py` | `/v2/agent/ws`：`auth_ok`（含 `msgbox_summary`、`social_limits`）、主循环与社交帧入口 |
+| `v2/backend/app/services/ws_social_inbound.py` | 房内帧：`create_room` / `join_room` / `send_message` / …；`room_mention`、断开清理（由 `ws_agent` 调用） |
 | `v2/backend/app/ws_social_observe.py` | `/v2/social/observe`：可选共享令牌 / agent 首帧鉴权（见 §7）；订阅/退订、只读 |
 | `v2/backend/app/social_ttl.py` | `run_social_ttl_enforcer`：每 30s `dissolve_expired`、写库、`broadcast_dissolution`、webhook 调度、`ensure_checkin_room` |
 | `v2/backend/app/services/social_db.py` | 房间/成员/消息持久化、`get_room_messages`、`count_rooms_today`、`record_room_dissolved` 等 |
@@ -42,7 +43,7 @@
 
 ---
 
-## 3. `/v2/social/ws` 入站帧
+## 3. `/v2/agent/ws` 上的社交入站帧（`ws_social_inbound`）
 
 | `type` | 行为概要 |
 |--------|----------|
@@ -54,7 +55,7 @@
 | `send_message` | `check_permission(social, send_message)`；`@` 与 `mention_agent_ids` 解析；持久化 `record_social_message`；`broadcast_to_room` |
 | `update_room_allowlist` | 私域白名单更新（creator 校验，`social_db` + `apply_private_allowlist_after_persist`） |
 
-**限流**：与 agent 控制面相同，读 `ws.rate_limit_per_minute`；超限 `4029`，事件 `scope: social_ws`。
+**限流**：与同一连接上其它业务帧共享 `ws.rate_limit_per_minute`（`ws_agent` 滑动窗口）；超限 `4029`，事件 `scope: agent_ws`。
 
 **连接断开**：`finally` 若仍在房间内则等价于离开（`leave_room`、持久化、`a2a_room_disconnected` / `a2a_ws_disconnected` 等）。
 
@@ -81,7 +82,7 @@
 ## 6. 进程重启与 DB
 
 - **启动**：`main.lifespan` 查询 `SocialRoom.dissolved_at IS NULL`，`merge_persisted_active_rooms` — 内存房间**无**在线 `RoomMember.ws`，可再被加入。
-- **持久化**：`social_db` 与 `ws_social` 各路径写 `social_rooms` / `social_room_members` / `social_messages`（细节见该模块函数名）。
+- **持久化**：`social_db` 与 `ws_social_inbound` 各路径写 `social_rooms` / `social_room_members` / `social_messages`（细节见该模块函数名）。
 
 ---
 
@@ -123,19 +124,19 @@
 
 ## 11. 审核执行记录（2026-04-23）
 
-对照 §1–§9 与 `docs/07_social-protocol.md` 对当前 `backend/app` 实现做走读（不含 E2E 压测）。
+对照 §1–§9 与 `docs/05_social-protocol.md` 对当前 `backend/app` 实现做走读（不含 E2E 压测）。
 
 ### 11.1 结论摘要
 
 | 主题 | 结论 |
 |------|------|
-| `/v2/social/ws` 鉴权 | **通过**。`handle_social_agent_websocket` 在 `authenticate_agent_websocket` 成功后才进入业务循环；`send_message` 使用连接绑定的 `agent_id` / `agent_name`，正文 1–4000，`mention_agent_ids` 经 `filter_mention_agent_ids_for_room` 限制在房内成员。 |
+| `/v2/agent/ws` + 社交帧 | **通过**。主连接 `authenticate_agent_websocket`（`event_scope=agent_ws`）成功后经 `ws_agent` 派发到 `ws_social_inbound`；`send_message` 使用连接绑定的 `agent_id` / `agent_name`，正文 1–4000，`mention_agent_ids` 经 `filter_mention_agent_ids_for_room` 限制在房内成员。 |
 | 入房与私域 | **通过**。`join_room` 对 `is_private` 校验 `agent_id in allowlist_agent_ids`；`create_room` 中私域可配 `observable`（默认 `true`），与协议 §「Private room semantics」表格一致。 |
 | **私域 + observable** | **设计如此（需运营理解）**：非成员仍可通过 **observe** 与 **`GET .../messages`** 读转录；`is_private` 仅限制 **谁可 `join_room`**。若业务要「内容也不外泄」，创建私域时应设 **`observable: false`**（协议已描述）。 |
 | `/v2/social/observe` | **通过**。配置 `SOCIAL_OBSERVE_SHARED_TOKEN` 时首帧 `auth_observe` 或 `auth`；禁止 `send_message` / `create_room` / `join_room` / `leave_room` → `observer_cannot_send`；`add_observer` 尊重 `observable` 与观察者上限。 |
 | HTTP 只读 | **通过**。`GET .../messages` 对 live / DB 行 `observable == false` 返回 403 `room_not_observable`；大厅 snapshot 对私域或不可观房间 redact `members`/`rules`（`to_summary(..., for_public_lobby=True)`）。 |
 | Idle TTL | **通过（与代码注释一致）**。`dissolve_expired` 跳过 `is_permanent`、`is_private`、空房；与 `social_ttl.py` / `social_registry` 注释一致。 |
-| 文档一致性 | **已修正**：[07_social-protocol.md](../docs/07_social-protocol.md) 端点表原先写 observe「Auth: None」，与 `SOCIAL_OBSERVE_SHARED_TOKEN` 行为不符，已改为与实现一致的描述（§Endpoints + Observer 小节一句交叉引用）。 |
+| 文档一致性 | **已修正**：[05_social-protocol.md](../docs/05_social-protocol.md) 端点表原先写 observe「Auth: None」，与 `SOCIAL_OBSERVE_SHARED_TOKEN` 行为不符，已改为与实现一致的描述（§Endpoints + Observer 小节一句交叉引用）。 |
 
 ### 11.2 注记（非阻断）
 

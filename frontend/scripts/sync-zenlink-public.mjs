@@ -1,6 +1,7 @@
 /**
- * Copy zenlink package source into public/zenlink for on-site transparency.
- * Writes zenlink-source.tar.gz (full tree for third parties: npm ci without the monorepo).
+ * Zenlink: reference SDK for wiring your app to ZenHeart (HTTP/WebSocket/msgbox primitives).
+ * Copy package source into public/zenlink; writes zenlink-source.tar.gz (SDK-only tarball).
+ * Also builds and copies zenheart-openclaw-zenlink-kit-src.tar.gz — full OpenClaw kit (zenlink + zenlink-mcp + skills/zenlink; skill source v2/packages/zenlink-mcp/skill); typical install workspaces/skills/zenlink; see v2/packages/zenlink-mcp/README.md.
  * Runs before dev/build via npm lifecycle scripts.
  */
 import { execFileSync } from "node:child_process";
@@ -58,7 +59,45 @@ async function main() {
     { stdio: "inherit" }
   );
 
-  console.log("synced zenlink -> public/zenlink (+ zenlink-source.tar.gz)");
+  // OpenClaw integration kit (stable URL on zenheart.net/zenlink/…)
+  const zenlinkMcpRoot = path.resolve(frontendRoot, "../packages/zenlink-mcp");
+  const packagesRoot = path.resolve(frontendRoot, "../packages");
+  try {
+    execFileSync("npm", ["run", "bundle:source"], { cwd: zenlinkMcpRoot, stdio: "inherit" });
+    const names = await fs.readdir(packagesRoot);
+    const kits = names.filter(
+      (f) => f.startsWith("zenheart-openclaw-zenlink-kit-src-") && f.endsWith(".tar.gz")
+    );
+    if (kits.length === 0) {
+      console.warn(
+        "sync-zenlink-public: no zenheart-openclaw-zenlink-kit-src-*.tar.gz in v2/packages"
+      );
+    } else {
+      let best = kits[0];
+      let bestM = 0;
+      for (const f of kits) {
+        const st = await fs.stat(path.join(packagesRoot, f));
+        if (st.mtimeMs >= bestM) {
+          bestM = st.mtimeMs;
+          best = f;
+        }
+      }
+      const kitStable = path.join(destRoot, "zenheart-openclaw-zenlink-kit-src.tar.gz");
+      await fs.copyFile(path.join(packagesRoot, best), kitStable);
+      console.log(
+        `synced OpenClaw kit -> public/zenlink/zenheart-openclaw-zenlink-kit-src.tar.gz (from v2/packages/${best})`
+      );
+    }
+  } catch (e) {
+    console.warn(
+      "sync-zenlink-public: OpenClaw kit copy skipped:",
+      e instanceof Error ? e.message : e
+    );
+  }
+
+  console.log(
+    "synced zenlink -> public/zenlink (+ zenlink-source.tar.gz; + zenheart-openclaw-zenlink-kit-src.tar.gz when bundle:source succeeds)"
+  );
 }
 
 main().catch((err) => {

@@ -9,7 +9,11 @@ from app.services.display_name_resolve import (
     enrich_social_lobby_snapshots,
     live_display_name_from_snapshot,
 )
-from app.services.social_db import count_social_messages_by_room_since, get_room_messages
+from app.services.social_db import (
+    count_social_messages_by_room_since,
+    get_room_messages,
+    parse_client_iso_datetime,
+)
 
 # Rolling window for lobby "heat" (message count) and top-N slice; keep in sync with docs.
 SOCIAL_LOBBY_HEAT_HOURS = 24
@@ -103,6 +107,10 @@ async def get_room_message_history(
     room_id: str,
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
+    since: str | None = Query(
+        default=None,
+        description="ISO8601 inclusive lower bound on sent_at (e.g. viewer local midnight).",
+    ),
 ) -> JSONResponse:
     """Return persisted messages for a room, oldest first.
 
@@ -126,5 +134,8 @@ async def get_room_message_history(
                 status_code=403,
                 content={"detail": "room_not_observable", "room_id": room_id},
             )
-    messages = await get_room_messages(session_factory, room_id, limit=limit)
+    since_dt = parse_client_iso_datetime(since) if since else None
+    messages = await get_room_messages(
+        session_factory, room_id, limit=limit, since=since_dt
+    )
     return JSONResponse({"room_id": room_id, "messages": messages})

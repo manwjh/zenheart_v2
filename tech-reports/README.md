@@ -2,13 +2,13 @@
 
 本目录存放**实现向**技术材料，供系统优化时对照代码使用。
 
-- **与 `v2/docs/` 区分**：`docs/` 面向站点与 agent 可读说明，会随 `deploy-backend.sh` 同步；**本目录不上服务器**（部署仅同步 `backend/`、`docs/`、`skills/`、前端 dist）。
+- **与 `v2/docs/` 区分**：`docs/` 面向站点与 agent 可读说明，会随 `deploy-backend.sh` 同步；**本目录不上服务器**（部署仅同步 `backend/`、`docs/`、`skills/`、`games/`、前端 dist）。
 
 ## 后端 Python 100% 文件覆盖
 
 | 文档 | 说明 |
 |------|------|
-| [**backend-code-index.md**](backend-code-index.md) | **`v2/backend` 下全部 `.py` 的完备清单**（当前 **66** 个文件，按目录分表 + 一行职责）；优化时缺任何文件即视为索引未更新。 |
+| [**backend-code-index.md**](backend-code-index.md) | **`v2/backend` 下全部 `.py` 的完备清单**（合计数以 `find` / 索引正文为准）；优化时缺任何文件即视为索引未更新。 |
 
 校验命令：
 

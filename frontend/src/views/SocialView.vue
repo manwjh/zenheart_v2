@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import AgentFeatureIntro from "../components/AgentFeatureIntro.vue";
 import { formatTextWithMentionSpansWithHints, type MentionHint } from "../utils/mentions";
 
@@ -122,13 +122,51 @@ const observeMembers = ref<RoomMember[]>([]);
 const observeMessages = ref<ChatMessage[]>([]);
 const observeConnected = ref(false);
 const observeError = ref<string | null>(null);
-const anonymousDraft = ref("");
-const sendingAnonymous = ref(false);
-const anonymousInputRef = ref<HTMLInputElement | null>(null);
+const topicDraft = ref("");
+const sendingTopicSubmission = ref(false);
+const topicInputRef = ref<HTMLInputElement | null>(null);
 /** After auth_observe, server must receive subscribe on next frame */
 const pendingObserveSubscribeRoomId = ref<string | null>(null);
 let observeWs: WebSocket | null = null;
 let msgSeq = 0;
+
+/** Viewer-local calendar day start as ISO string — sent to the server so history is scoped to “today” for this browser. */
+function localCalendarDayStartIso(): string {
+  const n = new Date();
+  const start = new Date(n.getFullYear(), n.getMonth(), n.getDate(), 0, 0, 0, 0);
+  return start.toISOString();
+}
+
+function observeSubscribePayload(roomId: string): Record<string, string> {
+  return {
+    type: "subscribe",
+    room_id: roomId,
+    messages_since: localCalendarDayStartIso(),
+  };
+}
+
+/** Keep UI aligned with the viewer’s local date when the panel stays open past midnight. */
+const observeLocalDayTick = ref(0);
+let observeLocalDayTimer: ReturnType<typeof setInterval> | null = null;
+
+function isChatMessageInViewerLocalToday(sentIso: string, refDate: Date): boolean {
+  const d = new Date(sentIso);
+  if (isNaN(d.getTime())) return true;
+  return (
+    d.getFullYear() === refDate.getFullYear() &&
+    d.getMonth() === refDate.getMonth() &&
+    d.getDate() === refDate.getDate()
+  );
+}
+
+const observeMessagesToday = computed(() => {
+  observeLocalDayTick.value;
+  const refDate = new Date();
+  return observeMessages.value.filter((m) => {
+    if (m.system) return true;
+    return isChatMessageInViewerLocalToday(m.sent_at, refDate);
+  });
+});
 
 function openRoom(room: RoomSummary) {
   observingRoom.value = room;
@@ -142,7 +180,7 @@ function openRoom(room: RoomSummary) {
 function closeRoom() {
   disconnectObserver();
   observingRoom.value = null;
-  anonymousDraft.value = "";
+  topicDraft.value = "";
 }
 
 function connectObserver(roomId: string) {
@@ -159,7 +197,7 @@ function connectObserver(roomId: string) {
       pendingObserveSubscribeRoomId.value = roomId;
       ws.send(JSON.stringify({ type: "auth_observe", token: t }));
     } else {
-      ws.send(JSON.stringify({ type: "subscribe", room_id: roomId }));
+      ws.send(JSON.stringify(observeSubscribePayload(roomId)));
     }
   };
 
@@ -197,111 +235,43 @@ function disconnectObserver() {
     observeWs = null;
   }
   observeConnected.value = false;
-  sendingAnonymous.value = false;
+  sendingTopicSubmission.value = false;
 }
 
-function sendAnonymousMessage() {
+function submitVisitorTopicSuggestion() {
   const room = observingRoom.value;
   const ws = observeWs;
-  const text = anonymousDraft.value.trim();
+  const text = topicDraft.value.trim();
   if (!room || !ws || ws.readyState !== WebSocket.OPEN) {
     observeError.value = "Not connected.";
     return;
   }
   if (!text) return;
   if (room.is_private) {
-    observeError.value = "Anonymous input is disabled in private rooms.";
+    observeError.value = "Topic suggestions are disabled for private rooms.";
     return;
   }
-  sendingAnonymous.value = true;
+  sendingTopicSubmission.value = true;
+  observeError.value = null;
   try {
-    ws.send(JSON.stringify({
-      type: "send_message_anonymous",
-      room_id: room.room_id,
-      text,
-    }));
-    anonymousDraft.value = "";
+    ws.send(
+      JSON.stringify({
+        type: "submit_topic_suggestion",
+        room_id: room.room_id,
+        text,
+      }),
+    );
+    topicDraft.value = "";
   } catch {
     observeError.value = "Failed to send.";
-  } finally {
-    sendingAnonymous.value = false;
+    sendingTopicSubmission.value = false;
   }
 }
 
-function activeMentionQuery(text: string): string | null {
-  const at = text.lastIndexOf("@");
-  if (at < 0) return null;
-  const suffix = text.slice(at + 1);
-  if (suffix.includes(" ") || suffix.includes("\n") || suffix.includes("\t")) {
-    return null;
-  }
-  return suffix;
-}
-
-const mentionCandidates = computed(() => {
-  const q = activeMentionQuery(anonymousDraft.value);
-  if (q === null) return [] as RoomMember[];
-  const query = q.trim().toLowerCase();
-  const unique = new Map<string, RoomMember>();
-  for (const m of observeMembers.value) {
-    if (!m.agent_name) continue;
-    if (!unique.has(m.agent_id)) unique.set(m.agent_id, m);
-  }
-  const all = Array.from(unique.values());
-  if (!query) return all.slice(0, 8);
-  return all
-    .filter((m) => m.agent_name.toLowerCase().includes(query))
-    .slice(0, 8);
-});
-
-const showMentionCandidates = computed(() => mentionCandidates.value.length > 0);
-const mentionActiveIndex = ref(0);
-
-watch(showMentionCandidates, (show) => {
-  if (!show) mentionActiveIndex.value = 0;
-});
-
-watch(mentionCandidates, (list) => {
-  if (list.length === 0) {
-    mentionActiveIndex.value = 0;
-    return;
-  }
-  if (mentionActiveIndex.value >= list.length) {
-    mentionActiveIndex.value = list.length - 1;
-  }
-});
-
-function applyMention(agentName: string) {
-  const text = anonymousDraft.value;
-  const at = text.lastIndexOf("@");
-  if (at < 0) return;
-  anonymousDraft.value = `${text.slice(0, at + 1)}${agentName} `;
-  void nextTick(() => {
-    anonymousInputRef.value?.focus();
-  });
-}
-
-function onComposerKeydown(ev: KeyboardEvent) {
-  const hasSuggestions = showMentionCandidates.value;
-  if (ev.key === "ArrowDown" && hasSuggestions) {
-    ev.preventDefault();
-    mentionActiveIndex.value = (mentionActiveIndex.value + 1) % mentionCandidates.value.length;
-    return;
-  }
-  if (ev.key === "ArrowUp" && hasSuggestions) {
-    ev.preventDefault();
-    mentionActiveIndex.value =
-      (mentionActiveIndex.value - 1 + mentionCandidates.value.length) % mentionCandidates.value.length;
-    return;
-  }
+function onTopicComposerKeydown(ev: KeyboardEvent) {
   if (ev.key === "Enter") {
     ev.preventDefault();
-    if (hasSuggestions) {
-      const picked = mentionCandidates.value[mentionActiveIndex.value];
-      if (picked) applyMention(picked.agent_name);
-      return;
-    }
-    sendAnonymousMessage();
+    submitVisitorTopicSuggestion();
   }
 }
 
@@ -319,7 +289,7 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     const rid = pendingObserveSubscribeRoomId.value;
     pendingObserveSubscribeRoomId.value = null;
     if (rid && observeWs && observeWs.readyState === WebSocket.OPEN) {
-      observeWs.send(JSON.stringify({ type: "subscribe", room_id: rid }));
+      observeWs.send(JSON.stringify(observeSubscribePayload(rid)));
     }
     return;
   }
@@ -327,7 +297,7 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     const rid = pendingObserveSubscribeRoomId.value;
     pendingObserveSubscribeRoomId.value = null;
     if (rid && observeWs && observeWs.readyState === WebSocket.OPEN) {
-      observeWs.send(JSON.stringify({ type: "subscribe", room_id: rid }));
+      observeWs.send(JSON.stringify(observeSubscribePayload(rid)));
     }
     return;
   }
@@ -404,7 +374,13 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     if (dissolvedId) {
       rooms.value = rooms.value.filter((r) => r.room_id !== dissolvedId);
     }
+  } else if (type === "submit_topic_suggestion_ok") {
+    sendingTopicSubmission.value = false;
+    pushSystemMessage(
+      "Topic suggestion queued for the room owner (not posted to agent chat).",
+    );
   } else if (type === "error") {
+    sendingTopicSubmission.value = false;
     const r = (frame.reason as string) || "unknown";
     observeError.value = r === "observe_auth_required" ? "Server requires observe token or agent auth." : r;
   }
@@ -446,6 +422,16 @@ watch(
   observingRoom,
   (room) => {
     document.body.style.overflow = room ? "hidden" : "";
+    if (observeLocalDayTimer) {
+      clearInterval(observeLocalDayTimer);
+      observeLocalDayTimer = null;
+    }
+    observeLocalDayTick.value++;
+    if (room) {
+      observeLocalDayTimer = setInterval(() => {
+        observeLocalDayTick.value++;
+      }, 60_000);
+    }
   },
   { flush: "sync" },
 );
@@ -453,6 +439,10 @@ watch(
 onUnmounted(() => {
   document.body.style.overflow = "";
   if (pollInterval) clearInterval(pollInterval);
+  if (observeLocalDayTimer) {
+    clearInterval(observeLocalDayTimer);
+    observeLocalDayTimer = null;
+  }
   disconnectObserver();
 });
 
@@ -569,7 +559,7 @@ function messageMentionHtml(msg: ChatMessage): string {
         <!-- message feed -->
         <div id="observe-feed" class="observe-feed">
           <div
-            v-for="msg in observeMessages"
+            v-for="msg in observeMessagesToday"
             :key="msg.id"
             class="msg-row"
             :class="{ 'msg-row--system': msg.system }"
@@ -589,28 +579,25 @@ function messageMentionHtml(msg: ChatMessage): string {
         </div>
         <div v-if="!observingRoom?.is_private" class="observe-composer">
           <input
-            ref="anonymousInputRef"
-            v-model="anonymousDraft"
+            ref="topicInputRef"
+            v-model="topicDraft"
             class="observe-input"
             type="text"
             maxlength="4000"
-            placeholder="Say something as Anonymous..."
-            @keydown="onComposerKeydown"
+            placeholder="Suggest a topic for the room owner (not posted to agent chat)"
+            title="Visitor topic queue for the creator"
+            @keydown="onTopicComposerKeydown"
           />
-          <div v-if="showMentionCandidates" class="mention-suggest">
-            <button
-              v-for="m in mentionCandidates"
-              :key="m.agent_id"
-              class="mention-suggest-item"
-              :class="{ 'mention-suggest-item--active': mentionCandidates[mentionActiveIndex]?.agent_id === m.agent_id }"
-              type="button"
-              @click="applyMention(m.agent_name)"
-            >
-              {{ m.agent_name }}
-            </button>
-          </div>
-          <button class="watch-btn" :disabled="!observeConnected || sendingAnonymous || !anonymousDraft.trim()" @click="sendAnonymousMessage">
-            Send
+          <button
+            class="watch-btn"
+            :disabled="!observeConnected || sendingTopicSubmission || !topicDraft.trim()"
+            type="button"
+            title="Submit topic"
+            @click="submitVisitorTopicSuggestion"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
           </button>
         </div>
       </div>
@@ -1230,7 +1217,9 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .observe-panel {
-  width: min(540px, 100%);
+  /* Wide: half of viewport; narrow: 100% via media query below */
+  width: min(50vw, 100%);
+  max-width: 100%;
   background: var(--bg);
   display: flex;
   flex-direction: column;

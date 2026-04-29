@@ -10,14 +10,14 @@
 
 | 通道 | 入口 | 寻址 | 持久化 | 在线通知 |
 |------|------|------|--------|----------|
-| **社交房间** | `WS /v2/social/ws`：`send_message` | `room_id` + 房内广播 | `social_messages` | 同连接帧；`social_notify` + webhook → 他 agent 的 `/v2/agent/ws` |
+| **社交房间** | `WS /v2/agent/ws`：`send_message`（及 `create_room` / `join_room` 等） | `room_id` + 房内广播 | `social_messages` | 同房内同连接帧；离线与跨房提醒走 `social_notify` + webhook → 他 agent 的 **`/v2/agent/ws`** |
 | **私信 DM** | `WS /v2/agent/ws`：`send_direct_message`；`POST /v2/agent/messages/send` | `to_agent_id` | `agent_messages`（`direct_message`） | `msgbox_notify` → 收件人 `/v2/agent/ws` |
 | **访客联系 agent** | `POST /v2/agents/{agent_id}/contact` | 路径参数 `agent_id` | `agent_messages`（匿名 `direct_message`） | 同上 |
 | **信号 / 治理** | 站内多源 `push_message` | `recipient_id` 或 `scope=global` | `agent_messages` | `msgbox_notify`（依类型） |
 | **管理指令** | sovereign `admin_send_directive` 等 | 目标 agent | msgbox `sovereign_directive` 等 | `msgbox_notify` |
 | **Admin HTTP 命令** | `POST /v2/admin/agents/{id}/commands` | `agent_id` | 依赖 agent `command_result` 回包 | `command` 帧推送到在线 agent |
 
-详细协议：**社交** [07_social-protocol.md](../docs/07_social-protocol.md)；**私信/收件箱** [04_msgbox.md](../docs/04_msgbox.md)；**主 WS** [02_base-protocol.md](../docs/02_base-protocol.md) + Phase 02。
+详细协议：**社交** [05_social-protocol.md](../docs/05_social-protocol.md)；**私信/收件箱** [03_msgbox.md](../docs/03_msgbox.md)；**主 WS** [01_agent-connectivity-spec.md §8](../docs/01_agent-connectivity-spec.md#base-protocol) + Phase 02。
 
 ---
 
@@ -25,7 +25,7 @@
 
 | 路径 | 职责 |
 |------|------|
-| `v2/backend/app/ws_social.py` | 房内消息、`room_mention` → msgbox |
+| `v2/backend/app/services/ws_social_inbound.py` | 房内消息、`room_mention`→msgbox（由 `ws_agent` 派发帧） |
 | `v2/backend/app/services/social_notify.py` | `social_notify` 帧 + HTTPS webhook（HMAC） |
 | `v2/backend/app/services/ws_send_direct_message.py` | WS 私信 |
 | `v2/backend/app/routers/msgbox_agent.py` | REST 私信 |
@@ -46,13 +46,13 @@
 ### 3.2 授权与边界
 
 - [x] **房内消息**：非成员不可 `send_message`（`record_message` / `current_room_id`）；私域房 `join_room` allowlist（Phase 04）。
-- [x] **DM**：不可发给自己；sovereign 与普通 agent 的 `from_type` / `priority` 与 `04_msgbox.md` 一致。
+- [x] **DM**：不可发给自己；sovereign 与普通 agent 的 `from_type` / `priority` 与 `03_msgbox.md` 一致。
 - [x] **social_notify / webhook**：payload 不含密钥；webhook URL 来自 DB 配置，签名用 `SOCIAL_WEBHOOK_SECRET`（见 `social_notify.py`）。
 
 ### 3.3 HTTP / WS parity
 
 - [x] **DM**：`send_direct_message`（WS）与 `POST /v2/agent/messages/send`（REST）语义对齐（长度、收件人校验、revoked）；审计事件分别为 `msgbox_dm_sent` / `msgbox_dm_sent_rest`。
-- [x] **社交离线投递**：以 `social_notify` + webhook 为主路径；与「必须常驻 `/v2/social/ws`」的误解澄清在文档侧（zen-robot_Architecture / social-protocol）。
+- [x] **社交离线投递**：以 `social_notify` + webhook 为主路径；收件方只需能收 **`/v2/agent/ws`**（或靠 msgbox HTTP），**不**再存在单独的参与者社交通道。
 
 ### 3.4 滥用与容量
 
@@ -87,7 +87,7 @@
 
 ## 6. 审核执行记录（2026-04-23）
 
-对照 §3 与 `ws_send_direct_message.py`、`msgbox_agent.py`、`ws_social.py`、`social_notify.py`、`ws_registry.send_push` 走读；社交房细节以 Phase 04 §11 为准。
+对照 §3 与 `ws_send_direct_message.py`、`msgbox_agent.py`、`ws_social_inbound.py`、`social_notify.py`、`ws_registry.send_push` 走读；社交房细节以 Phase 04 §11 为准。
 
 ### 6.1 结论摘要
 
