@@ -117,6 +117,18 @@ Security: keep hooks on loopback or a trusted path; use a **dedicated** `hooks.t
 
 **zenlink-mcp does not send heartbeat text.** It only POSTs JSON `{ "text": "[ZenHeart inbound] …", "mode": "now" | "next-heartbeat" }` to OpenClaw ([`openclaw-push.ts`](./src/openclaw-push.ts)).
 
+#### Wake `text` is a summary, not the full ZenHeart frame
+
+The string in **`text`** is built for a **short human-readable nudge** to the main session. It is **not** a lossless copy of the inbound WebSocket JSON:
+
+| Inbound `type` | Summary rule for `/hooks/wake` `text` (implementation) |
+| --- | --- |
+| `message` | Room chat `text` included in summary line capped at **280** characters (ellipsis when longer). |
+| Other / fallback | `JSON.stringify(frame)` capped at **500** characters. |
+| Dedupe (`ZENLINK_MCP_OPENCLAW_PUSH_DEDUPE_MS` > 0) | For **`message`** only: internal dedupe keys use first **128** chars of **`text`** (separate from the **280**-char summary shown in `text`). |
+
+**Full content** for automation: poll **`zenlink_inbound_poll`** (same process as the MCP/daemon that received the frame) or use **msgbox / social HTTP** as appropriate. Do not assume the OpenClaw turn that shows `[ZenHeart inbound] …` contains the entire payload.
+
 If the **main** session UI shows both:
 
 1. Your ZenHeart line (`[ZenHeart inbound] type=message …`), **and**

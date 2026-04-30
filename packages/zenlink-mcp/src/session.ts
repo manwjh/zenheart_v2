@@ -11,6 +11,10 @@ import {
   describeOpenClawPushPublic,
   type OpenClawPushRuntimeConfig,
 } from "./openclaw-push.js";
+import {
+  ZENHEART_WORKSPACE_CONTEXT_REMINDER,
+  getEffectiveSocialRules,
+} from "./social-context.js";
 
 function readWsWaitTimeoutMs(): number {
   const raw = process.env["ZENLINK_MCP_WS_TIMEOUT_MS"];
@@ -119,6 +123,20 @@ export class ZenlinkSession {
   /** Increments whenever this process receives `type: superseded` on the WS (another connection took this agent slot). */
   private wsSupersededTotal = 0;
 
+  /**
+   * After `room_joined` / `room_created` (incl. reconnect restore), from server frames; includes
+   * `creator_agent_id` when the backend sends it. Cleared on leave / disconnect.
+   */
+  private lastRoomSnapshot: {
+    room_id: string;
+    name: string | null;
+    creator_agent_id: string | null;
+    creator_agent_name: string | null;
+  } | null = null;
+
+  /** Rooms created in this process when `room_created` was seen; used if server omits `creator_agent_id` on old builds. */
+  private readonly selfCreatedRoomIds = new Set<string>();
+
   constructor() {
     this.wsWaitTimeoutMs = readWsWaitTimeoutMs();
     this.inboundQueueMax = readInboundQueueMax();
@@ -187,6 +205,114 @@ export class ZenlinkSession {
     this.managed.startLongLived();
   }
 
+  /**
+   * Effective social guidance + `agent_id` + current room and whether this identity is the room **creator** (from last
+   * `room_joined` / `room_created` in this process). Call when workspace context and ZenHeart role might be confused.
+   */
+  socialContext(): {
+    workspace_context_reminder: string;
+    social_rules: string;
+    social_rules_source: ReturnType<typeof getEffectiveSocialRules>["source"];
+    agent: { agent_id: string; host: string };
+    room: {
+      current_room_id: string;
+      room_name: string | null;
+      creator_agent_id: string | null;
+      creator_agent_name: string | null;
+      is_room_creator: boolean | null;
+    } | null;
+    note: string | null;
+  } {
+    const rules = getEffectiveSocialRules();
+    const agentId = this.client.agentId;
+    const roomId = this.lastSocialRoomId;
+    const snap = this.lastRoomSnapshot;
+    let isRoomCreator: boolean | null = null;
+    if (roomId && snap?.room_id === roomId) {
+      if (snap.creator_agent_id && snap.creator_agent_id.length > 0) {
+        isRoomCreator = snap.creator_agent_id === agentId;
+      } else if (this.selfCreatedRoomIds.has(roomId)) {
+        isRoomCreator = true;
+      }
+    }
+    const needNote =
+      roomId !== null &&
+      isRoomCreator === null &&
+      (snap === null || snap.creator_agent_id == null);
+
+    const parts: string[] = [];
+    if (needNote) {
+      parts.push(
+        "is_room_creator unknown: join or create a room so room_joined/room_created can be processed; ensure ZenHeart backend exposes creator_agent_id (current servers include it).",
+      );
+    }
+    if (rules.rules_file_missing) {
+      parts.push(
+        "ZENLINK_MCP_SOCIAL_RULES_FILE is set but the file is missing; effective social_rules text is env/default until created. Use zenlink_social_rules_set after enabling ZENLINK_MCP_SOCIAL_RULES_WRITE, or zenlink_social_rules_get to inspect.",
+      );
+    }
+
+    return {
+      workspace_context_reminder: ZENHEART_WORKSPACE_CONTEXT_REMINDER,
+      social_rules: rules.text,
+      social_rules_source: rules.source,
+      agent: { agent_id: agentId, host: this.client.host },
+      room:
+        roomId === null
+          ? null
+          : {
+              current_room_id: roomId,
+              room_name: snap?.name ?? null,
+              creator_agent_id: snap?.creator_agent_id ?? null,
+              creator_agent_name: snap?.creator_agent_name ?? null,
+              is_room_creator: isRoomCreator,
+            },
+      note: parts.length > 0 ? parts.join(" ") : null,
+    };
+  }
+
+  private static strField(f: JsonFrame, k: string): string | undefined {
+    const v = f[k];
+    return typeof v === "string" ? v : undefined;
+  }
+
+  private applyRoomSnapshotFromFrame(frame: JsonFrame): void {
+    const t = frame.type;
+    if (t !== "room_joined" && t !== "room_created") {
+      return;
+    }
+    const room_id = ZenlinkSession.roomIdFromFrame(frame);
+    if (!room_id) {
+      return;
+    }
+    const nameRaw = ZenlinkSession.strField(frame, "name");
+    const name = nameRaw && nameRaw.length > 0 ? nameRaw : null;
+    const rawCr = ZenlinkSession.strField(frame, "creator_agent_id");
+    const creatorId =
+      rawCr && rawCr.length > 0
+        ? rawCr
+        : t === "room_created"
+          ? this.client.agentId
+          : undefined;
+    const cname = ZenlinkSession.strField(frame, "creator_agent_name");
+    this.lastRoomSnapshot = {
+      room_id,
+      name,
+      creator_agent_id: creatorId ?? null,
+      creator_agent_name: cname && cname.length > 0 ? cname : null,
+    };
+    if (t === "room_created") {
+      this.selfCreatedRoomIds.add(room_id);
+    }
+  }
+
+  private clearRoomSocialState(): void {
+    this.lastSocialRoomId = null;
+    this.lastRoomSnapshot = null;
+    this.roomRestorePending = false;
+    this.selfCreatedRoomIds.clear();
+  }
+
   private onFrame(frame: JsonFrame): void {
     const p = this.pending;
     const t = frame.type;
@@ -210,8 +336,25 @@ export class ZenlinkSession {
         return;
       }
       if (p.accept(frame)) {
+        if (t === "room_joined" || t === "room_created") {
+          this.applyRoomSnapshotFromFrame(frame);
+        } else if (t === "room_left") {
+          const rid = ZenlinkSession.roomIdFromFrame(frame);
+          if (rid && rid === this.lastSocialRoomId) {
+            this.clearRoomSocialState();
+          }
+        }
         p.resolve(frame);
         return;
+      }
+    }
+
+    if (t === "room_joined" || t === "room_created") {
+      this.applyRoomSnapshotFromFrame(frame);
+    } else if (t === "room_left") {
+      const rid = ZenlinkSession.roomIdFromFrame(frame);
+      if (rid && rid === this.lastSocialRoomId) {
+        this.clearRoomSocialState();
       }
     }
 
@@ -351,8 +494,7 @@ export class ZenlinkSession {
     return this.withLock(async () => {
       this.cancelWait();
       this.clearInboundQueue();
-      this.lastSocialRoomId = null;
-      this.roomRestorePending = false;
+      this.clearRoomSocialState();
       this.managed.disconnect();
     });
   }
@@ -424,8 +566,7 @@ export class ZenlinkSession {
       () => this.client.sendLeaveRoom(),
       { skipRoomRestore: true },
     );
-    this.lastSocialRoomId = null;
-    this.roomRestorePending = false;
+    this.clearRoomSocialState();
     return frame;
   }
 

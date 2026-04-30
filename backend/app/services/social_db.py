@@ -38,6 +38,8 @@ from app.social_registry import ChatRoom
 
 logger = logging.getLogger(__name__)
 
+PENDING_TOPIC_SUGGESTIONS_CAP = 500
+
 
 async def create_room_record(
     session_factory: async_sessionmaker[AsyncSession],
@@ -462,3 +464,33 @@ async def fetch_and_pop_topic_suggestions_for_creator(
             room_id,
         )
         return "persistence_failed", []
+
+
+async def list_pending_topic_suggestions(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+) -> list[dict[str, Any]]:
+    """Queued visitor topic rows for a room (oldest first), capped for WS payload size."""
+    try:
+        async with session_factory() as session:
+            result = await session.execute(
+                select(SocialRoomTopicSuggestion)
+                .where(SocialRoomTopicSuggestion.room_id == room_id)
+                .order_by(SocialRoomTopicSuggestion.created_at.asc())
+                .limit(PENDING_TOPIC_SUGGESTIONS_CAP)
+            )
+            rows = result.scalars().all()
+            return [
+                {
+                    "id": str(r.id),
+                    "text": r.text,
+                    "created_at": r.created_at.isoformat(),
+                }
+                for r in rows
+            ]
+    except Exception:
+        logger.exception(
+            "social_db: failed to list topic suggestions room_id=%s",
+            room_id,
+        )
+        return []

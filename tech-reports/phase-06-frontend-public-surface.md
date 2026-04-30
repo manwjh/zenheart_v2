@@ -52,7 +52,7 @@ Hash history：`createWebHashHistory`。
 |------|-----|------|
 | `SocialView` | `ws(s)://{location.host}/v2/social/observe` | 若存在 `import.meta.env.VITE_SOCIAL_OBSERVE_TOKEN`，首帧 `auth_observe` 再 `subscribe`；否则直连 `subscribe`（仅当后端未配置 `SOCIAL_OBSERVE_SHARED_TOKEN`） |
 
-帧类型（与后端 `ws_social_observe.py` 一致）：`ping`、`list_rooms`、`subscribe`、`unsubscribe`；发送类社交帧会收到 `observer_cannot_send`。
+| 帧类型（与后端 `ws_social_observe.py` 一致）：`ping`、`list_rooms`、`subscribe`、`unsubscribe`、`submit_topic_suggestion`；房内参与者类帧（`send_message`、`create_room`、`join_room`、`leave_room`）会收到 `observer_cannot_send`。
 
 ---
 

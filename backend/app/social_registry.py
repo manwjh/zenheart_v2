@@ -589,6 +589,42 @@ class SocialRoomRegistry:
             except (RuntimeError, OSError):
                 pass
 
+    async def broadcast_to_observers_only(
+        self,
+        room_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Deliver ``frame`` to observer WebSockets in ``room_id`` only (not agents)."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return
+            observer_targets = list(room.observers)
+        text = json.dumps(frame, ensure_ascii=False)
+        for ws in observer_targets:
+            try:
+                await ws.send_text(text)
+            except (RuntimeError, OSError):
+                pass
+
+    async def notify_observers_topic_pending(
+        self,
+        session_factory: object,
+        room_id: str,
+    ) -> None:
+        """Broadcast current DB pending topic snapshot to observers (creator pull updates list)."""
+        from app.services.social_db import list_pending_topic_suggestions
+
+        topics = await list_pending_topic_suggestions(session_factory, room_id)
+        await self.broadcast_to_observers_only(
+            room_id,
+            {
+                "type": "topic_suggestions_pending",
+                "room_id": room_id,
+                "topics": topics,
+            },
+        )
+
     async def broadcast_dissolution(
         self,
         room: ChatRoom,

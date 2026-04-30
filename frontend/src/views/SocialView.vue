@@ -43,6 +43,27 @@ type ChatMessage = {
   system?: boolean;
 };
 
+type PendingTopicSuggestion = {
+  id: string;
+  text: string;
+  created_at: string;
+};
+
+function normalizePendingTopicSuggestions(raw: unknown): PendingTopicSuggestion[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PendingTopicSuggestion[] = [];
+  for (const x of raw) {
+    if (!x || typeof x !== "object") continue;
+    const o = x as Record<string, unknown>;
+    const id = typeof o.id === "string" ? o.id : "";
+    const text = typeof o.text === "string" ? o.text : "";
+    const created_at = typeof o.created_at === "string" ? o.created_at : "";
+    if (!id || !text) continue;
+    out.push({ id, text, created_at });
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ history state
 
 type HistoryRoom = {
@@ -125,6 +146,10 @@ const observeError = ref<string | null>(null);
 const topicDraft = ref("");
 const sendingTopicSubmission = ref(false);
 const topicInputRef = ref<HTMLInputElement | null>(null);
+/** Server snapshot: rows not yet pulled by the room owner (all visitors, same room). */
+const observePendingTopics = ref<PendingTopicSuggestion[]>([]);
+/** Visitor topic queue list: collapsed by default to save vertical space. */
+const observeTopicQueueExpanded = ref(false);
 /** After auth_observe, server must receive subscribe on next frame */
 const pendingObserveSubscribeRoomId = ref<string | null>(null);
 let observeWs: WebSocket | null = null;
@@ -172,6 +197,8 @@ function openRoom(room: RoomSummary) {
   observingRoom.value = room;
   observeMembers.value = [];
   observeMessages.value = [];
+  observePendingTopics.value = [];
+  observeTopicQueueExpanded.value = false;
   observeConnected.value = false;
   observeError.value = null;
   connectObserver(room.room_id);
@@ -236,6 +263,7 @@ function disconnectObserver() {
   }
   observeConnected.value = false;
   sendingTopicSubmission.value = false;
+  observePendingTopics.value = [];
 }
 
 function submitVisitorTopicSuggestion() {
@@ -333,6 +361,7 @@ function handleObserveFrame(frame: Record<string, unknown>) {
       }));
       scrollToBottom();
     }
+    observePendingTopics.value = normalizePendingTopicSuggestions(frame.pending_topic_suggestions);
     pushSystemMessage(`You are now watching "${(frame.topic as string) || (frame.name as string)}".`);
   } else if (type === "subscribe_fail") {
     const r = (frame.reason as string) || "";
@@ -374,11 +403,11 @@ function handleObserveFrame(frame: Record<string, unknown>) {
     if (dissolvedId) {
       rooms.value = rooms.value.filter((r) => r.room_id !== dissolvedId);
     }
+    observePendingTopics.value = [];
+  } else if (type === "topic_suggestions_pending") {
+    observePendingTopics.value = normalizePendingTopicSuggestions(frame.topics);
   } else if (type === "submit_topic_suggestion_ok") {
     sendingTopicSubmission.value = false;
-    pushSystemMessage(
-      "Topic suggestion queued for the room owner (not posted to agent chat).",
-    );
   } else if (type === "error") {
     sendingTopicSubmission.value = false;
     const r = (frame.reason as string) || "unknown";
@@ -555,6 +584,48 @@ function messageMentionHtml(msg: ChatMessage): string {
 
         <!-- error -->
         <p v-if="observeError" class="obs-error">{{ observeError }}</p>
+
+        <!-- pending topic suggestions (until room owner pulls) -->
+        <div
+          v-if="!observingRoom?.is_private && observePendingTopics.length > 0"
+          class="observe-topic-queue"
+        >
+          <button
+            type="button"
+            class="observe-topic-queue__toggle"
+            :aria-expanded="observeTopicQueueExpanded"
+            aria-controls="observe-topic-queue-panel"
+            @click="observeTopicQueueExpanded = !observeTopicQueueExpanded"
+          >
+            <span
+              class="observe-topic-queue__chevron"
+              :class="{ 'observe-topic-queue__chevron--open': observeTopicQueueExpanded }"
+              aria-hidden="true"
+            />
+            <span class="observe-topic-queue__label">Suggestions waiting for the room owner</span>
+            <span class="observe-topic-queue__badge">{{ observePendingTopics.length }}</span>
+          </button>
+          <div
+            id="observe-topic-queue-panel"
+            v-show="observeTopicQueueExpanded"
+            class="observe-topic-queue__panel"
+          >
+            <ul class="observe-topic-queue__list">
+              <li
+                v-for="t in observePendingTopics"
+                :key="t.id"
+                class="observe-topic-queue__item"
+              >
+                <span class="observe-topic-queue__text">{{ t.text }}</span>
+                <time
+                  class="observe-topic-queue__time"
+                  :datetime="t.created_at"
+                >{{ formatTime(t.created_at) }}</time>
+              </li>
+            </ul>
+            <p class="observe-topic-queue__hint">These disappear after the owner pulls them (not agent chat).</p>
+          </div>
+        </div>
 
         <!-- message feed -->
         <div id="observe-feed" class="observe-feed">
@@ -1416,6 +1487,109 @@ function messageMentionHtml(msg: ChatMessage): string {
   font-size: 0.85rem;
   margin: 0;
   flex-shrink: 0;
+}
+
+.observe-topic-queue {
+  flex-shrink: 0;
+  padding: 0.5rem 1.1rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.observe-topic-queue__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.2rem 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.observe-topic-queue__toggle:hover {
+  opacity: 0.92;
+}
+
+.observe-topic-queue__toggle:focus-visible {
+  outline: 2px solid var(--accent, #6b8f71);
+  outline-offset: 2px;
+}
+
+.observe-topic-queue__chevron {
+  flex-shrink: 0;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  opacity: 0.65;
+  margin-top: -0.15rem;
+  transition: transform 0.15s ease;
+}
+
+.observe-topic-queue__chevron--open {
+  transform: rotate(45deg);
+  margin-top: 0.1rem;
+}
+
+.observe-topic-queue__label {
+  flex: 1;
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.observe-topic-queue__badge {
+  flex-shrink: 0;
+  min-width: 1.25rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1.2;
+  background: var(--border);
+  opacity: 0.9;
+}
+
+.observe-topic-queue__panel {
+  overflow: hidden;
+}
+
+.observe-topic-queue__list {
+  margin: 0.35rem 0 0;
+  padding: 0 0 0 1rem;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.observe-topic-queue__item {
+  margin-bottom: 0.35rem;
+  list-style: disc;
+}
+
+.observe-topic-queue__text {
+  word-break: break-word;
+}
+
+.observe-topic-queue__time {
+  display: block;
+  font-size: 0.72rem;
+  opacity: 0.55;
+  margin-top: 0.1rem;
+}
+
+.observe-topic-queue__hint {
+  margin: 0.45rem 0 0;
+  font-size: 0.72rem;
+  opacity: 0.6;
 }
 
 /* ---------------------------------------------------------------- message feed */

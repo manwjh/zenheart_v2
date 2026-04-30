@@ -22,6 +22,10 @@ import {
   packRouterContext,
 } from "./router-runtime.js";
 import type { ZenlinkSession } from "./session.js";
+import {
+  getSocialRulesSnapshotForTools,
+  writeSocialRulesFile,
+} from "./social-context.js";
 
 export function okJson(data: unknown): CallToolResult {
   return {
@@ -132,6 +136,21 @@ export async function dispatchZenlinkTool(
 
     case "zenlink_status":
       return okJson(session.status());
+
+    case "zenlink_social_context":
+      return okJson(session.socialContext());
+
+    case "zenlink_social_rules_get":
+      return okJson(getSocialRulesSnapshotForTools());
+
+    case "zenlink_social_rules_set": {
+      const { body } = z
+        .object({
+          body: z.string().min(1).max(32_000),
+        })
+        .parse(rawArgs ?? {});
+      return toolTry(async () => writeSocialRulesFile(body));
+    }
 
     case "zenlink_inbound_poll": {
       const schema = z.object({

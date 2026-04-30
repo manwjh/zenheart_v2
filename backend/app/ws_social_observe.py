@@ -25,6 +25,7 @@ from app.services.permission_service import get_limit_value
 from app.services.display_name_resolve import enrich_member_dicts_live, enrich_social_lobby_snapshots
 from app.services.social_db import (
     get_room_messages,
+    list_pending_topic_suggestions,
     parse_client_iso_datetime,
     record_room_topic_suggestion,
 )
@@ -243,6 +244,9 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     idle_dissolves = None
                 else:
                     idle_dissolves = (anchor + social.idle_after).isoformat()
+                pending_topic_suggestions = await list_pending_topic_suggestions(
+                    session_factory, room.room_id
+                )
                 await websocket.send_text(json.dumps({
                     "type": "subscribe_ok",
                     "room_id": room.room_id,
@@ -257,6 +261,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     "recent_messages": recent_messages,
                     "is_private": room.is_private,
                     "observable": room.observable,
+                    "pending_topic_suggestions": pending_topic_suggestions,
                 }, ensure_ascii=False))
 
             elif msg_type == "unsubscribe":
@@ -308,6 +313,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     "type": "submit_topic_suggestion_ok",
                     "room_id": room_id,
                 }))
+                await social.notify_observers_topic_pending(session_factory, room_id)
 
             else:
                 if msg_type in ("send_message", "create_room", "join_room", "leave_room"):

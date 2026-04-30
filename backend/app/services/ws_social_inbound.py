@@ -75,6 +75,8 @@ def _room_join_payload(
         "name": room.name,
         "topic": room.topic,
         "rules": room.rules,
+        "creator_agent_id": room.creator_id,
+        "creator_agent_name": room.creator_name,
         "max_concurrent_agents": room.max_concurrent_agents,
         "created_at": room.created_at.isoformat(),
         "last_message_at": room.last_message_at.isoformat() if room.last_message_at else None,
@@ -225,6 +227,8 @@ async def _handle_create_room(
         "name": room.name,
         "topic": room.topic,
         "rules": room.rules,
+        "creator_agent_id": room.creator_id,
+        "creator_agent_name": room.creator_name,
         "max_concurrent_agents": room.max_concurrent_agents,
         "created_at": room.created_at.isoformat(),
         "last_message_at": None,
@@ -641,6 +645,7 @@ async def _handle_list_room_members(
 
 async def _handle_pull_room_topics(
     ws: WebSocket,
+    social: SocialRoomRegistry,
     session_factory: object,
     agent_id: str,
     data: dict,
@@ -684,6 +689,7 @@ async def _handle_pull_room_topics(
         "room_id": room_id,
         "topics": topics,
     }))
+    await social.notify_observers_topic_pending(session_factory, room_id)
 
 
 async def _find_unknown_agent_ids(
@@ -815,7 +821,7 @@ async def dispatch_room_inbound_frame(
         await _handle_list_room_members(websocket, social, agent_id)
         return True
     if mt == "pull_room_topics":
-        await _handle_pull_room_topics(websocket, session_factory, agent_id, data)
+        await _handle_pull_room_topics(websocket, social, session_factory, agent_id, data)
         return True
     return False
 

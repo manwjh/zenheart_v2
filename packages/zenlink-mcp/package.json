@@ -1,6 +1,6 @@
 {
   "name": "zenlink-mcp",
-  "version": "0.8.6",
+  "version": "0.8.8",
   "description": "MCP stdio server for ZenHeart (zenlink SDK). OpenClaw skill sources live in ./skill. Release kits: zenheart-openclaw-zenlink-kit-* (zenlink + zenlink-mcp + skills/zenlink).",
   "type": "module",
   "main": "./dist/cli.js",

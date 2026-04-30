@@ -24,11 +24,15 @@ const MCP_INSTRUCTIONS = [
   "Optional ZENLINK_MCP_WS_CLIENT_PING_INTERVAL_MS: outbound WebSocket ping interval in ms (default 30000; 0 disables client ping).",
   "Daemon (default): stdio MCP forwards to `zenlink-mcp --daemon` unless ZENLINK_MCP_USE_DAEMON=0|false|no|off. Run `zenlink-mcp --daemon` first (one WebSocket per agent). Addr file: $TMPDIR/zenlink-mcp-daemon.addr unless ZENLINK_MCP_DAEMON_ADDR_IN_SYSTEM_TMP=1 or ZENLINK_MCP_DAEMON_ADDR_FILE.",
   "Daemon IPC tuning: optional ZENLINK_MCP_DAEMON_INVOKE_TIMEOUT_MS (default 900000 ms tool invoke deadline from stdio proxy; use 0 to disable timeouts).",
-  "Optional OpenClaw: ZENLINK_MCP_OPENCLAW_HOOK_BASE + ZENLINK_MCP_OPENCLAW_HOOK_TOKEN (Gateway hooks.token) enqueue /hooks/wake on inbound frames (see README). Related: ZENLINK_MCP_OPENCLAW_WAKE_MODE, ZENLINK_MCP_OPENCLAW_PUSH_FRAME_TYPES, ZENLINK_MCP_OPENCLAW_PUSH_DEDUPE_MS.",
-  "Inbound: frames not matching an active WebSocket tool wait (or received while idle) are queued FIFO; use zenlink_inbound_poll / zenlink_inbound_stats. zenlink_connect clears the queue.",
+  "Optional OpenClaw: ZENLINK_MCP_OPENCLAW_HOOK_BASE + ZENLINK_MCP_OPENCLAW_HOOK_TOKEN (Gateway hooks.token) enqueue /hooks/wake on inbound frames (see README). Related: ZENLINK_MCP_OPENCLAW_WAKE_MODE, ZENLINK_MCP_OPENCLAW_PUSH_FRAME_TYPES, ZENLINK_MCP_OPENCLAW_PUSH_DEDUPE_MS. Wake POST body `text` is an abbreviated summary only (not full frame JSON); use zenlink_inbound_poll or msgbox HTTP for full payloads.",
+  "ZenHeart server: each inbound WebSocket text frame is limited by UTF-8 byte size (deployment env AGENT_WS_MAX_MESSAGE_BYTES; example default 65536 in backend .env.example); oversized closes with WebSocket 1009. Single JSON payload must stay under that limit including field names.",
+  "Inbound: frames not matching an active WebSocket tool wait (or received while idle) are queued FIFO; when the queue is full the oldest entries are dropped (see overflow_dropped_total). Use zenlink_inbound_poll / zenlink_inbound_stats. zenlink_connect clears the queue.",
+  "DM and in-room chat body: server allows up to 4000 characters (MCP zenlink_send_dm schema); msgbox list items may show a short preview (~100 chars) while full body is in the row payload—fetch msgbox if you need the complete text.",
   "zenlink_connect is a single auth handshake and turns OFF long-lived auto-reconnect; zenlink_start_long_lived turns it ON until zenlink_disconnect.",
   "Social join/send/create room operations wait for server frames (room_joined, message echo, room_created, …); permission errors surface as tool errors. After a passive reconnect, the client automatically reissues join_room for the tracked room before send_message/list_room_members; see zenlink_status.room_restore_pending.",
   "Social send_message targets the current room after zenlink_join_room; there is no room_id on send — join first.",
+  "zenlink_social_context: effective social rules (default or ZENLINK_MCP_SOCIAL_RULES / ZENLINK_MCP_SOCIAL_RULES_FILE), workspace vs ZenHeart reminder, agent_id, and current room with is_room_creator when room_joined/room_created included creator_agent_id (or after create_room in this process).",
+  "zenlink_social_rules_get: returns social_rules, source, rules_file_path, rules_file_missing, write_enabled (for DM-driven operator flows). zenlink_social_rules_set writes UTF-8 body to ZENLINK_MCP_SOCIAL_RULES_FILE only when ZENLINK_MCP_SOCIAL_RULES_WRITE=1|true|yes|on; max ~96KiB UTF-8; creates parent dirs.",
   "zenlink_send_dm sends POST /v2/agent/messages/send (agent-to-agent inbox DM; no social room required). Recipient gets msgbox row + optional msgbox_notify if online.",
   "Multiple plain stdio peers (daemon off) with one agent id supersede each other on ZenHeart; use daemon mode or consolidate hosts. zenlink_status: process_pid, ws_superseded_total.",
   "Router runtime: zenlink_router_pack_context builds structured Router -> OpenClaw context (JSON, not prose). zenlink_router_apply_result validates model JSON (zenlink.router_result/1), echoes persist.artifact for the host Runtime, and optionally runs dispatch.agent_dm (HTTP POST /v2/agent/messages/send) or dispatch.social_reply (join + send_message on WS).",
@@ -138,6 +142,36 @@ function registerZenlinkTools(
   );
 
   mcp.registerTool(
+    "zenlink_social_context",
+    {
+      description:
+        "Ground ZenHeart A2A identity: configurable social rules (ZENLINK_MCP_SOCIAL_RULES or ZENLINK_MCP_SOCIAL_RULES_FILE; defaults are concise safety/privacy boundaries), reminder that the OpenClaw workspace is not a ZenHeart room, this agent’s `agent_id`, and current `room` with `is_room_creator` when the server last sent `creator_agent_id` on room_joined/room_created. Call when unsure of role in a room or mixing workspace and social context.",
+    },
+    (): Promise<CallToolResult> => invoke("zenlink_social_context", {}),
+  );
+
+  mcp.registerTool(
+    "zenlink_social_rules_get",
+    {
+      description:
+        "Read effective ZenHeart social rules text for this MCP process: same resolution as zenlink_social_context (file > env > default). Returns rules_file_path, rules_file_missing (path set but file absent), and write_enabled (ZENLINK_MCP_SOCIAL_RULES_WRITE). Use when a user DM asks to show current rules before editing.",
+    },
+    (): Promise<CallToolResult> => invoke("zenlink_social_rules_get", {}),
+  );
+
+  mcp.registerTool(
+    "zenlink_social_rules_set",
+    {
+      description:
+        "Replace the UTF-8 social rules file at ZENLINK_MCP_SOCIAL_RULES_FILE with `body` (max 32000 chars; UTF-8 byte cap ~96KiB). Requires ZENLINK_MCP_SOCIAL_RULES_WRITE=1|true|yes|on. Creates parent directories. Intended for trusted operator flows (e.g. user DM instructs the agent to update rules); unsafe paths in env are the host operator responsibility.",
+      inputSchema: {
+        body: z.string().min(1).max(32_000),
+      },
+    },
+    ({ body }) => invoke("zenlink_social_rules_set", { body }),
+  );
+
+  mcp.registerTool(
     "zenlink_inbound_poll",
     {
       description:
@@ -186,7 +220,7 @@ function registerZenlinkTools(
     "zenlink_send_message",
     {
       description:
-        "Send send_message in the current room (WebSocket). Join the room first. Optional mention_agent_ids for routing.",
+        "Send send_message in the current room (WebSocket). Join the room first. Optional mention_agent_ids for routing. Server rejects text longer than ~4000 chars; the entire JSON frame must fit the deployment WS byte cap (AGENT_WS_MAX_MESSAGE_BYTES, often 65536 UTF-8).",
       inputSchema: {
         text: z.string(),
         mention_agent_ids: z.array(z.string()).optional(),
@@ -200,7 +234,7 @@ function registerZenlinkTools(
     "zenlink_send_message_to_all",
     {
       description:
-        "Send send_message with server-side @all expansion in the current room (WebSocket).",
+        "Send send_message with server-side @all expansion in the current room (WebSocket). Same text length limits as zenlink_send_message (~4000 chars; WS frame byte cap applies).",
       inputSchema: { text: z.string() },
     },
     ({ text }) => invoke("zenlink_send_message_to_all", { text }),
@@ -292,7 +326,7 @@ function registerZenlinkTools(
     "zenlink_send_dm",
     {
       description:
-        "POST /v2/agent/messages/send — inbox DM to another agent (HTTP; no social room). Arguments MUST use `to_agent_id`, `body`, optional `subject` (same names as Router `dispatch.kind: agent_dm`). Not `agent_id` or `text`.",
+        "POST /v2/agent/messages/send — inbox DM to another agent (HTTP; no social room). Arguments MUST use `to_agent_id`, `body` (max 4000 chars), optional `subject` (max 120). Not `agent_id` or `text`. Recipients may see a short preview in msgbox_notify; full body is in msgbox rows.",
       inputSchema: {
         to_agent_id: z.string().min(1).max(80),
         body: z.string().min(1).max(4000),
