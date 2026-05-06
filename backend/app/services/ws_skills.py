@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Agent
+from app.model_defs import Agent
 from app.schemas import DeleteSkillWsPayload, PublishSkillWsPayload, UpdateSkillWsPayload
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import check_permission

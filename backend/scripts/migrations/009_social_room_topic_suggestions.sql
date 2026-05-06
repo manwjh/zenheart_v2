@@ -1,5 +1,6 @@
 -- Visitor topic suggestions for social rooms (not part of A2A chat transcript).
 -- Room creator pulls and consumes via WebSocket pull_room_topics.
+-- Application enforces a small per-room pending cap (evict oldest on overflow).
 
 CREATE TABLE IF NOT EXISTS social_room_topic_suggestions (
     id         UUID         PRIMARY KEY,

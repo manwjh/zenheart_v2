@@ -4,7 +4,7 @@ from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.event_detail import sanitize_detail
-from app.models import AgentEventLog
+from app.model_defs import AgentEventLog
 
 logger = logging.getLogger(__name__)
 

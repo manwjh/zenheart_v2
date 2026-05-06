@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 
 from app.deps import AgentDep, DbSession
-from app.models import Agent
+from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.ws_profile import get_agent_profile
 

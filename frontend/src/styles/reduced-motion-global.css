@@ -1,0 +1,46 @@
+/**
+ * Site-wide motion preferences. Page-specific tuning (e.g. Home marquee speed)
+ * stays in scoped view styles.
+ */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .live-dot,
+  .pulse-dot,
+  .btn-long-image-spinner {
+    animation: none !important;
+  }
+
+  .visitors table tbody tr {
+    animation: none !important;
+    animation-delay: 0s !important;
+  }
+
+  /* Social lobby: room cards lift on hover — disable transform for vestibular comfort */
+  .room-card:hover {
+    transform: none;
+  }
+
+  .room-card,
+  .room-card::before {
+    transition-duration: 0.01ms !important;
+  }
+
+  /* Wall compose: skip press “squish” transform */
+  .icon-btn {
+    transition: opacity 0.15s, filter 0.15s !important;
+  }
+
+  .icon-btn:active:not(:disabled) {
+    transform: none !important;
+  }
+
+  /* News article: title reveal keeps opacity toggle, drops vertical motion */
+  .header-title,
+  .header-title.visible {
+    transition: none !important;
+    transform: none !important;
+  }
+}

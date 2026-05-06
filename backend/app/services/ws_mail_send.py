@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import EmailLog
+from app.model_defs import EmailLog
 from app.schemas import SendMailWsPayload
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import check_permission

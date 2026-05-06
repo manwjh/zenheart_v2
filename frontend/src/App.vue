@@ -103,23 +103,26 @@ watch(() => route.path, closeLab);
 <style>
 :root {
   color-scheme: light dark;
-  --fg: #1a1a1a;
-  --muted: #5c5c5c;
-  --bg: #fafafa;
-  --brand-accent: #6d28d9;
-  --border: rgba(0, 0, 0, 0.08);
+  --fg: #0f172a;
+  --muted: #64748b;
+  --bg: #f0f4f8;
+  --brand-accent: #0891b2;
+  --brand-accent-2: #2563eb;
+  --brand-rgb: 8, 145, 178;
+  --border: rgba(15, 23, 42, 0.1);
   --error: #b91c1c;
   --error-bg: rgba(185, 28, 28, 0.08);
-  --page-title-size: clamp(1.4rem, 4vw, 1.75rem);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --fg: #f2f2f2;
-    --muted: #a3a3a3;
-    --bg: #121212;
-    --brand-accent: #a78bfa;
-    --border: rgba(255, 255, 255, 0.12);
+    --fg: #e8f1f8;
+    --muted: #94a3b8;
+    --bg: #070d12;
+    --brand-accent: #38bdf8;
+    --brand-accent-2: #60a5fa;
+    --brand-rgb: 56, 189, 248;
+    --border: rgba(56, 189, 248, 0.14);
     --error: #f87171;
     --error-bg: rgba(239, 68, 68, 0.12);
   }
@@ -133,36 +136,56 @@ watch(() => route.path, closeLab);
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell,
-    "Noto Sans", sans-serif;
-  background: var(--bg);
+  overflow-x: clip;
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto,
+    Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  background-color: var(--bg);
+  background-image: radial-gradient(
+    ellipse 110% 70% at 50% -18%,
+    rgba(var(--brand-rgb), 0.14),
+    transparent 56%
+  );
+  background-attachment: fixed;
   color: var(--fg);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
-#app {
-  min-height: 100vh;
-}
-
 .app {
-  min-height: 100vh;
   display: flex;
   flex-direction: column;
 }
 
 .nav {
+  position: sticky;
+  top: 0;
+  /* Stay above in-page stacking (sticky toolbars, maps, transforms); keep below app modals (e.g. z-index 50). */
+  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.875rem clamp(1rem, 4vw, 1.5rem);
+  padding: 0.875rem max(var(--layout-page-pad-x), env(safe-area-inset-right, 0px))
+    0.875rem max(var(--layout-page-pad-x), env(safe-area-inset-left, 0px));
+  padding-top: max(0.875rem, env(safe-area-inset-top, 0px));
   border-bottom: 1px solid var(--border);
   gap: 1rem;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(160%) blur(12px);
+  box-shadow: 0 1px 0 rgba(var(--brand-rgb), 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  .nav {
+    box-shadow: 0 1px 0 rgba(var(--brand-rgb), 0.12),
+      0 18px 48px rgba(0, 0, 0, 0.35);
+  }
 }
 
 .brand {
+  font-family: "IBM Plex Mono", ui-monospace, "Cascadia Code", "Source Code Pro",
+    monospace;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.03em;
   color: var(--brand-accent);
   text-decoration: none;
   flex-shrink: 0;
@@ -192,20 +215,20 @@ body {
   }
 
   .links a {
-    font-size: 0.875rem;
+    font-size: var(--text-ui);
   }
 }
 
 .links a {
   color: var(--muted);
   text-decoration: none;
-  font-size: clamp(0.8125rem, 2vw, 0.9375rem);
+  font-size: var(--text-nav);
   white-space: nowrap;
 }
 
 .links a.router-link-active {
-  color: var(--fg);
-  font-weight: 500;
+  color: var(--brand-accent);
+  font-weight: 600;
 }
 
 /* Lab: single top-level control; Wall / Game only in the panel */
@@ -223,7 +246,7 @@ body {
   border: none;
   background: none;
   font: inherit;
-  font-size: clamp(0.8125rem, 2vw, 0.9375rem);
+  font-size: var(--text-nav);
   color: var(--muted);
   cursor: pointer;
   white-space: nowrap;
@@ -231,12 +254,12 @@ body {
 
 .nav-lab__trigger--on,
 .nav-lab__trigger:hover {
-  color: var(--fg);
+  color: var(--brand-accent);
 }
 
 .nav-lab__trigger[aria-expanded="true"] {
-  color: var(--fg);
-  font-weight: 500;
+  color: var(--brand-accent);
+  font-weight: 600;
 }
 
 .nav-lab__chevron {
@@ -259,17 +282,20 @@ body {
   /* Align with trigger’s start edge; avoid a wide box hanging left of “Lab” */
   min-width: max(9rem, 100%);
   padding: 0.35rem 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
-  background: var(--bg);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(14px) saturate(150%);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12),
+    0 0 0 1px rgba(var(--brand-rgb), 0.05);
   display: flex;
   flex-direction: column;
 }
 
 @media (prefers-color-scheme: dark) {
   .nav-lab__panel {
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(var(--brand-rgb), 0.12);
   }
 }
 
@@ -277,7 +303,7 @@ body {
   padding: 0.45rem 0.9rem;
   color: var(--muted);
   text-decoration: none;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   white-space: nowrap;
   transition: background 0.12s;
 }
@@ -289,60 +315,32 @@ body {
 }
 
 .nav-lab__item.router-link-active {
-  color: var(--fg);
-  font-weight: 500;
-  background: rgba(127, 127, 127, 0.08);
-}
-
-/* ── Shared ghost button ── */
-.ghost-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.4rem 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-  text-decoration: none;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.ghost-btn:hover:not(:disabled) {
-  background: rgba(127, 127, 127, 0.08);
-  border-color: rgba(127, 127, 127, 0.3);
-}
-
-.ghost-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.ghost-btn:focus-visible {
-  outline: 2px solid currentColor;
-  outline-offset: 2px;
-}
-
-/* ── Shared error state ── */
-.error-msg {
-  margin: 0 0 1rem;
-  padding: 0.65rem 0.85rem;
-  border-radius: 8px;
-  background: var(--error-bg);
-  color: var(--error);
-  font-size: 0.9rem;
+  color: var(--brand-accent);
+  font-weight: 600;
+  background: rgba(var(--brand-rgb), 0.1);
 }
 
 .main {
   flex: 1;
-  padding: clamp(1rem, 4vw, 1.5rem);
+  padding: var(--layout-page-pad-y) max(var(--layout-page-pad-x), env(safe-area-inset-right, 0px))
+    var(--layout-page-pad-y) max(var(--layout-page-pad-x), env(safe-area-inset-left, 0px));
+  padding-bottom: max(
+    var(--layout-page-pad-y),
+    env(safe-area-inset-bottom, 0px)
+  );
   display: grid;
   place-items: center;
+}
+
+/* Compact shell: small width OR portrait (height ≥ width), incl. iPad portrait >640px */
+@media (max-width: 640px), (orientation: portrait) {
+  .main {
+    padding-top: 0;
+    padding-left: max(0.65rem, env(safe-area-inset-left, 0px));
+    padding-right: max(0.65rem, env(safe-area-inset-right, 0px));
+    padding-bottom: max(0.65rem, env(safe-area-inset-bottom, 0px));
+    place-items: start stretch;
+  }
 }
 
 /* Visually hidden; kept in DOM for parsers and screen readers */

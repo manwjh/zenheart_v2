@@ -1,12 +1,13 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import uuid
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 
 from app.crypto_tokens import generate_agent_id, generate_token, sha256_hex
 from app.deps import DbSession, admin_or_sovereign_guard
-from app.models import Agent, AgentEventLog
+from app.model_defs import Agent, AgentEventLog
 from app.services.agent_event_log import record_agent_event
 from app.schemas import (
     AdminAgentCredentialResponse,
@@ -21,6 +22,8 @@ from app.schemas import (
     DispatchAgentCommandResponse,
     UpdateAgentSocialWebhookRequest,
     UpdateAgentSocialWebhookResponse,
+    SocialDeliveryStatsResponse,
+    SocialDeliveryStatsRow,
 )
 
 router = APIRouter(
@@ -28,6 +31,50 @@ router = APIRouter(
     tags=["admin"],
     dependencies=[Depends(admin_or_sovereign_guard)],
 )
+
+
+def _compute_social_delivery_readiness(
+    rows_raw: list[AgentEventLog], window_hours: int
+) -> tuple[dict[str, float], bool, dict[str, dict[str, object] | list[str]]]:
+    explicit_ratio_target_pct = 95.0
+    stage_b_min_window_hours = 168
+    totals: dict[str, float] = {
+        "a2a_message_sent": 0,
+        "a2a_text_only_mention_used": 0,
+    }
+    for row in rows_raw:
+        if row.event in totals:
+            totals[row.event] += 1
+
+    base = totals["a2a_message_sent"]
+    totals["text_only_mention_ratio_pct"] = (
+        int((totals["a2a_text_only_mention_used"] * 10000 / base)) / 100 if base > 0 else 0
+    )
+    explicit_count = sum(
+        1
+        for row in rows_raw
+        if row.event == "a2a_message_sent"
+        and isinstance(row.detail, dict)
+        and str(row.detail.get("routing_mode") or "unknown") == "explicit"
+    )
+    totals["explicit_routing_ratio_pct"] = int((explicit_count * 10000 / base)) / 100 if base > 0 else 0
+
+    checks = {
+        "window_7d": window_hours >= stage_b_min_window_hours,
+        "explicit_ratio_target_met": totals["explicit_routing_ratio_pct"] >= explicit_ratio_target_pct,
+        "text_only_mention_zero": totals["a2a_text_only_mention_used"] == 0,
+    }
+    failed_checks = [name for name, ok in checks.items() if not ok]
+    ready_for_flip = not failed_checks
+    readiness: dict[str, dict[str, object] | list[str]] = {
+        "checks": checks,
+        "thresholds": {
+            "explicit_ratio_target_pct": explicit_ratio_target_pct,
+            "stage_b_min_window_hours": stage_b_min_window_hours,
+        },
+        "failed_checks": failed_checks,
+    }
+    return totals, ready_for_flip, readiness
 
 
 async def _get_agent_or_404(session: DbSession, agent_id: str) -> Agent:
@@ -289,4 +336,58 @@ async def dispatch_agent_command(
         request_id=request_id,
         accepted=True,
         result=result,
+    )
+
+
+@router.get("/social-delivery-stats", response_model=SocialDeliveryStatsResponse)
+async def get_social_delivery_stats(
+    session: DbSession,
+    window_hours: int = Query(24, ge=1, le=168),
+) -> SocialDeliveryStatsResponse:
+    until = datetime.now(timezone.utc)
+    since = until - timedelta(hours=window_hours)
+    events = (
+        "a2a_message_sent",
+        "a2a_room_mention_enqueued",
+        "a2a_text_only_mention_used",
+        "msgbox_dm_sent",
+        "msgbox_dm_sent_rest",
+    )
+    result = await session.execute(
+        select(AgentEventLog).where(
+            AgentEventLog.event.in_(events),
+            AgentEventLog.created_at >= since,
+        )
+    )
+    rows_raw = result.scalars().all()
+    grouped: dict[tuple[str, str, str, str], int] = defaultdict(int)
+    for row in rows_raw:
+        detail = row.detail if isinstance(row.detail, dict) else {}
+        routing_mode = str(detail.get("routing_mode") or "unknown")
+        delivery_route = str(detail.get("delivery_route") or "unknown")
+        payload_authority = str(detail.get("payload_authority") or "unknown")
+        grouped[(row.event, routing_mode, delivery_route, payload_authority)] += 1
+    rows = [
+        SocialDeliveryStatsRow(
+            event=event,
+            routing_mode=routing_mode,
+            delivery_route=delivery_route,
+            payload_authority=payload_authority,
+            count=count,
+        )
+        for (event, routing_mode, delivery_route, payload_authority), count in sorted(
+            grouped.items(),
+            key=lambda x: (-x[1], x[0][0], x[0][1], x[0][2], x[0][3]),
+        )
+    ]
+    totals, ready_for_flip, readiness = _compute_social_delivery_readiness(rows_raw, window_hours)
+
+    return SocialDeliveryStatsResponse(
+        window_hours=window_hours,
+        since=since,
+        until=until,
+        totals=totals,
+        ready_for_flip=ready_for_flip,
+        readiness=readiness,
+        rows=rows,
     )

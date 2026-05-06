@@ -1,7 +1,7 @@
 {
   "name": "zenlink-mcp",
-  "version": "0.8.8",
-  "description": "MCP stdio server for ZenHeart (zenlink SDK). OpenClaw skill sources live in ./skill. Release kits: zenheart-openclaw-zenlink-kit-* (zenlink + zenlink-mcp + skills/zenlink).",
+  "version": "0.12.6",
+  "description": "MCP stdio server for ZenHeart (embedded src/zenlink). Primary release: npm run pack → offline tarball (no registry on target). Secondary: npm run pack:npx.",
   "type": "module",
   "main": "./dist/cli.js",
   "types": "./dist/cli.d.ts",
@@ -9,17 +9,26 @@
     "zenlink-mcp": "./dist/cli.js"
   },
   "files": [
-    "dist",
-    "skill"
+    "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "daemon": "node dist/cli.js --daemon",
+    "typecheck": "npm run build",
     "prepack": "npm run build",
-    "bundle:offline": "bash scripts/build-offline-bundle.sh",
-    "bundle:source": "bash scripts/build-source-bundle.sh",
+    "pack": "npm run pack:offline",
+    "pack:offline": "bash scripts/pack-offline-openclaw.sh",
+    "pack:npx": "bash scripts/pack-npx.sh",
+    "pack:clean": "bash scripts/pack-clean.sh",
+    "publish:artifacts": "bash scripts/publish-zenlink-artifacts.sh",
+    "test": "node --test tests/**/*.test.mjs",
     "smoke:tools": "node dist/cli.js smoke",
-    "verify": "npm --prefix ../zenlink run build && npm run build && npm run smoke:tools",
+    "daemon": "node dist/cli.js --daemon",
+    "daemon:health": "node dist/cli.js health",
+    "daemon:supervisor:start": "node scripts/openclaw-zenlink-daemon.mjs start",
+    "daemon:supervisor:stop": "node scripts/openclaw-zenlink-daemon.mjs stop",
+    "daemon:supervisor:status": "node scripts/openclaw-zenlink-daemon.mjs status",
+    "kit:install": "bash scripts/kit-install.sh",
+    "verify": "npm run typecheck && npm run test && npm run smoke:tools && node scripts/verify-kit-peer.mjs",
     "openclaw:register": "node scripts/register-openclaw.mjs",
     "setup:openclaw-hooks": "node scripts/setup-openclaw-hooks.mjs"
   },
@@ -36,11 +45,12 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zenlink": "file:../zenlink",
+    "ws": "^8.18.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/ws": "^8.5.13",
     "typescript": "~5.7.2"
   }
 }

@@ -230,6 +230,8 @@ onUnmounted(() => {
   max-width: 60rem;
   margin: 0 auto;
   align-self: start;
+  min-width: 0;
+  overflow-x: clip;
 }
 
 .intro-grid {
@@ -253,28 +255,30 @@ onUnmounted(() => {
 .welcome-callout {
   margin: 0;
   padding: 1rem 1.15rem;
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   border: 1px solid var(--border);
-  background: rgba(127, 127, 127, 0.05);
+  background: rgba(var(--brand-rgb), 0.05);
+  box-shadow: 0 0 0 1px rgba(var(--brand-rgb), 0.04);
 }
 
 .welcome-owner {
   margin-bottom: 0.65rem;
   padding-left: 0.5rem;
-  border-left: 3px solid rgba(99, 102, 241, 0.45);
+  border-left: 3px solid rgba(var(--brand-rgb), 0.55);
 }
 
 .welcome-owner-label {
   margin: 0 0 0.25rem;
-  font-size: 0.72rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: var(--text-meta);
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   color: var(--muted);
 }
 
 .welcome-owner-body {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   line-height: 1.55;
   color: var(--fg);
 }
@@ -283,7 +287,7 @@ onUnmounted(() => {
   margin: 0;
   padding-top: 0.85rem;
   border-top: 1px solid var(--border);
-  font-size: 0.82rem;
+  font-size: var(--text-compact);
   line-height: 1.55;
   color: var(--muted);
 }
@@ -302,7 +306,7 @@ onUnmounted(() => {
 .welcome-link-meta {
   display: inline-block;
   margin-left: 0.2rem;
-  font-size: 0.78rem;
+  font-size: var(--text-meta);
   color: var(--muted);
   font-weight: 400;
 }
@@ -328,9 +332,11 @@ onUnmounted(() => {
 
 .title {
   margin: 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: var(--page-title-size);
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.03em;
+  color: var(--brand-accent);
 }
 
 .live-badge {
@@ -338,10 +344,11 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.3rem;
   padding: 0.15rem 0.5rem;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: rgba(34, 197, 94, 0.12);
   color: #16a34a;
-  font-size: 0.65rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: var(--text-caption);
   font-weight: 700;
   letter-spacing: 0.08em;
 }
@@ -369,7 +376,7 @@ onUnmounted(() => {
 .lead {
   margin: 0;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
 }
 
 /* Error */
@@ -377,10 +384,10 @@ onUnmounted(() => {
 .err {
   margin: 0 0 1rem;
   padding: 0.65rem 0.85rem;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--error-bg);
   color: var(--error);
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
 }
 
 /* Stats cards (sidebar column on wide screens) */
@@ -394,7 +401,7 @@ onUnmounted(() => {
 
 .card {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 0.7rem 0.85rem;
   background: transparent;
   transition: border-color 0.15s;
@@ -403,12 +410,13 @@ onUnmounted(() => {
 }
 
 .card:hover {
-  border-color: rgba(128, 128, 128, 0.3);
+  border-color: rgba(var(--brand-rgb), 0.35);
 }
 
 .k {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: var(--text-meta);
   font-weight: 500;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -416,27 +424,33 @@ onUnmounted(() => {
 
 .v {
   margin-top: 0.3rem;
-  font-size: 1.5rem;
+  font-size: var(--text-heading-lg);
   font-weight: 700;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
+  color: var(--brand-accent);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
 }
 
 .v-sm {
-  font-size: 0.95rem;
+  font-size: var(--text-strong);
   font-weight: 500;
   letter-spacing: 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  color: var(--fg);
 }
 
 /* Table */
 
 .list-wrap {
   margin-top: 0.15rem;
+  min-width: 0;
 }
 
 .list-title {
   margin: 0 0 0.45rem;
-  font-size: 0.72rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -444,22 +458,26 @@ onUnmounted(() => {
 }
 
 .list {
+  max-width: 100%;
+  min-width: 0;
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
 }
 
 .empty {
   margin: 1.25rem;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
 }
 
 table {
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
 }
 
 th,
@@ -476,8 +494,9 @@ td:first-child {
 }
 
 th {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -516,13 +535,13 @@ tbody tr:last-child td {
   align-items: center;
   justify-content: center;
   min-width: 1.4rem;
-  font-size: 1rem;
+  font-size: var(--text-body);
   line-height: 1;
 }
 
 .rank-num {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: var(--text-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -533,8 +552,8 @@ tbody tr:last-child td {
   justify-content: center;
   width: 1.5rem;
   height: 1.5rem;
-  border-radius: 5px;
-  font-size: 0.6rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-micro);
   font-weight: 700;
   color: #fff;
   letter-spacing: 0;
@@ -543,7 +562,7 @@ tbody tr:last-child td {
 .id {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
-  font-size: 0.82rem;
+  font-size: var(--text-compact);
   color: var(--fg);
   min-width: 0;
   overflow: hidden;
@@ -562,12 +581,12 @@ tbody tr:last-child td {
 .points-num {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  font-size: 1rem;
+  font-size: var(--text-body);
   color: var(--fg);
 }
 
 .points-label {
-  font-size: 0.72rem;
+  font-size: var(--text-meta);
   color: var(--muted);
   font-weight: 500;
 }
@@ -582,7 +601,7 @@ tbody tr:last-child td {
 
 /* Responsive */
 
-@media (max-width: 640px) {
+@media (max-width: 640px), (orientation: portrait) {
   .header {
     flex-wrap: wrap;
   }
@@ -596,7 +615,13 @@ tbody tr:last-child td {
   }
 
   .title {
-    font-size: 1.25rem;
+    font-size: var(--text-heading-sm);
+  }
+
+  .visitors {
+    max-width: 100%;
+    margin-inline: 0;
+    justify-self: stretch;
   }
 }
 </style>

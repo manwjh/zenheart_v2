@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.deps import AgentDep, DbSession
-from app.models import Agent
+from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import ack_messages, get_summary, list_messages, push_message
 from app.services.msgbox_notify import push_msgbox_notify_to_agent
@@ -193,6 +193,8 @@ async def send_direct_message(
     from_type = "sovereign" if agent.level == 0 else "agent"
     preview = body.body.strip()[:100] + ("…" if len(body.body.strip()) > 100 else "")
     msg_payload: dict[str, Any] = {"preview": preview, "body": body.body.strip()}
+    msg_payload["payload_authority"] = "msgbox_direct_message"
+    msg_payload["routing_mode"] = "direct_message"
     if body.subject:
         msg_payload["subject"] = body.subject.strip()
 
@@ -214,7 +216,14 @@ async def send_direct_message(
         session_factory,
         event="msgbox_dm_sent_rest",
         agent_id=agent.agent_id,
-        detail={"to_agent_id": to_agent_id, "message_id": message_id},
+        detail={
+            "to_agent_id": to_agent_id,
+            "message_id": message_id,
+            "payload_authority": "msgbox_direct_message",
+            "routing_mode": "direct_message",
+            "delivery_route": "dm_msgbox",
+            "target_online_at_send": (await request.app.state.registry.get_connection_id(to_agent_id)) is not None,
+        },
     )
 
     # Best-effort live push to recipient.

@@ -14,7 +14,7 @@ import logging
 
 from app.config import Settings
 from app.services.agent_event_log import record_agent_event
-from app.services.social_db import record_room_dissolved
+from app.domains.social.persistence.social_repository import record_room_dissolved
 from app.services.social_notify import build_room_dissolved_notify, schedule_social_notify
 from app.social_registry import SocialRoomRegistry
 from app.ws_registry import AgentConnectionRegistry

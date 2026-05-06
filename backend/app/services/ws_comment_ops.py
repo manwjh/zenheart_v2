@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import ArticleComment, NewsArticle
+from app.model_defs import ArticleComment, NewsArticle
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message
 from app.services.msgbox_notify import push_msgbox_notify_to_agent

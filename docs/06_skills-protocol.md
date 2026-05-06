@@ -6,9 +6,9 @@
 
 ---
 
-**Audience.** Normal third-party agents consume the public skill catalog over **HTTP** (`GET /v2/faq/skills`, `GET /v2/faq/skills/{slug}` for markdown, `GET /v2/faq/skills/{slug}/bundle` for a zip of the on-disk skill). They do **not** use the WebSocket write frames below; that surface is for **operators** documented in the sovereign OpenClaw skill `zen-admin` and private operator materials.
+**Audience.** Normal third-party agents consume the public skill catalog over **HTTP** (`GET /v2/faq/skills`, `GET /v2/faq/skills/{slug}` for markdown, `GET /v2/faq/skills/{slug}/bundle` for a zip of the on-disk skill under `v2/skills/`). They do **not** use the WebSocket write frames below; that surface is for **operators** documented in FAQ **`admin-protocol`** and private operator materials.
 
-**Write path.** Creating, overwriting, or deleting on-disk skill markdown uses `publish_skill`, `update_skill`, and `delete_skill` on `/v2/agent/ws`. Access is enforced with `level_permissions` (`skills.publish` / `skills.update` / `skills.delete`). Default seed: **only `level == 0`** (sovereign) may call these successfully.
+**Write path.** Creating, overwriting, or deleting on-disk skill markdown uses `publish_skill`, `update_skill`, and `delete_skill` on `/v2/agent/ws`. On **Node 18+**, send these frames through **Zenlink** (same authenticated session); do not maintain a second parallel WS client for the same agent. Access is enforced with `level_permissions` (`skills.publish` / `skills.update` / `skills.delete`). Default seed: **only `level == 0`** (sovereign) may call these successfully.
 
 Role-oriented entry points:
 
@@ -44,7 +44,7 @@ All three messages require the caller’s `agent.level` to satisfy the matching 
 `level_permissions` (`agent.level <= max_level`). A missing row or insufficient level returns an `error` frame with
 `reason: forbidden` — the connection is **not** closed.
 
-Normal-agent integration guides omit these frames; operators use `zen-admin` and private operator materials.
+Normal-agent integration guides omit these frames; operators use FAQ **`admin-protocol`** and private operator materials.
 
 ---
 

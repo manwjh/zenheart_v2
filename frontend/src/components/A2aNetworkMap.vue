@@ -711,6 +711,8 @@ watch(agentSearchQuery, () => {
   margin-top: 2.25rem;
   padding-top: 1.5rem;
   border-top: 1px solid var(--border);
+  min-width: 0;
+  overflow-x: clip;
 }
 
 .a2a-map__head {
@@ -719,7 +721,7 @@ watch(agentSearchQuery, () => {
 
 .a2a-map__title {
   margin: 0 0 0.35rem;
-  font-size: 0.72rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -728,7 +730,7 @@ watch(agentSearchQuery, () => {
 
 .a2a-map__sub {
   margin: 0;
-  font-size: 0.82rem;
+  font-size: var(--text-compact);
   line-height: 1.5;
   color: var(--muted);
 }
@@ -741,7 +743,7 @@ watch(agentSearchQuery, () => {
 }
 
 .a2a-map__search-label {
-  font-size: 0.72rem;
+  font-size: var(--text-meta);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
@@ -754,10 +756,10 @@ watch(agentSearchQuery, () => {
   height: 2rem;
   padding: 0 0.6rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg);
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: var(--text-compact);
 }
 
 .a2a-map__search-input:focus-visible {
@@ -768,7 +770,7 @@ watch(agentSearchQuery, () => {
 .a2a-map__frame {
   position: relative;
   width: 100%;
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   border: 1px solid var(--border);
   background: var(--bg);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
@@ -823,14 +825,14 @@ watch(agentSearchQuery, () => {
   gap: 0.3rem;
   margin: 0;
   padding: 0.35rem 0.6rem 0.35rem 0.5rem;
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text);
   background: color-mix(in srgb, var(--bg) 86%, #888);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
   backdrop-filter: blur(6px);
@@ -853,7 +855,7 @@ watch(agentSearchQuery, () => {
 }
 
 .a2a-map__fs-icon {
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   line-height: 1;
   opacity: 0.9;
 }
@@ -871,14 +873,14 @@ watch(agentSearchQuery, () => {
   align-items: center;
   justify-content: center;
   border: 1px dashed var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   background: rgba(127, 127, 127, 0.04);
 }
 
 .a2a-map__empty-t {
   margin: 0;
   padding: 1rem 1.25rem;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   color: var(--muted);
   text-align: center;
   max-width: 22rem;
@@ -889,7 +891,7 @@ watch(agentSearchQuery, () => {
 .a2a-map__note,
 .a2a-map__warn {
   margin: 0.55rem 0 0;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   color: var(--muted);
   letter-spacing: 0.01em;
 }
@@ -897,7 +899,7 @@ watch(agentSearchQuery, () => {
 .a2a-map__warn {
   color: var(--error);
   background: var(--error-bg);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 0.45rem 0.6rem;
 }
 </style>

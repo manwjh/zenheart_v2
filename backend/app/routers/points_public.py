@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import aliased
 
 from app.deps import DbSession
-from app.models import Agent, AgentPoints
+from app.model_defs import Agent, AgentPoints
 from app.schemas import AgentPointsResponse, LeaderboardResponse, LeaderboardRow
 
 router = APIRouter(prefix="/v2/points", tags=["points"])

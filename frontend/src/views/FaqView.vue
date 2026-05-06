@@ -3,6 +3,16 @@ import { ref, computed, onMounted, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import FaqApplicationForm from "@/components/faq/FaqApplicationForm.vue";
+import FaqDocsSection from "@/components/faq/FaqDocsSection.vue";
+import FaqSkillsSection from "@/components/faq/FaqSkillsSection.vue";
+import {
+  clipCurlDownloadMarkdown,
+  stripSkillFrontmatter,
+} from "@/features/faq/faqHelpers";
+import { scrollBehaviorPreference } from "@/utils/motionPreference";
+import { useFaqApplication } from "@/features/faq/useFaqApplication";
+import { useFaqDocs } from "@/features/faq/useFaqDocs";
 
 const route = useRoute();
 
@@ -19,136 +29,81 @@ const zenlinkHttpsOrigin = computed(() => {
 });
 
 const zenlinkPublicBase = computed(() => `${zenlinkHttpsOrigin.value}/zenlink`);
-const zenlinkTarballUrl = computed(() => `${zenlinkPublicBase.value}/zenlink-source.tar.gz`);
+interface ZenlinkReleaseManifest {
+  npx_pack_filename?: string;
+  npx_pack_versioned_filename?: string;
+  /** @deprecated */
+  source_kit_filename?: string;
+  offline_kit_filename?: string;
+}
+const zenlinkReleaseManifest = ref<ZenlinkReleaseManifest | null>(null);
+const zenlinkNpxPackFilename = computed(
+  () => zenlinkReleaseManifest.value?.npx_pack_filename || "zenlink-mcp.tgz",
+);
+const zenlinkNpxPackUrl = computed(() => `${zenlinkPublicBase.value}/${zenlinkNpxPackFilename.value}`);
+const zenlinkVersionedPackFilename = computed(
+  () =>
+    zenlinkReleaseManifest.value?.npx_pack_versioned_filename ||
+    zenlinkNpxPackFilename.value,
+);
+const zenlinkVersionedPackUrl = computed(
+  () => `${zenlinkPublicBase.value}/${zenlinkVersionedPackFilename.value}`,
+);
 const zenlinkReadmeUrl = computed(() => `${zenlinkPublicBase.value}/README.md`);
+const zenlinkReleaseManifestUrl = computed(() => `${zenlinkPublicBase.value}/release-manifest.json`);
 
 function scrollTo(id: string) {
-  document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+  document.getElementById(id)?.scrollIntoView({
+    behavior: scrollBehaviorPreference(),
+    block: "nearest",
+    inline: "nearest",
+  });
 }
 
 /** Main Docs card: show / hide the document list (right column only). Sidebar outline follows this. */
-const docsListExpanded = ref(true);
-
-function toggleDocsList() {
-  docsListExpanded.value = !docsListExpanded.value;
-}
+const {
+  docsListExpanded,
+  docs,
+  gameRuleDocs,
+  expandedSlug,
+  docContent,
+  docLoading,
+  docError,
+  copiedSlug,
+  gameDocApiBase,
+  toggleDocsList,
+  docRawUrl,
+  gameDocRawUrl,
+  loadDocLists,
+  toggleDoc,
+  copyDocLink,
+} = useFaqDocs(async (raw) => DOMPurify.sanitize(await marked.parse(raw)));
 
 function scrollToDocRow(slug: string) {
   docsListExpanded.value = true;
   scrollTo("docs");
   setTimeout(() => {
-    document.getElementById(`doc-${slug}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document
+      .getElementById(`doc-${slug}`)
+      ?.scrollIntoView({
+        behavior: scrollBehaviorPreference(),
+        block: "start",
+        inline: "nearest",
+      });
   }, 100);
 }
 
 // ── Application form ──────────────────────────────────────────────────────────
-const email = ref("");
-const agentName = ref("");
-const reason = ref("");
-const busy = ref(false);
-const busyLabel = ref("Verifying, please wait…");
-const appMessage = ref<string | null>(null);
-const appError = ref<string | null>(null);
-
-function formatErrorDetail(detail: unknown): string {
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail
-      .map((d: unknown) => {
-        if (d && typeof d === "object" && "msg" in d) {
-          return String((d as { msg: string }).msg);
-        }
-        return "";
-      })
-      .filter(Boolean)
-      .join("; ");
-  }
-  return "";
-}
-
-async function submitApplication() {
-  appMessage.value = null;
-  appError.value = null;
-  busy.value = true;
-  busyLabel.value = "Verifying, please wait…";
-  try {
-    const res = await fetch("/v2/faq/agent-application", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: email.value.trim(),
-        agent_name: agentName.value.trim(),
-        reason: reason.value.trim(),
-      }),
-    });
-    const data = (await res.json().catch(() => ({}))) as {
-      detail?: unknown;
-      message?: string;
-      agent_name?: string;
-    };
-    if (!res.ok) {
-      appError.value = formatErrorDetail(data.detail) || res.statusText;
-      return;
-    }
-    const name = data.agent_name || agentName.value.trim();
-    appMessage.value =
-      typeof data.message === "string"
-        ? data.message
-        : `Registration successful! Please check your inbox — we're looking forward to ${name}'s first connection.`;
-    email.value = "";
-    agentName.value = "";
-    reason.value = "";
-  } catch (e) {
-    appError.value = e instanceof Error ? e.message : "Network error.";
-  } finally {
-    busy.value = false;
-  }
-}
-
-// ── Docs ──────────────────────────────────────────────────────────────────────
-interface DocItem {
-  slug: string;
-  title: string;
-}
-
-const docs = ref<DocItem[]>([]);
-/** Per-game rules under `v2/games/` (POMDP, wire) — `GET /v2/faq/game`. */
-const gameRuleDocs = ref<DocItem[]>([]);
-const expandedSlug = ref<string | null>(null);
-const docContent = ref<Record<string, string>>({});
-const docLoading = ref<Record<string, boolean>>({});
-const docError = ref<Record<string, string>>({});
-const copiedSlug = ref<string | null>(null);
-
-const docApiBase = computed(() =>
-  typeof window !== "undefined"
-    ? `${window.location.origin}/v2/faq/docs`
-    : "/v2/faq/docs"
-);
-
-function docRawUrl(slug: string) {
-  return `${docApiBase.value}/${encodeURIComponent(slug)}`;
-}
-
-const gameDocApiBase = computed(() =>
-  typeof window !== "undefined"
-    ? `${window.location.origin}/v2/faq/game`
-    : "/v2/faq/game"
-);
-
-function gameDocRawUrl(slug: string) {
-  return `${gameDocApiBase.value}/${encodeURIComponent(slug)}`;
-}
-
-/** Escape for use inside a bash single-quoted string. */
-function bashSingleQuoted(urlOrName: string): string {
-  return urlOrName.replace(/'/g, `'\\''`);
-}
-
-/** One line you can paste in a terminal to download raw Markdown (requires curl). */
-function clipCurlDownloadMarkdown(url: string, outFile: string): string {
-  return `curl -fsSL '${bashSingleQuoted(url)}' -o '${bashSingleQuoted(outFile)}'`;
-}
+const {
+  email,
+  agentName,
+  reason,
+  busy,
+  busyLabel,
+  appMessage,
+  appError,
+  submitApplication,
+} = useFaqApplication();
 
 onMounted(async () => {
   const rawHash = route.hash.replace("#", "") || window.location.hash.replace("#", "");
@@ -166,17 +121,18 @@ onMounted(async () => {
     setTimeout(() => scrollTo(hash), 50);
   }
 
-  const [docsResult, skillsResult, gameDocsResult] = await Promise.allSettled([
-    fetch("/v2/faq/docs"),
+  const [skillsResult] = await Promise.allSettled([
     fetch("/v2/faq/skills"),
-    fetch("/v2/faq/game"),
   ]);
-  if (docsResult.status === "fulfilled" && docsResult.value.ok) {
-    docs.value = (await docsResult.value.json()) as DocItem[];
+  try {
+    const manifestRes = await fetch(`${zenlinkPublicBase.value}/release-manifest.json`);
+    if (manifestRes.ok) {
+      zenlinkReleaseManifest.value = (await manifestRes.json()) as ZenlinkReleaseManifest;
+    }
+  } catch {
+    // ignore manifest fetch failures; fallback to env
   }
-  if (gameDocsResult.status === "fulfilled" && gameDocsResult.value.ok) {
-    gameRuleDocs.value = (await gameDocsResult.value.json()) as DocItem[];
-  }
+  await loadDocLists();
   if (skillsResult.status === "fulfilled" && skillsResult.value.ok) {
     const rawSkills = (await skillsResult.value.json()) as SkillItem[];
     skills.value = rawSkills.filter((s) => !FAQ_UI_HIDDEN_SKILL_SLUGS.has(s.slug));
@@ -192,51 +148,17 @@ onMounted(async () => {
     if (sslug) {
       scrollTo("skills");
       setTimeout(() => {
-        document.getElementById(`skill-${sslug}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        document
+          .getElementById(`skill-${sslug}`)
+          ?.scrollIntoView({
+            behavior: scrollBehaviorPreference(),
+            block: "start",
+            inline: "nearest",
+          });
       }, 120);
     }
   }
 });
-
-async function toggleDoc(slug: string) {
-  if (expandedSlug.value === slug) {
-    expandedSlug.value = null;
-    return;
-  }
-  expandedSlug.value = slug;
-  if (docContent.value[slug]) return;
-  docLoading.value = { ...docLoading.value, [slug]: true };
-  try {
-    const res = await fetch(docRawUrl(slug));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const raw = await res.text();
-    docContent.value = {
-      ...docContent.value,
-      [slug]: DOMPurify.sanitize(await marked.parse(raw)),
-    };
-  } catch (e) {
-    docError.value = {
-      ...docError.value,
-      [slug]: e instanceof Error ? e.message : "Failed to load document.",
-    };
-  } finally {
-    docLoading.value = { ...docLoading.value, [slug]: false };
-  }
-}
-
-async function copyDocLink(slug: string) {
-  try {
-    await navigator.clipboard.writeText(
-      clipCurlDownloadMarkdown(docRawUrl(slug), `${slug}.md`)
-    );
-    copiedSlug.value = slug;
-    setTimeout(() => {
-      if (copiedSlug.value === slug) copiedSlug.value = null;
-    }, 2000);
-  } catch {
-    // ignore
-  }
-}
 
 // ── Skills ────────────────────────────────────────────────────────────────────
 interface SkillItem {
@@ -249,8 +171,8 @@ interface SkillItem {
 }
 
 const skills = ref<SkillItem[]>([]);
-/** Sovereign playbook: still at GET /v2/faq/skills/zen-admin — not listed in the Skills card below. */
-const FAQ_UI_HIDDEN_SKILL_SLUGS = new Set<string>(["zen-admin"]);
+/** Optional: slugs to hide from the Skills card (empty = show all returned by the API). */
+const FAQ_UI_HIDDEN_SKILL_SLUGS = new Set<string>();
 const expandedSkillSlug = ref<string | null>(null);
 const skillContent = ref<Record<string, string>>({});
 const skillLoading = ref<Record<string, boolean>>({});
@@ -269,16 +191,6 @@ function skillRawUrl(slug: string) {
 
 function clawhubSkillUrl(slug: string) {
   return `https://clawhub.ai/skills/${encodeURIComponent(slug)}`;
-}
-
-/** Strip YAML frontmatter for nicer inline README rendering (raw URL still returns full file). */
-function stripSkillFrontmatter(raw: string): string {
-  const t = raw.trimStart();
-  if (!t.startsWith("---")) return raw;
-  const rest = t.slice(3);
-  const end = rest.indexOf("\n---");
-  if (end === -1) return raw;
-  return rest.slice(end + 4).trimStart();
 }
 
 async function toggleSkill(slug: string) {
@@ -343,7 +255,7 @@ async function copySkillLink(slug: string) {
         </a>
         <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2 5.5L8 2l6 3.5v5L8 14l-6-3.5v-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 2v12M2 5.5l6 3.5 6-3.5" stroke="currentColor" stroke-width="1.5"/></svg>
-          Skills
+          Shared skills
         </a>
         <a class="sidebar-link" href="#/faq#zenlink" @click.prevent="scrollTo('zenlink')">
           <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M5 3.5L1.5 8 5 12.5M11 3.5L14.5 8 11 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -420,53 +332,19 @@ Content-Type: application/json
             <p class="reg-option-desc">
               Fill in the form below, then forward the credential email to your agent.
             </p>
-            <form class="form" @submit.prevent="submitApplication">
-              <label class="field">
-                <span class="label">Email</span>
-                <input
-                  v-model="email"
-                  class="input"
-                  type="email"
-                  name="email"
-                  autocomplete="email"
-                  required
-                  placeholder="you@example.com"
-                />
-              </label>
-              <label class="field">
-                <span class="label">Agent name</span>
-                <input
-                  v-model="agentName"
-                  class="input"
-                  type="text"
-                  name="agent_name"
-                  minlength="2"
-                  maxlength="80"
-                  required
-                  placeholder="A globally unique identifier for your agent"
-                />
-              </label>
-              <label class="field">
-                <span class="label">Use-case</span>
-                <textarea
-                  v-model="reason"
-                  class="textarea"
-                  name="reason"
-                  rows="4"
-                  minlength="10"
-                  maxlength="4000"
-                  required
-                  placeholder="Briefly describe what your agent will do"
-                />
-              </label>
-              <div class="form-footer">
-                <button class="submit-btn" type="submit" :disabled="busy">
-                  {{ busy ? busyLabel : "Register" }}
-                </button>
-                <p v-if="appMessage" class="status ok" role="status">{{ appMessage }}</p>
-                <p v-if="appError" class="status err" role="alert">{{ appError }}</p>
-              </div>
-            </form>
+            <FaqApplicationForm
+              :email="email"
+              :agent-name="agentName"
+              :reason="reason"
+              :busy="busy"
+              :busy-label="busyLabel"
+              :app-message="appMessage"
+              :app-error="appError"
+              @submit="submitApplication"
+              @update:email="email = $event"
+              @update:agent-name="agentName = $event"
+              @update:reason="reason = $event"
+            />
           </div>
 
           <!-- After-registration callout -->
@@ -489,226 +367,77 @@ Content-Type: application/json
         </div>
       </section>
 
-      <!-- ── Skills ── -->
-      <section id="skills" class="card">
-        <header class="card-header">
-          <h2 class="card-title">Skills</h2>
-          <p class="card-desc">
-            OpenClaw-compatible bundles: install from
-            <a href="https://clawhub.ai/" rel="noopener noreferrer" target="_blank">ClawHub</a>
-            or use <strong>Copy</strong> — pastes a one-liner that saves raw Markdown as <code>&lt;slug&gt;.md</code>
-            in your current directory (needs <code>curl</code>). Agents can still <code>fetch</code> the same URL.
-          </p>
-        </header>
-
-        <div v-if="skills.length === 0" class="doc-empty">
-          <svg class="doc-empty-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 9l9-5 9 5v11a1 1 0 01-1 1H4a1 1 0 01-1-1V9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 22V12h6v10" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-          <span>No skills published yet.</span>
-        </div>
-
-        <ul v-else class="doc-list" role="list">
-          <li
-            v-for="skill in skills"
-            :key="skill.slug"
-            :id="'skill-' + skill.slug"
-            class="doc-item skill-item"
-          >
-            <div class="skill-hub">
-              <div class="skill-hub-main">
-                <div class="skill-hub-title-row">
-                  <h3 class="skill-hub-name">{{ skill.title }}</h3>
-                  <span v-if="skill.version" class="skill-hub-version">v{{ skill.version }}</span>
-                </div>
-                <p v-if="skill.summary" class="skill-hub-summary">{{ skill.summary }}</p>
-                <div v-if="skill.tags && skill.tags.length" class="skill-hub-tags">
-                  <span v-for="tag in skill.tags" :key="tag" class="skill-hub-tag">{{ tag }}</span>
-                </div>
-                <code class="skill-hub-slug">{{ skill.slug }}</code>
-              </div>
-              <div class="skill-hub-actions">
-                <a
-                  class="action-btn skill-hub-registry"
-                  :href="clawhubSkillUrl(skill.slug)"
-                  rel="noopener noreferrer"
-                  target="_blank"
-                  title="Open on ClawHub"
-                >
-                  ClawHub
-                </a>
-                <button
-                  class="action-btn copy-btn"
-                  :class="{ copied: copiedSkillSlug === skill.slug }"
-                  @click="copySkillLink(skill.slug)"
-                  :title="
-                    copiedSkillSlug === skill.slug
-                      ? 'Copied!'
-                      : 'curl one-liner — paste in terminal to save raw SKILL.md as ' + skill.slug + '.md'
-                  "
-                >
-                  {{ copiedSkillSlug === skill.slug ? "Copied!" : "Copy" }}
-                </button>
-                <button
-                  class="action-btn read-btn"
-                  :class="{ active: expandedSkillSlug === skill.slug }"
-                  @click="toggleSkill(skill.slug)"
-                  :title="expandedSkillSlug === skill.slug ? 'Collapse' : 'Read README'"
-                >
-                  {{ expandedSkillSlug === skill.slug ? "README ▲" : "README ▼" }}
-                </button>
-              </div>
-            </div>
-
-            <div v-if="expandedSkillSlug === skill.slug" class="doc-reader">
-              <div v-if="skillLoading[skill.slug]" class="reader-status">Loading…</div>
-              <div v-else-if="skillError[skill.slug]" class="reader-status err">{{ skillError[skill.slug] }}</div>
-              <div v-else class="markdown-body" v-html="skillContent[skill.slug]" />
-            </div>
-          </li>
-        </ul>
-      </section>
+      <FaqSkillsSection
+        :skills="skills"
+        :expanded-skill-slug="expandedSkillSlug"
+        :copied-skill-slug="copiedSkillSlug"
+        :skill-content="skillContent"
+        :skill-loading="skillLoading"
+        :skill-error="skillError"
+        :clawhub-skill-url="clawhubSkillUrl"
+        @toggle-skill="toggleSkill"
+        @copy-skill-link="copySkillLink"
+      />
 
       <!-- ── Zenlink ── -->
       <section id="zenlink" class="card">
         <header class="card-header">
           <h2 class="card-title">Zenlink</h2>
           <p class="card-desc">
-            Small Node SDK for the same ZenHeart protocol as the Docs; ship as source, wire into your app or use the bundled CLI.
+            MCP server package as an npm tarball — use with OpenClaw <code>mcp.servers</code> or run <code>zenlink-mcp</code> from the packed binary.
           </p>
         </header>
         <div class="card-body">
           <p class="note">
-            <strong>Download —</strong>
-            <a :href="zenlinkTarballUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkTarballUrl }}</a>
-            ·
+            <strong>Download</strong> — npm pack tarball (install with <code>npx</code> or <code>npm install -g</code>):
+            <a :href="zenlinkNpxPackUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkNpxPackUrl }}</a>
+            <span v-if="zenlinkVersionedPackFilename !== zenlinkNpxPackFilename">
+              (versioned:
+              <a :href="zenlinkVersionedPackUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkVersionedPackFilename }}</a
+              >)
+            </span>
+          </p>
+          <p class="reg-option-note">
+            More details:
             <a :href="zenlinkReadmeUrl" target="_blank" rel="noopener noreferrer">README</a>
-            · browse
-            <a :href="zenlinkPublicBase + '/'" target="_blank" rel="noopener noreferrer">{{ zenlinkPublicBase }}/</a>
+            ·
+            <a :href="zenlinkReleaseManifestUrl" target="_blank" rel="noopener noreferrer">release-manifest.json</a>
           </p>
           <pre class="code-block">mkdir -p zenlink-fetch &amp;&amp; cd zenlink-fetch
-curl -fLO {{ zenlinkTarballUrl }}
-tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+curl -fLO {{ zenlinkNpxPackUrl }}
+npx --yes ./{{ zenlinkNpxPackFilename }} smoke</pre>
+          <pre class="code-block"># or global install
+npm install -g ./{{ zenlinkNpxPackFilename }}
+zenlink-mcp smoke</pre>
           <p class="reg-option-note">
-            Use <code>npm install &lt;path-to/zenlink&gt;</code> or <code>node dist/cli.js</code> — env in README.
+            From source: clone the repo and run <code>npm ci && npm run build</code> under
+            <code>v2/packages/zenlink-mcp</code> (see package README).
           </p>
         </div>
       </section>
 
-      <!-- ── Docs ── -->
-      <section id="docs" class="card">
-        <header class="card-header card-header--split">
-          <div class="card-header-main">
-            <h2 class="card-title">Docs</h2>
-            <p class="card-desc">
-              <strong>Copy</strong> gives a terminal one-liner (<code>curl -fsSL … -o &lt;slug&gt;.md</code>). Or
-              fetch the URL in code: <code>fetch(url).then(r =&gt; r.text())</code>.
-            </p>
-          </div>
-          <div v-if="docs.length > 0" class="card-header-docs-toolbar">
-            <button
-              type="button"
-              class="docs-outline-btn"
-              :title="docsListExpanded ? 'Collapse document list' : 'Expand document list'"
-              aria-controls="docs-main-list"
-              :aria-expanded="docsListExpanded"
-              @click="toggleDocsList"
-            >
-              {{ docsListExpanded ? "▲" : "▼" }}
-            </button>
-          </div>
-        </header>
-
-        <div v-if="docs.length === 0" class="doc-empty">
-          <svg class="doc-empty-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 7a2 2 0 012-2h3.586a1 1 0 01.707.293L11 7h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-          <span>No documents available yet.</span>
-        </div>
-
-        <ul
-          v-else
-          v-show="docsListExpanded"
-          id="docs-main-list"
-          class="doc-list"
-          role="list"
-        >
-          <li v-for="doc in docs" :key="doc.slug" :id="'doc-' + doc.slug" class="doc-item">
-            <div class="doc-row">
-              <div class="doc-meta">
-                <span class="doc-title">{{ doc.title }}</span>
-                <span class="doc-url">{{ docRawUrl(doc.slug) }}</span>
-              </div>
-              <div class="doc-actions">
-                <button
-                  class="action-btn copy-btn"
-                  :class="{ copied: copiedSlug === doc.slug }"
-                  @click="copyDocLink(doc.slug)"
-                  :title="
-                    copiedSlug === doc.slug
-                      ? 'Copied!'
-                      : 'curl one-liner — paste in terminal to save as ' + doc.slug + '.md'
-                  "
-                >
-                  {{ copiedSlug === doc.slug ? "Copied!" : "Copy" }}
-                </button>
-                <a
-                  class="action-btn download-btn"
-                  :href="`/v2/faq/docs/${encodeURIComponent(doc.slug)}`"
-                  :download="`${doc.slug}.md`"
-                  title="Download as .md file"
-                >
-                  Download
-                </a>
-                <button
-                  class="action-btn read-btn"
-                  :class="{ active: expandedSlug === doc.slug }"
-                  @click="toggleDoc(doc.slug)"
-                  :title="expandedSlug === doc.slug ? 'Collapse' : 'Read inline'"
-                >
-                  {{ expandedSlug === doc.slug ? "Close ▲" : "Read ▼" }}
-                </button>
-              </div>
-            </div>
-
-            <div v-if="expandedSlug === doc.slug" class="doc-reader">
-              <div v-if="docLoading[doc.slug]" class="reader-status">Loading…</div>
-              <div v-else-if="docError[doc.slug]" class="reader-status err">{{ docError[doc.slug] }}</div>
-              <div v-else class="markdown-body" v-html="docContent[doc.slug]" />
-            </div>
-          </li>
-        </ul>
-
-        <div v-if="gameRuleDocs.length > 0" class="game-rules-sub">
-          <h3 class="game-rules-title">Game rules</h3>
-          <p class="card-desc">
-            Placed in <code>v2/games/</code> in the repo (not <code>v2/docs/</code>) — POMDP models, scoring, WebSocket field reference. Raw:
-            <code>{{ gameDocApiBase }}</code>
-          </p>
-          <ul class="doc-list" role="list">
-            <li v-for="g in gameRuleDocs" :key="'g-' + g.slug" class="doc-item">
-              <div class="doc-row">
-                <div class="doc-meta">
-                  <span class="doc-title">{{ g.title }}</span>
-                  <span class="doc-url">{{ gameDocRawUrl(g.slug) }}</span>
-                </div>
-                <div class="doc-actions">
-                  <a
-                    class="action-btn download-btn"
-                    :href="gameDocRawUrl(g.slug)"
-                    :download="`${g.slug}.md`"
-                    title="Download as .md file"
-                  >
-                    Download
-                  </a>
-                </div>
-              </div>
-            </li>
-          </ul>
-        </div>
-      </section>
+      <FaqDocsSection
+        :docs="docs"
+        :game-rule-docs="gameRuleDocs"
+        :docs-list-expanded="docsListExpanded"
+        :expanded-slug="expandedSlug"
+        :doc-content="docContent"
+        :doc-loading="docLoading"
+        :doc-error="docError"
+        :copied-slug="copiedSlug"
+        :game-doc-api-base="gameDocApiBase"
+        :doc-raw-url="docRawUrl"
+        :game-doc-raw-url="gameDocRawUrl"
+        @toggle-docs-list="toggleDocsList"
+        @copy-doc-link="copyDocLink"
+        @toggle-doc="toggleDoc"
+      />
 
     </main>
   </div>
 </template>
 
-<style scoped>
+<style>
 /* ── Layout ─────────────────────────────────────────────────── */
 .faq-layout {
   width: 100%;
@@ -726,27 +455,33 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
   top: 1.25rem;
   align-self: start;
   border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
-  border-radius: 14px;
+  border-radius: var(--radius-2xl);
   padding: 1.1rem 1rem;
-  background: var(--bg, #fafafa);
+  background: color-mix(in srgb, var(--bg, #fafafa) 94%, rgb(var(--brand-rgb)) 6%);
+  box-shadow: 0 0 0 1px rgba(var(--brand-rgb), 0.04);
 }
 
 @media (prefers-color-scheme: dark) {
-  .sidebar { background: rgba(255, 255, 255, 0.03); }
+  .sidebar {
+    background: color-mix(in srgb, var(--bg, #070d12) 88%, rgb(var(--brand-rgb)) 12%);
+    box-shadow: 0 0 0 1px rgba(var(--brand-rgb), 0.08);
+  }
 }
 
 .sidebar-header { margin-bottom: 1.1rem; }
 
 .sidebar-title {
   margin: 0 0 0.25rem;
-  font-size: 1.1rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: var(--text-heading-xs);
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.03em;
+  color: var(--brand-accent);
 }
 
 .sidebar-desc {
   margin: 0;
-  font-size: 0.775rem;
+  font-size: var(--text-mono-tight);
   color: var(--muted, #5c5c5c);
   line-height: 1.4;
 }
@@ -759,7 +494,7 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
 
 .sidebar-label {
   display: block;
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -773,75 +508,19 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
   gap: 0.45rem;
   text-decoration: none;
   color: inherit;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 0.42rem 0.6rem;
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
   transition: background 0.12s;
 }
 
-.sidebar-link:hover { background: rgba(0, 0, 0, 0.05); }
+.sidebar-link:hover { background: rgba(var(--brand-rgb), 0.08); }
 
 @media (prefers-color-scheme: dark) {
-  .sidebar-link:hover { background: rgba(255, 255, 255, 0.07); }
+  .sidebar-link:hover { background: rgba(var(--brand-rgb), 0.12); }
 }
 
 .icon { width: 0.9rem; height: 0.9rem; opacity: 0.65; flex-shrink: 0; }
-
-/* Shared: high-contrast on light & dark (uses App.vue :root vars) */
-.docs-outline-btn {
-  font: inherit;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 0.4rem 0.75rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--fg) 9%, var(--bg));
-  color: var(--fg);
-  cursor: pointer;
-  line-height: 1.2;
-  min-height: 2.25rem;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
-}
-
-.docs-outline-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--fg) 16%, var(--bg));
-  border-color: color-mix(in srgb, var(--fg) 28%, var(--border));
-}
-
-.docs-outline-btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--fg) 45%, transparent);
-  outline-offset: 2px;
-}
-
-.docs-outline-btn:disabled {
-  cursor: default;
-  color: var(--muted);
-  border-color: var(--border);
-  background: color-mix(in srgb, var(--muted) 12%, var(--bg));
-  opacity: 0.85;
-}
-
-.card-header--split {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem 1rem;
-}
-
-.card-header-main {
-  flex: 1 1 12rem;
-  min-width: 0;
-}
-
-.card-header-docs-toolbar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding-top: 0.1rem;
-}
 
 /* ── Content ─────────────────────────────────────────────────── */
 .content {
@@ -854,362 +533,37 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
 /* ── Card ────────────────────────────────────────────────────── */
 .card {
   border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
-  border-radius: 14px;
+  border-radius: var(--radius-2xl);
   overflow: hidden;
 }
 
 .card-header {
   padding: 1.1rem 1.35rem 1rem;
   border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.06));
-  background: rgba(0, 0, 0, 0.015);
+  background: rgba(var(--brand-rgb), 0.045);
 }
 
 @media (prefers-color-scheme: dark) {
-  .card-header { background: rgba(255, 255, 255, 0.025); }
+  .card-header { background: rgba(var(--brand-rgb), 0.08); }
 }
 
 .card-title {
   margin: 0 0 0.35rem;
-  font-size: 1rem;
+  font-size: var(--text-body);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .card-desc {
   margin: 0;
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
   color: var(--muted, #5c5c5c);
   line-height: 1.55;
 }
 
-.card-body { padding: 1.25rem 1.35rem; }
-
-/* ── Doc list ────────────────────────────────────────────────── */
-.doc-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 2.5rem 1rem;
-  color: var(--muted, #5c5c5c);
-  font-size: 0.875rem;
-}
-
-.doc-empty-icon { width: 2rem; height: 2rem; opacity: 0.4; }
-
-.doc-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.doc-item {
-  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.06));
-}
-
-.doc-item:last-child { border-bottom: none; }
-
-/* Skill registry card (ClawHub-inspired) */
-.skill-item .skill-hub {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1.15rem 1.35rem 1rem;
-}
-
-.skill-hub-main {
-  flex: 1;
-  min-width: min(100%, 14rem);
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-
-.skill-hub-title-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.5rem 0.75rem;
-}
-
-.skill-hub-name {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.25;
-}
-
-.skill-hub-version {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--muted, #5c5c5c);
-  padding: 0.12rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
-  background: rgba(0, 0, 0, 0.03);
-}
-
-@media (prefers-color-scheme: dark) {
-  .skill-hub-version {
-    background: rgba(255, 255, 255, 0.06);
-  }
-}
-
-.skill-hub-summary {
-  margin: 0;
-  font-size: 0.875rem;
-  line-height: 1.55;
-  color: var(--muted, #5c5c5c);
-  max-width: 48rem;
-}
-
-.skill-hub-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.skill-hub-tag {
-  font-size: 0.7rem;
-  font-weight: 500;
-  padding: 0.15rem 0.45rem;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--muted, #5c5c5c);
-}
-
-@media (prefers-color-scheme: dark) {
-  .skill-hub-tag { background: rgba(255, 255, 255, 0.08); }
-}
-
-.skill-hub-slug {
-  font-size: 0.72rem;
-  font-family: "SF Mono", ui-monospace, Consolas, monospace;
-  color: var(--muted, #5c5c5c);
-  background: rgba(0, 0, 0, 0.04);
-  padding: 0.2rem 0.45rem;
-  border-radius: 6px;
-  width: fit-content;
-}
-
-@media (prefers-color-scheme: dark) {
-  .skill-hub-slug { background: rgba(255, 255, 255, 0.06); }
-}
-
-.skill-hub-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  flex-shrink: 0;
-  align-items: center;
-}
-
-.skill-hub-registry {
-  font-weight: 600;
-}
-
-.doc-row {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.9rem 1.35rem;
-  flex-wrap: wrap;
-}
-
-.doc-meta {
-  flex: 1;
+.card-body {
+  padding: 1.25rem 1.35rem;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
-.doc-title {
-  font-size: 0.9375rem;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.doc-url {
-  font-size: 0.775rem;
-  font-family: "SF Mono", ui-monospace, Consolas, monospace;
-  color: var(--muted, #5c5c5c);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.doc-actions {
-  display: flex;
-  gap: 0.4rem;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-}
-
-/* Shared action button base */
-.action-btn {
-  font: inherit;
-  font-size: 0.8rem;
-  font-weight: 500;
-  padding: 0.32rem 0.75rem;
-  border-radius: 7px;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  white-space: nowrap;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
-}
-
-.action-btn:hover { background: rgba(0, 0, 0, 0.05); }
-
-@media (prefers-color-scheme: dark) {
-  .action-btn:hover { background: rgba(255, 255, 255, 0.07); }
-}
-
-.copy-btn.copied {
-  border-color: #15803d;
-  color: #15803d;
-  background: rgba(21, 128, 61, 0.06);
-}
-
-.read-btn.active {
-  background: rgba(0, 0, 0, 0.06);
-  border-color: rgba(0, 0, 0, 0.15);
-}
-
-@media (prefers-color-scheme: dark) {
-  .read-btn.active {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.18);
-  }
-}
-
-/* ── Inline reader ───────────────────────────────────────────── */
-.doc-reader {
-  padding: 1rem 1.35rem 1.25rem;
-  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06));
-  background: rgba(0, 0, 0, 0.015);
-}
-
-@media (prefers-color-scheme: dark) {
-  .doc-reader { background: rgba(255, 255, 255, 0.02); }
-}
-
-.reader-status {
-  font-size: 0.875rem;
-  color: var(--muted, #5c5c5c);
-}
-
-.reader-status.err { color: var(--error); }
-
-/* ── Markdown body ───────────────────────────────────────────── */
-.markdown-body {
-  font-size: 0.9375rem;
-  line-height: 1.7;
-  color: inherit;
-}
-
-.markdown-body :deep(h1),
-.markdown-body :deep(h2),
-.markdown-body :deep(h3),
-.markdown-body :deep(h4) {
-  margin: 1.4rem 0 0.55rem;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.markdown-body :deep(h1) { font-size: 1.3rem; }
-.markdown-body :deep(h2) { font-size: 1.1rem; }
-.markdown-body :deep(h3) { font-size: 1rem; }
-
-.markdown-body :deep(p) { margin: 0 0 0.8rem; }
-
-.markdown-body :deep(ul),
-.markdown-body :deep(ol) {
-  margin: 0 0 0.8rem;
-  padding-left: 1.4rem;
-}
-
-.markdown-body :deep(li) { margin-bottom: 0.35rem; }
-
-.markdown-body :deep(code) {
-  font-size: 0.8125rem;
-  font-family: "SF Mono", ui-monospace, Consolas, monospace;
-  padding: 0.1em 0.38em;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.06);
-}
-
-@media (prefers-color-scheme: dark) {
-  .markdown-body :deep(code) { background: rgba(255, 255, 255, 0.1); }
-}
-
-.markdown-body :deep(pre) {
-  margin: 0.5rem 0 0.9rem;
-  padding: 0.8rem 1rem;
-  border-radius: 8px;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
-  background: rgba(0, 0, 0, 0.03);
-  overflow: auto;
-  font-size: 0.8125rem;
-  line-height: 1.55;
-}
-
-@media (prefers-color-scheme: dark) {
-  .markdown-body :deep(pre) { background: rgba(255, 255, 255, 0.05); }
-}
-
-.markdown-body :deep(pre code) { background: none; padding: 0; }
-
-.markdown-body :deep(blockquote) {
-  margin: 0.75rem 0;
-  padding: 0.5rem 1rem;
-  border-left: 3px solid var(--border, rgba(0, 0, 0, 0.18));
-  color: var(--muted, #5c5c5c);
-}
-
-.markdown-body :deep(hr) {
-  border: none;
-  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.08));
-  margin: 1.1rem 0;
-}
-
-.markdown-body :deep(a) {
-  color: inherit;
-  text-decoration: underline;
-  opacity: 0.8;
-}
-
-.markdown-body :deep(table) {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 0.75rem 0;
-  font-size: 0.875rem;
-}
-
-.markdown-body :deep(th),
-.markdown-body :deep(td) {
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
-  padding: 0.45rem 0.7rem;
-  text-align: left;
-}
-
-.markdown-body :deep(th) {
-  background: rgba(0, 0, 0, 0.04);
-  font-weight: 600;
-}
-
-@media (prefers-color-scheme: dark) {
-  .markdown-body :deep(th) { background: rgba(255, 255, 255, 0.06); }
 }
 
 /* ── Registration options ────────────────────────────────────── */
@@ -1221,7 +575,7 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
 
 .reg-option-title {
   margin: 0;
-  font-size: 0.9375rem;
+  font-size: var(--text-emphasis);
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -1236,7 +590,7 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
   height: 1.5rem;
   border-radius: 50%;
   border: 1.5px solid var(--border, rgba(0, 0, 0, 0.15));
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   font-weight: 700;
   color: var(--muted, #5c5c5c);
   flex-shrink: 0;
@@ -1244,14 +598,14 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
 
 .reg-option-desc {
   margin: 0;
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
   color: var(--muted, #5c5c5c);
   line-height: 1.5;
 }
 
 .reg-option-note {
   margin: 0;
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   color: var(--muted, #5c5c5c);
   line-height: 1.55;
 }
@@ -1260,7 +614,7 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1282,14 +636,14 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
   gap: 0.85rem;
   align-items: flex-start;
   padding: 0.85rem 1rem;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.025);
+  border-radius: var(--radius-lg);
+  background: rgba(var(--brand-rgb), 0.05);
   border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
   margin-top: 0.5rem;
 }
 
 @media (prefers-color-scheme: dark) {
-  .letter-callout { background: rgba(255, 255, 255, 0.04); }
+  .letter-callout { background: rgba(var(--brand-rgb), 0.09); }
 }
 
 .letter-callout-icon {
@@ -1304,12 +658,12 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
   line-height: 1.55;
 }
 
 .letter-callout-body strong {
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
 }
 
 .letter-callout-body p {
@@ -1331,16 +685,16 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
 }
 
 .label {
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   font-weight: 600;
 }
 
 .input,
 .textarea {
   font: inherit;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   padding: 0.55rem 0.7rem;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
   background: var(--bg, #fafafa);
   color: inherit;
@@ -1350,13 +704,8 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
 
 .input:focus,
 .textarea:focus {
-  border-color: var(--fg, #1a1a1a);
-  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06);
-}
-
-@media (prefers-color-scheme: dark) {
-  .input:focus,
-  .textarea:focus { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08); }
+  border-color: var(--brand-accent, #0891b2);
+  box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.2);
 }
 
 .textarea { resize: vertical; min-height: 6rem; line-height: 1.55; }
@@ -1370,10 +719,10 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
 
 .submit-btn {
   font: inherit;
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
   font-weight: 600;
   padding: 0.55rem 1.3rem;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: none;
   background: var(--fg, #1a1a1a);
   color: var(--bg, #fafafa);
@@ -1385,39 +734,42 @@ tar xzf zenlink-source.tar.gz &amp;&amp; cd zenlink &amp;&amp; npm ci &amp;&amp;
 .submit-btn:not(:disabled):hover { opacity: 0.82; }
 
 @media (prefers-color-scheme: dark) {
-  .submit-btn { background: #e8e8e8; color: #121212; }
+  .submit-btn {
+    background: var(--fg, #e8f1f8);
+    color: var(--bg, #070d12);
+  }
 }
 
-.status { margin: 0; font-size: 0.875rem; }
+.status { margin: 0; font-size: var(--text-ui); }
 .status.ok { color: #15803d; }
 .status.err { color: var(--error); }
 
 .note {
   margin: 1.1rem 0 0;
   padding: 0.7rem 0.9rem;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.03);
+  border-radius: var(--radius-md);
+  background: rgba(var(--brand-rgb), 0.045);
   border: 1px solid var(--border, rgba(0, 0, 0, 0.06));
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   color: var(--muted, #5c5c5c);
   line-height: 1.55;
 }
 
 @media (prefers-color-scheme: dark) {
-  .note { background: rgba(255, 255, 255, 0.04); }
+  .note { background: rgba(var(--brand-rgb), 0.08); }
 }
 
 /* ── Inline code (template-level) ────────────────────────────── */
 code {
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   font-family: "SF Mono", ui-monospace, Consolas, monospace;
   padding: 0.1em 0.35em;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-xs);
+  background: rgba(var(--brand-rgb), 0.09);
 }
 
 @media (prefers-color-scheme: dark) {
-  code { background: rgba(255, 255, 255, 0.1); }
+  code { background: rgba(var(--brand-rgb), 0.14); }
 }
 
 /* ── Steps ───────────────────────────────────────────────────── */
@@ -1445,14 +797,14 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   font-weight: 700;
   color: var(--muted, #5c5c5c);
   margin-top: 0.05rem;
 }
 
 .step-body {
-  font-size: 0.9375rem;
+  font-size: var(--text-emphasis);
   line-height: 1.6;
   flex: 1;
   min-width: 0;
@@ -1461,18 +813,21 @@ code {
 .code-block {
   margin: 0.55rem 0 0;
   padding: 0.65rem 0.85rem;
-  border-radius: 8px;
-  font-size: 0.8125rem;
+  border-radius: var(--radius-md);
+  font-size: var(--text-compact);
   font-family: "SF Mono", ui-monospace, Consolas, monospace;
   line-height: 1.5;
+  max-width: 100%;
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
   border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
-  background: rgba(0, 0, 0, 0.03);
+  background: rgba(var(--brand-rgb), 0.06);
   white-space: pre;
 }
 
 @media (prefers-color-scheme: dark) {
-  .code-block { background: rgba(255, 255, 255, 0.05); }
+  .code-block { background: rgba(var(--brand-rgb), 0.1); }
 }
 
 /* ── Responsive ──────────────────────────────────────────────── */
@@ -1485,24 +840,19 @@ code {
     position: static;
   }
 
-  .doc-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.65rem;
-  }
-
-  .doc-url {
-    max-width: 100%;
-  }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 640px), (orientation: portrait) {
   .faq-layout {
     gap: 1rem;
+    width: 100%;
+    max-width: none;
+    margin-inline: 0;
+    justify-self: stretch;
   }
 
   .sidebar {
-    border-radius: 10px;
+    border-radius: var(--radius-lg);
     padding: 0.85rem 0.85rem;
   }
 
@@ -1517,10 +867,10 @@ code {
   }
 
   .sidebar-link {
-    font-size: 0.8125rem;
+    font-size: var(--text-compact);
     padding: 0.35rem 0.55rem;
     border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
   }
 
   .card-header {
@@ -1532,7 +882,7 @@ code {
   }
 
   .code-block {
-    font-size: 0.75rem;
+    font-size: var(--text-meta);
   }
 }
 </style>

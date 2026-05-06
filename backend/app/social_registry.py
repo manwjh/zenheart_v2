@@ -24,8 +24,12 @@ from typing import Any, Optional, Sequence
 
 from starlette.websockets import WebSocket
 
-from app.config import SOCIAL_ROOM_IDLE_HOURS_DEFAULT
-from app.models import SocialRoom
+from app.config import (
+    SOCIAL_ROOM_IDLE_HOURS_DEFAULT,
+    SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_CAP,
+    SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_DEFAULT,
+)
+from app.model_defs import SocialRoom
 
 # ------------------------------------------------------------------ permanent check-in room
 
@@ -49,6 +53,7 @@ CHECKIN_ROOM_RULES = (
 # ------------------------------------------------------------------ mention parsing
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9_\-]+)")
+_MENTION_BRACED_RE = re.compile(r"@\{([^{}\n]{1,120})\}")
 
 
 def parse_mentions(text: str, name_to_id: dict[str, str]) -> list[str]:
@@ -58,7 +63,12 @@ def parse_mentions(text: str, name_to_id: dict[str, str]) -> list[str]:
     """
     seen: dict[str, None] = {}
     for m in _MENTION_RE.finditer(text):
-        name = m.group(1).lower()
+        name = m.group(1).casefold()
+        agent_id = name_to_id.get(name)
+        if agent_id and agent_id not in seen:
+            seen[agent_id] = None
+    for m in _MENTION_BRACED_RE.finditer(text):
+        name = m.group(1).strip().casefold()
         agent_id = name_to_id.get(name)
         if agent_id and agent_id not in seen:
             seen[agent_id] = None
@@ -70,6 +80,7 @@ MAX_MENTION_AGENT_IDS_PER_MESSAGE = 50
 
 # Private room allowlist: creator is always included; cap size for abuse prevention.
 MAX_PRIVATE_ROOM_ALLOWLIST = 200
+MAX_ROOM_DENYLIST = 200
 
 
 def filter_mention_agent_ids_for_room(
@@ -103,6 +114,25 @@ def normalize_private_allowlist(creator_id: str, raw: list[Any] | None) -> set[s
     if len(out) > MAX_PRIVATE_ROOM_ALLOWLIST:
         return "allowlist_too_large"
     out.add(creator_id)
+    return out
+
+
+def normalize_room_denylist(creator_id: str, raw: list[Any] | None) -> set[str] | str:
+    """Build room denylist. Creator is never denylisted."""
+    if raw is None:
+        return set()
+    if not isinstance(raw, list):
+        return "invalid_denylist"
+    out: set[str] = set()
+    for x in raw:
+        if not isinstance(x, str) or not x.strip():
+            return "invalid_denylist"
+        v = x.strip()
+        if v == creator_id:
+            continue
+        out.add(v)
+    if len(out) > MAX_ROOM_DENYLIST:
+        return "denylist_too_large"
     return out
 
 
@@ -144,6 +174,7 @@ class ChatRoom:
     # When false, observers and unauthenticated HTTP cannot read room content; card still listable.
     observable: bool = True
     allowlist_agent_ids: set[str] = field(default_factory=set)
+    denylist_agent_ids: set[str] = field(default_factory=set)
 
     def idle_anchor(self) -> datetime:
         """Time anchor for idle dissolution (no new messages resets the clock)."""
@@ -192,13 +223,21 @@ class ChatRoom:
         return {m.agent_name.lower(): m.agent_id for m in self.members.values()}
 
 
-def _chat_room_from_social_row(row: SocialRoom, *, creator_name: str) -> ChatRoom:
+def _chat_room_from_social_row(
+    row: SocialRoom, *, creator_name: str, agent_cap: int
+) -> ChatRoom:
     """Build an in-memory room with no live members (used after DB rehydrate)."""
     allow: set[str] = set()
     if row.is_private:
         if row.allowlist_agent_ids:
             allow.update(str(x) for x in row.allowlist_agent_ids)
         allow.add(row.creator_agent_id)
+    deny: set[str] = set()
+    if row.denylist_agent_ids:
+        deny.update(str(x) for x in row.denylist_agent_ids)
+        deny.discard(row.creator_agent_id)
+    cap = max(1, min(agent_cap, SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_CAP))
+    max_agents = max(1, min(int(row.max_members), cap))
     return ChatRoom(
         room_id=row.room_id,
         name=row.name,
@@ -207,7 +246,7 @@ def _chat_room_from_social_row(row: SocialRoom, *, creator_name: str) -> ChatRoo
         creator_id=row.creator_agent_id,
         creator_name=creator_name,
         created_at=row.created_at,
-        max_concurrent_agents=row.max_members,
+        max_concurrent_agents=max_agents,
         members={},
         observers=set(),
         message_count=int(row.total_messages),
@@ -216,12 +255,15 @@ def _chat_room_from_social_row(row: SocialRoom, *, creator_name: str) -> ChatRoo
         is_private=row.is_private,
         observable=row.observable,
         allowlist_agent_ids=allow,
+        denylist_agent_ids=deny,
     )
 
 
-def chat_room_from_social_row(row: SocialRoom, *, creator_name: str) -> ChatRoom:
+def chat_room_from_social_row(
+    row: SocialRoom, *, creator_name: str, agent_cap: int
+) -> ChatRoom:
     """Build in-memory room with no live members (startup merge / admin resurrect)."""
-    return _chat_room_from_social_row(row, creator_name=creator_name)
+    return _chat_room_from_social_row(row, creator_name=creator_name, agent_cap=agent_cap)
 
 
 # ------------------------------------------------------------------ registry
@@ -233,7 +275,7 @@ class SocialRoomRegistry:
         self._lock = asyncio.Lock()
         self._rooms: dict[str, ChatRoom] = {}
         self._agent_room: dict[str, str] = {}  # agent_id → room_id
-        self._max_concurrent_agents: int = 50
+        self._max_concurrent_agents: int = SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_DEFAULT
         self._max_concurrent_observers: int = 50
         self._idle_after: timedelta = timedelta(hours=SOCIAL_ROOM_IDLE_HOURS_DEFAULT)
 
@@ -244,7 +286,9 @@ class SocialRoomRegistry:
         max_concurrent_observers: int,
         idle_after: timedelta,
     ) -> None:
-        self._max_concurrent_agents = max(1, max_concurrent_agents)
+        self._max_concurrent_agents = max(
+            1, min(max_concurrent_agents, SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_CAP)
+        )
         self._max_concurrent_observers = max(1, max_concurrent_observers)
         self._idle_after = (
             idle_after
@@ -288,14 +332,27 @@ class SocialRoomRegistry:
         is_private: bool = False,
         observable: bool = True,
         allowlist_raw: list[Any] | None = None,
+        denylist_raw: list[Any] | None = None,
     ) -> ChatRoom | str:
         """Return ChatRoom on success, or an error-reason string."""
         allow: set[str] | str = {creator_id}
+        deny: set[str] | str = set()
         if is_private:
             al = normalize_private_allowlist(creator_id, allowlist_raw)
             if isinstance(al, str):
                 return al
             allow = al
+            dl = normalize_room_denylist(creator_id, denylist_raw)
+            if isinstance(dl, str):
+                return dl
+            deny = dl
+        else:
+            if allowlist_raw not in (None, []):
+                return "allowlist_not_supported_public_room"
+            dl = normalize_room_denylist(creator_id, denylist_raw)
+            if isinstance(dl, str):
+                return dl
+            deny = dl
         async with self._lock:
             if creator_id in self._agent_room:
                 return "already_in_room"
@@ -324,6 +381,7 @@ class SocialRoomRegistry:
                 is_private=is_private,
                 observable=bool(observable),
                 allowlist_agent_ids=set(allow) if is_private else set(),
+                denylist_agent_ids=set(deny),
             )
             self._rooms[room_id] = room
             self._agent_room[creator_id] = room_id
@@ -345,6 +403,8 @@ class SocialRoomRegistry:
                 return "room_not_found"
             if len(room.members) >= room.max_concurrent_agents:
                 return "room_concurrency_full"
+            if agent_id in room.denylist_agent_ids:
+                return "blocked_by_room_denylist"
             if room.is_private and agent_id not in room.allowlist_agent_ids:
                 return "not_invited"
             member = RoomMember(
@@ -424,7 +484,11 @@ class SocialRoomRegistry:
                 cn = nmap.get(r.creator_agent_id) or (
                     (r.creator_agent_id[:8] + "…") if len(r.creator_agent_id) > 8 else r.creator_agent_id
                 )
-            snapshots.append(chat_room_from_social_row(r, creator_name=cn))
+            snapshots.append(
+                chat_room_from_social_row(
+                    r, creator_name=cn, agent_cap=self._max_concurrent_agents
+                )
+            )
         async with self._lock:
             n = 0
             for room in snapshots:
@@ -506,19 +570,21 @@ class SocialRoomRegistry:
         )
         return [r.to_summary(self._idle_after, for_public_lobby=True) for r in rooms]
 
-    async def apply_private_allowlist_after_persist(
-        self, room_id: str, creator_id: str, allow: set[str],
+    async def apply_room_access_lists_after_persist(
+        self, room_id: str, creator_id: str, allow: set[str], deny: set[str],
     ) -> str | None:
-        """Set in-memory allowlist after DB success (``allow`` is already normalized)."""
+        """Set in-memory room access lists after DB success."""
         async with self._lock:
             room = self._rooms.get(room_id)
             if room is None:
                 return "room_not_found"
             if room.creator_id != creator_id:
                 return "forbidden"
-            if not room.is_private:
-                return "not_private_room"
-            room.allowlist_agent_ids = set(allow)
+            if room.is_private:
+                room.allowlist_agent_ids = set(allow)
+            elif allow:
+                return "allowlist_not_supported_public_room"
+            room.denylist_agent_ids = set(deny)
         return None
 
     # ---------------------------------------------------------------- observer management
@@ -607,23 +673,46 @@ class SocialRoomRegistry:
             except (RuntimeError, OSError):
                 pass
 
-    async def notify_observers_topic_pending(
+    async def broadcast_to_members_only(
+        self,
+        room_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Deliver ``frame`` to in-room agent WebSockets only (not observers)."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return
+            member_targets = [m.ws for m in room.members.values() if m.ws is not None]
+        text = json.dumps(frame, ensure_ascii=False)
+        for ws in member_targets:
+            try:
+                await ws.send_text(text)
+            except (RuntimeError, OSError):
+                pass
+
+    async def notify_topic_suggestions_pending(
         self,
         session_factory: object,
         room_id: str,
     ) -> None:
-        """Broadcast current DB pending topic snapshot to observers (creator pull updates list)."""
-        from app.services.social_db import list_pending_topic_suggestions
+        """Broadcast current DB pending topic snapshot to observers and in-room agents.
+
+        Agents receive the same ``topic_suggestions_pending`` frame on ``/v2/agent/ws``;
+        ``pull_room_topics`` still dequeues rows for the room creator.
+        """
+        from app.domains.social.persistence.social_repository import (
+            list_pending_topic_suggestions,
+        )
 
         topics = await list_pending_topic_suggestions(session_factory, room_id)
-        await self.broadcast_to_observers_only(
-            room_id,
-            {
-                "type": "topic_suggestions_pending",
-                "room_id": room_id,
-                "topics": topics,
-            },
-        )
+        frame = {
+            "type": "topic_suggestions_pending",
+            "room_id": room_id,
+            "topics": topics,
+        }
+        await self.broadcast_to_observers_only(room_id, frame)
+        await self.broadcast_to_members_only(room_id, frame)
 
     async def broadcast_dissolution(
         self,

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { CELL_UNKNOWN } from "@/utils/maze";
+import { createEventSourceStream } from "@/composables/useEventSourceStream";
 
 type ApiMazeState = {
   width: number;
@@ -39,12 +40,12 @@ type Point = { x: number; y: number };
 
 const sessions = ref<LiveSession[]>([]);
 const loadError = ref<string | null>(null);
-const streamStatus = ref<"connecting" | "live" | "reconnecting">("connecting");
-let eventSource: EventSource | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const streamStatus = ref<"connecting" | "live" | "reconnecting" | "failed">("connecting");
 
 const STREAM_PATH = "/v2/games/stream";
 const RECONNECT_MS = 2000;
+const RECONNECT_MAX_MS = 30_000;
+const RECONNECT_MAX_ATTEMPTS = 25;
 
 function isPassage(cells: number[], w: number, h: number, x: number, y: number): boolean {
   if (x < 0 || y < 0 || x >= w || y >= h) {
@@ -160,50 +161,39 @@ function applyPayload(raw: { sessions?: LiveSession[] } | null) {
   loadError.value = null;
 }
 
-function connectEventSource() {
-  if (reconnectTimer !== null) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  eventSource?.close();
-  eventSource = null;
-  streamStatus.value = "connecting";
-
-  const es = new EventSource(STREAM_PATH);
-  eventSource = es;
-
-  es.onopen = () => {
-    streamStatus.value = "live";
-  };
-
-  es.onmessage = (ev: MessageEvent) => {
+const stream = createEventSourceStream({
+  path: STREAM_PATH,
+  reconnectMs: RECONNECT_MS,
+  reconnectMaxMs: RECONNECT_MAX_MS,
+  reconnectMaxAttempts: RECONNECT_MAX_ATTEMPTS,
+  onStatusChange: (next) => {
+    streamStatus.value = next;
+  },
+  onReconnectExhausted: () => {
+    loadError.value = "Live stream unavailable after repeated connection failures.";
+  },
+  onMessage: (raw) => {
     try {
-      const data = JSON.parse(ev.data) as { sessions?: LiveSession[] };
+      const data = JSON.parse(raw) as { sessions?: LiveSession[] };
       applyPayload(data);
     } catch {
       loadError.value = "bad stream data";
     }
-  };
-
-  es.onerror = () => {
-    es.close();
-    eventSource = null;
-    streamStatus.value = "reconnecting";
-    reconnectTimer = setTimeout(connectEventSource, RECONNECT_MS);
-  };
-}
+  },
+});
 
 onMounted(() => {
-  connectEventSource();
+  stream.connect();
 });
 
 onUnmounted(() => {
-  if (reconnectTimer !== null) {
-    clearTimeout(reconnectTimer);
-  }
-  eventSource?.close();
-  eventSource = null;
+  stream.stop();
 });
+
+function retryGameStream() {
+  loadError.value = null;
+  stream.connect();
+}
 
 const countLabel = computed(() => {
   const n = sessions.value.length;
@@ -223,6 +213,9 @@ const streamLabel = computed(() => {
     case "connecting":
       return "Connecting";
     case "reconnecting":
+      return "Reconnecting";
+    case "failed":
+      return "Offline";
     default:
       return "Reconnecting";
   }
@@ -235,6 +228,9 @@ const streamTitle = computed(() => {
     case "connecting":
       return "Connecting to stream";
     case "reconnecting":
+      return "Reconnecting to stream";
+    case "failed":
+      return "Stream stopped after repeated failures; use retry or refresh the page";
     default:
       return "Reconnecting to stream";
   }
@@ -288,6 +284,24 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
               :title="streamTitle"
               >{{ streamLabel }}</span
             >
+            <button
+              v-if="streamStatus === 'failed'"
+              type="button"
+              class="stream-retry"
+              title="Retry stream connection"
+              aria-label="Retry stream connection"
+              @click="retryGameStream"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M2.5 8a5.5 5.5 0 019.74-3.35M13.5 8a5.5 5.5 0 01-9.74 3.35M13.5 8H11m-8.5 0H5"
+                  stroke="currentColor"
+                  stroke-width="1.35"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
           </div>
           <a class="doclink" href="/v2/faq/game/games-protocol">games-protocol</a>
           ·
@@ -424,6 +438,7 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
   margin: 0 auto;
   align-self: start;
   min-width: 0;
+  overflow-x: clip;
   padding: 0 0 2rem;
 }
 
@@ -433,15 +448,17 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
 
 .game-head h1 {
   margin: 0 0 0.35rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: var(--page-title-size);
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.03em;
+  color: var(--brand-accent);
 }
 
 .lead {
   margin: 0 0 0.9rem;
   color: var(--muted);
-  font-size: 0.9375rem;
+  font-size: var(--text-emphasis);
   line-height: 1.5;
   max-width: 62ch;
 }
@@ -470,18 +487,18 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
 .count {
   color: var(--fg);
   font-weight: 500;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   font-variant-numeric: tabular-nums;
 }
 
 .stream-pill {
   display: inline-block;
-  font-size: 0.65rem;
+  font-size: var(--text-caption);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 0.25rem 0.45rem;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   color: var(--muted);
   line-height: 1.2;
@@ -498,8 +515,37 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
   color: var(--muted);
 }
 
+.stream-pill.failed {
+  color: var(--error);
+  border-color: rgba(220, 38, 38, 0.4);
+  background: var(--error-bg);
+}
+
+.stream-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.stream-retry:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.stream-retry:focus-visible {
+  outline: 2px solid var(--accent, #6b8f71);
+  outline-offset: 2px;
+}
+
 .doclink {
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
   color: var(--fg);
   text-underline-offset: 3px;
   flex-shrink: 0;
@@ -510,14 +556,14 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
   margin-top: 1.1rem;
   padding: 0.75rem 0.9rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: rgba(127, 127, 127, 0.03);
 }
 
 .game-protocol p {
   margin: 0;
   color: var(--muted);
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
   line-height: 1.55;
   max-width: 72ch;
 }
@@ -531,14 +577,14 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
   color: var(--error);
   background: var(--error-bg);
   padding: 0.5rem 0.75rem;
-  border-radius: 6px;
-  font-size: 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-subtitle);
 }
 
 .empty {
   margin: 1.5rem 0 0;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: var(--text-strong);
   max-width: 50ch;
 }
 
@@ -553,7 +599,7 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
 
 .card {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 0.65rem 0.75rem 0.75rem;
   background: var(--bg);
 }
@@ -564,7 +610,7 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
   align-items: baseline;
   gap: 0.35rem 0.75rem;
   margin-bottom: 0.5rem;
-  font-size: 0.88rem;
+  font-size: var(--text-compact);
 }
 
 .name {
@@ -578,11 +624,11 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
 }
 
 .badge {
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 0.1rem 0.35rem;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: rgba(34, 197, 94, 0.2);
   color: #15803d;
 }
@@ -596,7 +642,7 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
 .meta {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  font-size: 0.8rem;
+  font-size: var(--text-compact);
 }
 
 .board-wrap {
@@ -609,7 +655,7 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
   display: block;
   width: 100%;
   height: 100%;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--border);
   overflow: hidden;
 }
@@ -628,7 +674,7 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
 }
 
 .maze-trail {
-  stroke: #a855f7;
+  stroke: #0891b2;
   stroke-width: 0.18;
   stroke-linejoin: round;
   stroke-linecap: round;
@@ -649,8 +695,8 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
 }
 
 .maze-player {
-  fill: #a855f7;
-  stroke: #7c3aed;
+  fill: #22d3ee;
+  stroke: #0891b2;
   stroke-width: 0.04;
 }
 
@@ -671,11 +717,11 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
     stroke: #fef08a;
   }
   .maze-trail {
-    stroke: #c4b5fd;
+    stroke: #67e8f9;
   }
   .maze-player {
-    fill: #c4b5fd;
-    stroke: #7c3aed;
+    fill: #67e8f9;
+    stroke: #0e7490;
   }
 }
 
@@ -683,7 +729,7 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
   display: grid;
   width: 100%;
   height: 100%;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
   background: var(--border);
   gap: 0;
@@ -716,10 +762,18 @@ function cellClass(m: ApiMazeState, w: number, x: number, y: number) {
 }
 
 .cell--player {
-  outline: 2px solid #a855f7;
+  outline: 2px solid #0891b2;
   outline-offset: -1px;
   background: var(--bg);
-  box-shadow: inset 0 0 0 1px #a855f7;
+  box-shadow: inset 0 0 0 1px #0891b2;
   z-index: 1;
+}
+
+@media (max-width: 640px), (orientation: portrait) {
+  .game-page {
+    width: 100%;
+    margin-inline: 0;
+    justify-self: stretch;
+  }
 }
 </style>

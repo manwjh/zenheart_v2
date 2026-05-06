@@ -7,7 +7,7 @@ from fastapi import WebSocket
 from sqlalchemy import select
 
 from app.crypto_tokens import constant_time_token_equals, sha256_hex
-from app.models import Agent
+from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
 
 

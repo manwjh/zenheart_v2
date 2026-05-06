@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.deps import DbSession, SettingsDep, admin_or_sovereign_guard
-from app.models import Agent, PublicWallMessage
+from app.model_defs import Agent, PublicWallMessage
 from app.services.agent_event_log import record_agent_event
 
 router = APIRouter(

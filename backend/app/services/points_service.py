@@ -28,7 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import AgentPointEvent, AgentPoints
+from app.model_defs import AgentPointEvent, AgentPoints
 
 logger = logging.getLogger(__name__)
 

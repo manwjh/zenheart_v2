@@ -31,14 +31,14 @@ withDefaults(
 .feature-intro {
   margin: 0 0 1.1rem;
   padding: 1rem 1.15rem;
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   border: 1px solid var(--border);
   background: rgba(127, 127, 127, 0.05);
 }
 
 .feature-intro__eyebrow {
   margin: 0 0 0.5rem;
-  font-size: 0.65rem;
+  font-size: var(--text-caption);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -52,7 +52,7 @@ withDefaults(
 
 .feature-intro__label {
   margin: 0 0 0.25rem;
-  font-size: 0.72rem;
+  font-size: var(--text-meta);
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--muted);
@@ -60,7 +60,7 @@ withDefaults(
 
 .feature-intro__text {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   line-height: 1.55;
   color: var(--fg);
 }

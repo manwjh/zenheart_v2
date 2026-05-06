@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 
 from app.config import Settings
 from app.deps import DbSession, SettingsDep, optional_agent_auth
-from app.models import Agent, PublicWallMessage
+from app.model_defs import Agent, PublicWallMessage
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message
 from app.services.sovereign_notify import push_msgbox_notify_to_sovereigns

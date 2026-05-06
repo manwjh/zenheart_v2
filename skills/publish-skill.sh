@@ -2,8 +2,7 @@
 # One-shot publish bundle directories to ClawHub and sync to ZenHeart site.
 #
 # Usage:
-#   ./publish-skill.sh zen-admin
-#   ./publish-skill.sh zen-admin zen-editorial-review
+#   ./publish-skill.sh editorial-review
 #   ./publish-skill.sh --all          # every sibling dir containing SKILL.md + skill.json
 #
 # Env:
@@ -47,9 +46,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+resolve_skill_dir() {
+  local slug="$1"
+  echo "${ROOT}/${slug}"
+}
+
 clawhub_publish() {
   local slug="$1"
-  local dir="${ROOT}/${slug}"
+  local dir
+  dir="$(resolve_skill_dir "$slug")"
   local meta="${dir}/skill.json"
   [[ -f "$meta" ]] || die "missing $meta (needed for ClawHub metadata)"
   local name version
@@ -109,6 +114,7 @@ zenheart_sync_skills() {
   need_cmd scp
   need_cmd tar
   need_cmd curl
+  need_cmd rsync
 
   require_env ZENHEART_EC2_HOST
   require_env ZENHEART_EC2_USER
@@ -124,6 +130,7 @@ zenheart_sync_skills() {
   local skills_remote
   local archive_local
   local archive_name
+  local staging_dir
 
   skills_remote="$(dirname "$ZENHEART_V2_REMOTE_DIR")/skills"
   require_opt_zenheart_path "$skills_remote" "skills_remote"
@@ -131,9 +138,14 @@ zenheart_sync_skills() {
   TMP_DIR="$(mktemp -d)"
   archive_local="$TMP_DIR/skills.tar.gz"
   archive_name="zenheart-v2-skills.tar.gz"
+  staging_dir="$TMP_DIR/staging"
+
+  echo "[zenheart] stage skills tree → $staging_dir"
+  mkdir -p "$staging_dir"
+  rsync -a --delete "$ROOT/" "$staging_dir/"
 
   echo "[zenheart] pack skills → $archive_local"
-  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar -C "$ROOT" -czf "$archive_local" .
+  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar -C "$staging_dir" -czf "$archive_local" .
 
   echo "[zenheart] upload skills archive → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$archive_name"
   chmod 400 "$ZENHEART_EC2_KEY" 2>/dev/null || true

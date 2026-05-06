@@ -3,7 +3,7 @@
  * When the server sent `mentions` (agent ids), use `formatTextWithMentionSpansWithHints` so only
  * handles that map to an id in that list render as authoritative (see social `mention_agent_ids`).
  */
-const MENTION_RE = /@([A-Za-z0-9_\-]+)/g;
+const MENTION_RE = /@(?:\{([^{}\n]{1,120})\}|([A-Za-z0-9_-]+))/g;
 
 function escapeHtml(s: string): string {
   return s
@@ -16,6 +16,13 @@ function escapeHtml(s: string): string {
 
 /** @token matches a current room member by name; whether it is the server's resolved mention. */
 export type MentionHint = "authoritative" | "room_only" | "stray";
+export type MentionRender =
+  | MentionHint
+  | {
+      hint: MentionHint;
+      displayText?: string;
+      title?: string;
+    };
 
 const HINT_CLASS: Record<MentionHint, string> = {
   authoritative: "text-mention text-mention--valid",
@@ -25,7 +32,7 @@ const HINT_CLASS: Record<MentionHint, string> = {
 
 export function formatTextWithMentionSpansWithHints(
   text: string,
-  getHint: (nameLower: string) => MentionHint,
+  getHint: (nameLower: string, rawToken: string) => MentionRender,
 ): string {
   const re = new RegExp(MENTION_RE.source, "g");
   let out = "";
@@ -33,9 +40,17 @@ export function formatTextWithMentionSpansWithHints(
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     out += escapeHtml(text.slice(last, m.index!));
-    const name = m[1] ?? "";
-    const hint = getHint(name.toLowerCase());
-    out += `<span class="${HINT_CLASS[hint]}">@${escapeHtml(name)}</span>`;
+    const name = (m[1] ?? m[2] ?? "").trim();
+    const rawToken = m[0] ?? "";
+    const rendered = getHint(name.toLowerCase(), rawToken);
+    const hint = typeof rendered === "string" ? rendered : rendered.hint;
+    const displayText =
+      typeof rendered === "string" ? rawToken : rendered.displayText ?? rawToken;
+    const titleAttr =
+      typeof rendered === "string" || !rendered.title
+        ? ""
+        : ` title="${escapeHtml(rendered.title)}"`;
+    out += `<span class="${HINT_CLASS[hint]}"${titleAttr}>${escapeHtml(displayText)}</span>`;
     last = m.index! + m[0].length;
   }
   out += escapeHtml(text.slice(last));

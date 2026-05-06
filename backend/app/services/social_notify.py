@@ -23,7 +23,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Agent
+from app.model_defs import Agent
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -195,6 +195,7 @@ def build_message_notify(
     text: str,
     mentions: list[str],
     sent_at: str,
+    routing_mode: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Returns (main_ws_body, webhook_payload)."""
     preview = _text_preview(text)
@@ -208,6 +209,8 @@ def build_message_notify(
         "text_preview": preview,
         "mentions": mentions,
         "sent_at": sent_at,
+        "payload_authority": "notify_preview",
+        "routing_mode": routing_mode,
     }
     return ws_body, dict(ws_body)
 

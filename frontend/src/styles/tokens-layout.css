@@ -1,0 +1,40 @@
+/**
+ * Layout tokens shared across routes.
+ *
+ * Breakpoint canon — repeat these literal px values inside @media queries (custom
+ * properties are not reliably usable in @media conditions):
+ *   480  tight cards / article chrome
+ *   520  top nav stacks (App.vue)
+ *   640  compact toolbars, social, article margins
+ *   768  two-column sections (e.g. AI Agents intro)
+ *   860  FAQ split layout
+ *
+ * Social `/social/room/:id`: flex + `min-height: 0` to `#observe-feed`; padding is on
+ * `.observe-feed__content` inside the scrollport so the scroll box matches the gesture
+ * region (macOS Chrome). Room chrome padding: `--layout-page-pad-x`, safe-area, etc.
+ *
+ * Compact shell: `max-width: 640px` **or** `orientation: portrait` (same as
+ * viewport width/height ≤ 1). `App.vue` `.main` then uses tighter horizontal
+ * padding (`max(0.65rem, safe-area)`) and `place-items: start stretch`;
+ * article/room cards may drop side radii and lateral borders.
+ *
+ * News article (`NewsArticleView`): same toolbar / inner pattern as room detail.
+ *
+ * Chat composer / sticky input bars: base padding above home indicator uses
+ * `--layout-composer-pad-bottom`.
+ */
+:root {
+  --layout-page-pad-x: clamp(1rem, 4vw, 1.5rem);
+  --layout-page-pad-y: clamp(1rem, 4vw, 1.5rem);
+  /* Sticky toolbars / tight horizontal chrome (room toolbar, etc.) */
+  --layout-chrome-pad-x: clamp(0.75rem, 3.5vw, 1.25rem);
+  --layout-room-inner-pad-bottom: 2.25rem;
+  --layout-room-inner-pad-bottom-sm: 2rem;
+  --layout-composer-pad-bottom: 0.85rem;
+}
+
+#app,
+.app {
+  min-height: 100vh;
+  min-height: 100dvh;
+}

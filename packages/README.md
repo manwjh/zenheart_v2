@@ -1,31 +1,41 @@
-# v2/packages — Zenlink
+# v2/packages
 
-Forward layout for **Node 18+** clients that talk to ZenHeart v2 (`/v2/agent/ws` + agent HTTP).
-
-## Layout
+OpenClaw-facing ZenHeart client tooling:
 
 | Directory | Role |
 |-----------|------|
-| **`zenlink/`** | **SDK** — `ZenlinkClient`, HTTP helpers, CLI smoke. Use from any Node service; publish path remains `zenlink-source.tar.gz` on the site. |
-| **`zenlink-mcp/`** | **OpenClaw MCP** — stdio server exposing `zenlink_*` tools + optional Gateway **`/hooks/wake`** push. |
-| **`zenlink-mcp/skill/`** | **OpenClaw skill** (`zenlink`) — `SKILL.md` + `skill.json` only. Install copy at **`workspaces/skills/zenlink`**. Kits still ship **`skills/zenlink/`** for the same two files. |
+| **`zenlink-mcp/`** | **MCP server** (`zenlink_*` tools, optional daemon, OpenClaw hook notifier). Embeds the client sources at **`zenlink-mcp/src/zenlink/`** (see `sdk-version.ts`). |
 
-There is **no third top-level package** for the skill; it ships **with** the MCP tree to keep the integration unit single-sourced.
+There is **no** separate **`v2/packages/zenlink`** package — the client compiles into `zenlink-mcp` (`dist/zenlink/` after `npm run build`).
 
-## Build order
+### OpenClaw: what you install
+
+Use **`zenlink-mcp`** only (stdio MCP). The folder **`src/zenlink/`** is the same-package library; do not delete it.
+
+## Build
 
 ```bash
-cd zenlink && npm ci && npm run build
-cd ../zenlink-mcp && npm ci && npm run build && npm run smoke:tools
+cd v2/packages/zenlink-mcp
+npm ci && npm run build && npm run verify
 ```
 
-Or from `zenlink-mcp`: `npm run verify` (builds peer `zenlink` then MCP).
+## Release (offline — default)
 
-## Release kits
+**`npm run pack`** (= **`npm run pack:offline`**) writes **`v2/packages/zenlink-mcp-offline-v<version>.tar.gz`**:
 
-From **`zenlink-mcp/`**:
+- **`zenlink-mcp/`** — `dist/` + production **`node_modules/`** (target needs **no npm registry**).
+- **`install-openclaw.sh`** + **`zenlink-deploy.env.example`** — OpenClaw **`mcp set`** helper.
 
-- `npm run bundle:source` — `zenheart-openclaw-zenlink-kit-src-*.tar.gz` in **`v2/packages/`**
-- `npm run bundle:offline` — `zenheart-openclaw-zenlink-kit-offline-*.tar.gz` in **`v2/packages/`**
+```bash
+npm run pack
+```
 
-See **`zenlink-mcp/README.md`** and **`zenlink-mcp/INTEGRATION.md`**.
+## Release (npx tarball — needs registry when installing)
+
+From **`zenlink-mcp/`**: **`npm run pack:npx`** writes **`npx-dist/zenlink-mcp.tgz`**. **`npm run pack:clean`** removes **`npx-dist/`**, offline tarballs under **`v2/packages/`**, and legacy kit archives if present.
+
+Deployed HTTPS mirrors (after **`./v2/deploy-frontend.sh`** or **`npm run publish:artifacts`**): **`https://zenheart.net/zenlink/zenlink-mcp-offline.tar.gz`** (offline, no registry on target) · **`https://zenheart.net/zenlink/zenlink-mcp.tgz`** (npx pack; needs registry at install).
+
+## Agent-to-agent (MCP)
+
+Self-echo filtering and send predicates: **`zenlink-mcp/README.md`**.

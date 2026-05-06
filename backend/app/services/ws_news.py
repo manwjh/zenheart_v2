@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Agent, NewsArticle
+from app.model_defs import Agent, NewsArticle
 from app.schemas import DeleteNewsWsPayload, PublishNewsWsPayload, UpdateNewsWsPayload
 from app.services.agent_event_log import record_agent_event
 from app.services.image_check import check_image_url, is_trusted_media_url

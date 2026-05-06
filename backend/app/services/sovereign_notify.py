@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 if TYPE_CHECKING:
     from app.ws_registry import AgentConnectionRegistry
 
-from app.models import Agent
+from app.model_defs import Agent
 from app.services.msgbox_notify import build_msgbox_notify_payload
 
 logger = logging.getLogger(__name__)

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select, update
 
 from app.deps import DbSession, SettingsDep
-from app.models import Agent, ArticleComment, NewsArticle
+from app.model_defs import Agent, ArticleComment, NewsArticle, NewsColumnMember
 from app.services.display_name_resolve import (
     live_comment_from_parts,
     live_display_name_from_snapshot,
@@ -19,6 +19,8 @@ from app.schemas import (
     ArticleCommentListResponse,
     ArticleCommentRow,
     NewsCategoryPrimaryListResponse,
+    NewsColumnAuthorListResponse,
+    NewsColumnAuthorRow,
     NewsArticleCategory,
     NewsArticleDetailResponse,
     NewsArticleLikeResponse,
@@ -67,10 +69,64 @@ LIKES_PER_POINT = 10
 MAX_POINTS_PER_ARTICLE = 10  # cap: at most 10 points per article (reached at 100 likes)
 
 
+def _parse_news_column_agent_ids(raw: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        aid = part.strip()
+        if aid and aid not in seen:
+            seen.add(aid)
+            out.append(aid)
+    return out
+
+
 def _to_category(level1: str | None, level2: str | None) -> NewsArticleCategory | None:
     if not level1 and not level2:
         return None
     return NewsArticleCategory(primary=level1, secondary=level2)
+
+
+@router.get("/columns", response_model=NewsColumnAuthorListResponse)
+async def list_news_column_authors(
+    session: DbSession, settings: SettingsDep
+) -> NewsColumnAuthorListResponse:
+    """Featured columnists: DB `news_column_members` if non-empty, else env NEWS_COLUMN_AGENT_IDS."""
+    db_members = (
+        await session.scalars(
+            select(NewsColumnMember).order_by(
+                NewsColumnMember.sort_order.asc(), NewsColumnMember.agent_id.asc()
+            )
+        )
+    ).all()
+    if db_members:
+        ids = [m.agent_id for m in db_members]
+        agent_rows = (await session.execute(select(Agent).where(Agent.agent_id.in_(ids)))).scalars().all()
+        by_id = {a.agent_id: a for a in agent_rows}
+        return NewsColumnAuthorListResponse(
+            items=[
+                NewsColumnAuthorRow(
+                    agent_id=m.agent_id,
+                    display_name=live_display_name_from_snapshot(
+                        "", by_id.get(m.agent_id), fallback_id=m.agent_id
+                    ),
+                )
+                for m in db_members
+            ]
+        )
+    ids = _parse_news_column_agent_ids(settings.news_column_agent_ids)
+    if not ids:
+        return NewsColumnAuthorListResponse(items=[])
+    rows = (await session.execute(select(Agent).where(Agent.agent_id.in_(ids)))).scalars().all()
+    by_id = {a.agent_id: a for a in rows}
+    return NewsColumnAuthorListResponse(
+        items=[
+            NewsColumnAuthorRow(
+                agent_id=aid,
+                display_name=live_display_name_from_snapshot("", by_id.get(aid), fallback_id=aid),
+            )
+            for aid in ids
+        ]
+    )
 
 
 @router.get("/categories/primary", response_model=NewsCategoryPrimaryListResponse)

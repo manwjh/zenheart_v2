@@ -5,10 +5,11 @@
  * Requires: openclaw on PATH, built dist/cli.js, and agent credentials:
  *   ZENLINK_AGENT_ID + ZENLINK_TOKEN, or ZENHEART_* / ZENHEART_V2_*.
  *
- * Defaults (unless **`ZENLINK_MCP_REGISTER_PLAIN_STDIO=1`**): **`ZENLINK_MCP_USE_DAEMON=1`** and
- * **`ZENLINK_MCP_DAEMON_ADDR_FILE=<tmpdir>/zenlink-mcp-daemon.addr`** — match **`zenlink-mcp --daemon`**
- * (same path). Plain stdio registration injects **`ZENLINK_MCP_USE_DAEMON=0`** so OpenClaw **`env`** overrides runtime default-on daemon (**`useDaemonStdioMode`** in **`daemon-env.ts`**).
- * Start the daemon **before** OpenClaw spawns MCP when using daemon forwarding; see **`scripts/launchd/`** plist template on macOS.
+ * Registration writes a plain stdio MCP spec; forwards **`ZENLINK_MCP_USE_DAEMON`** /
+ * **`ZENLINK_MCP_DAEMON_ADDR_FILE`** (and related **`ZENLINK_MCP_DAEMON_*`**) when non-empty in the shell
+ * (same rule as hook vars). They are **not** read back from `openclaw.json`. **Offline** **`install-openclaw.sh`**
+ * defaults **`USE_DAEMON=1`** and a stable **`~/.openclaw/tmp/zenlink-mcp-daemon.addr`** when unset (opt out with
+ * **`ZENLINK_MCP_USE_DAEMON=0`** in **`zenlink-deploy.env`** or **`ZENLINK_MCP_NO_DEFAULT_DAEMON=1`**). Re-run register after edits (no automatic daemon start).
  *
  * Usage:
  *   export ZENLINK_AGENT_ID=...
@@ -21,7 +22,8 @@
  *   then (**default**) patches **`openclaw.json`** to add **`hooks.*`** (+ random **`hooks.token`**) unless
  *   **`ZENLINK_MCP_AUTO_SETUP_HOOKS=0`**.
  * - Optional: **`ZENLINK_MCP_OPENCLAW_CREATE_CONFIG=1`** creates a minimal **`~/.openclaw/openclaw.json`** when missing.
- * - After **`openclaw mcp set`**, optionally probes **`zenlink-mcp --daemon`** (TCP **`zenlink_status`**) unless **`ZENLINK_MCP_REGISTER_DAEMON_PROBE=0`**, then runs **`POST .../hooks/wake`** smoke unless **`ZENLINK_MCP_HOOK_SMOKE=0`** or hook env missing.
+ * - After hooks merge, defaults **`ZENLINK_MCP_OPENCLAW_WAKE_MODE=now`** when hook base+token are present and wake mode is unset in the shell.
+ * - After **`openclaw mcp set`**, optionally runs **`POST .../hooks/wake`** smoke unless **`ZENLINK_MCP_HOOK_SMOKE=0`** or hook env missing.
  *
  * Skip hook merge entirely: **`ZENLINK_MCP_SKIP_OPENCLAW_HOOK_MERGE=1`**.
  *
@@ -29,9 +31,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   defaultOpenClawJsonPath,
@@ -46,158 +46,6 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = dirname(scriptDir);
 const cliJs = resolve(pkgRoot, "dist", "cli.js");
 
-/** Mirror `daemon-env.ts` defaults for injected MCP env. */
-function defaultDaemonAddrFileForRegister() {
-  const fromEnv = process.env.ZENLINK_MCP_DAEMON_ADDR_FILE?.trim();
-  if (fromEnv) return fromEnv;
-  const sys =
-    process.env.ZENLINK_MCP_DAEMON_ADDR_IN_SYSTEM_TMP === "1" ||
-    String(process.env.ZENLINK_MCP_DAEMON_ADDR_IN_SYSTEM_TMP ?? "").toLowerCase() === "true";
-  if (sys && process.platform !== "win32") {
-    return "/tmp/zenlink-mcp-daemon.addr";
-  }
-  return join(os.tmpdir(), "zenlink-mcp-daemon.addr");
-}
-
-function parseDaemonAddrLine(line) {
-  const t = line.trim();
-  const idx = t.lastIndexOf(":");
-  if (idx <= 0) return null;
-  const host = t.slice(0, idx).trim();
-  const port = Number(t.slice(idx + 1));
-  if (!Number.isFinite(port) || port <= 0) return null;
-  return { host, port };
-}
-
-/**
- * Best-effort: TCP **`zenlink_status`** over daemon NDJSON ipc.
- *
- * @param {string | undefined} addrFile
- */
-async function probeDaemonZenlinkStatus(addrFile) {
-  if (!addrFile?.trim()) {
-    console.error("");
-    console.error(
-      "note: daemon probe skipped — ZENLINK_MCP_DAEMON_ADDR_FILE empty in merged env.",
-    );
-    return;
-  }
-  console.error("");
-  console.error(`note: probing daemon ipc (${addrFile}) …`);
-  if (!existsSync(addrFile)) {
-    console.error(
-      `warning: addr file missing — start: zenlink-mcp --daemon (same credentials as MCP).`,
-    );
-    return;
-  }
-  const line =
-    readFileSync(addrFile, "utf8").split(/\r?\n/).find((l) => l.trim()) ?? "";
-  const ep = parseDaemonAddrLine(line);
-  if (!ep) {
-    console.error(`warning: addr file line invalid (${addrFile})`);
-    return;
-  }
-  const reachable = await new Promise((resolve) => {
-    const s = net.connect({ host: ep.host, port: ep.port }, () => {
-      s.destroy();
-      resolve(true);
-    });
-    const tmr = setTimeout(() => {
-      try {
-        s.destroy();
-      } catch {
-        /* ignore */
-      }
-      resolve(false);
-    }, 2500);
-    s.once("error", () => {
-      clearTimeout(tmr);
-      resolve(false);
-    });
-    s.once("connect", () => clearTimeout(tmr));
-  });
-  if (!reachable) {
-    console.error(
-      `warning: daemon tcp ${ep.host}:${ep.port} not reachable — is zenlink-mcp --daemon running?`,
-    );
-    return;
-  }
-  const payload =
-    '{"v":1,"cmd":"invoke","reqId":"zenlink-register-probe","tool":"zenlink_status","args":{}}\n';
-  await new Promise((resolve) => {
-    const sock = net.connect({ host: ep.host, port: ep.port }, () => {
-      sock.write(payload);
-    });
-    let buf = "";
-    const deadline = setTimeout(() => {
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-      console.error(
-        "warning: daemon invoke timed out (zenlink_status) — stale addr file?",
-      );
-      resolve();
-    }, 12_000);
-    sock.once("error", () => {
-      clearTimeout(deadline);
-      console.error("warning: daemon invoke socket error");
-      resolve();
-    });
-    sock.on("data", (ch) => {
-      buf += ch.toString("utf8");
-      const nl = buf.indexOf("\n");
-      if (nl < 0) return;
-      clearTimeout(deadline);
-      const jl = buf.slice(0, nl).trim();
-      try {
-        const row = JSON.parse(jl);
-        if (row.ok === true && row.result?.content?.[0]?.text) {
-          const txt = row.result.content[0].text;
-          try {
-            const o = JSON.parse(txt);
-            console.error(
-              `note: zenlink_status OK ${JSON.stringify({
-                connected: o.connected,
-                ws_superseded_total: o.ws_superseded_total,
-                current_room_id: o.current_room_id,
-                process_pid: o.process_pid,
-              })}`,
-            );
-          } catch {
-            console.error(`note: zenlink_status text ${txt.slice(0, 280)}`);
-          }
-        } else if (row.ok === false) {
-          console.error(
-            `warning: zenlink_status invoke error: ${row.message ?? JSON.stringify(row)}`,
-          );
-        } else {
-          console.error(
-            `warning: unexpected daemon ipc (${jl.slice(0, 280)})`,
-          );
-        }
-      } catch {
-        console.error(`warning: daemon reply not JSON (${jl.slice(0, 240)})`);
-      }
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-      resolve();
-    });
-  });
-}
-
-function daemonProbeDesired() {
-  const x = process.env.ZENLINK_MCP_REGISTER_DAEMON_PROBE;
-  if (x === "0" || String(x ?? "").toLowerCase() === "false") {
-    return false;
-  }
-  return true;
-}
-
 function autoSetupHooksEnabled() {
   const x = process.env.ZENLINK_MCP_AUTO_SETUP_HOOKS;
   if (x === "0" || String(x ?? "").toLowerCase() === "false") {
@@ -211,6 +59,30 @@ function createMinimalConfigAllowed() {
   return (
     x === "1" || String(x ?? "").toLowerCase() === "true"
   );
+}
+
+/**
+ * When hook base + token are present in the payload env (from zenlink-deploy.env and/or
+ * merge from openclaw.json), default **`ZENLINK_MCP_OPENCLAW_WAKE_MODE=now`** if the operator
+ * did not set it in the shell — so `openclaw mcp set` persists wake behaviour (not only LONG_LIVED).
+ */
+function applyDefaultOpenClawWakeModeIfHooksPresent(env) {
+  const fromShell = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "ZENLINK_MCP_OPENCLAW_WAKE_MODE",
+  );
+  if (fromShell) {
+    const v = process.env.ZENLINK_MCP_OPENCLAW_WAKE_MODE;
+    if (v !== undefined && v !== "") {
+      env["ZENLINK_MCP_OPENCLAW_WAKE_MODE"] = v;
+    }
+    return;
+  }
+  const base = String(env["ZENLINK_MCP_OPENCLAW_HOOK_BASE"] ?? "").trim();
+  const tok = String(env["ZENLINK_MCP_OPENCLAW_HOOK_TOKEN"] ?? "").trim();
+  if (base && tok) {
+    env["ZENLINK_MCP_OPENCLAW_WAKE_MODE"] = "now";
+  }
 }
 
 function hookSmokeDesired() {
@@ -472,51 +344,26 @@ async function main() {
   /** @type {Record<string, string>} */
   const env = { ZENLINK_AGENT_ID: agentId, ZENLINK_TOKEN: token };
 
-  const plainStdio =
-    process.env.ZENLINK_MCP_REGISTER_PLAIN_STDIO === "1" ||
-    String(process.env.ZENLINK_MCP_REGISTER_PLAIN_STDIO ?? "").toLowerCase() === "true";
-  if (plainStdio) {
-    /** Required so MCP env overrides runtime default-on daemon (see daemon-env useDaemonStdioMode). */
-    if (
-      process.env.ZENLINK_MCP_USE_DAEMON === undefined ||
-      process.env.ZENLINK_MCP_USE_DAEMON === ""
-    ) {
-      env.ZENLINK_MCP_USE_DAEMON = "0";
-    }
-  } else {
-    if (
-      process.env.ZENLINK_MCP_USE_DAEMON === undefined ||
-      process.env.ZENLINK_MCP_USE_DAEMON === ""
-    ) {
-      env.ZENLINK_MCP_USE_DAEMON = "1";
-    }
-    if (
-      process.env.ZENLINK_MCP_DAEMON_ADDR_FILE === undefined ||
-      process.env.ZENLINK_MCP_DAEMON_ADDR_FILE === ""
-    ) {
-      env.ZENLINK_MCP_DAEMON_ADDR_FILE = defaultDaemonAddrFileForRegister();
-    }
-  }
-
   for (const k of [
     "ZENLINK_HOST",
     "ZENLINK_USE_TLS",
     "ZENLINK_MCP_WS_TIMEOUT_MS",
-    "ZENLINK_MCP_LONG_LIVED",
-    "ZENLINK_MCP_WS_CLIENT_PING_INTERVAL_MS",
     "ZENLINK_MCP_USE_DAEMON",
     "ZENLINK_MCP_DAEMON_ADDR_FILE",
-    "ZENLINK_MCP_DAEMON_ADDR_IN_SYSTEM_TMP",
     "ZENLINK_MCP_DAEMON_INVOKE_TIMEOUT_MS",
+    "ZENLINK_MCP_DAEMON_ADDR_IN_SYSTEM_TMP",
+    "ZENLINK_MCP_LONG_LIVED",
+    "ZENLINK_MCP_WS_CLIENT_PING_INTERVAL_MS",
     "ZENLINK_MCP_INBOUND_QUEUE_MAX",
-    "ZENLINK_MCP_SOCIAL_RULES",
-    "ZENLINK_MCP_SOCIAL_RULES_FILE",
-    "ZENLINK_MCP_SOCIAL_RULES_WRITE",
+    "ZENLINK_MCP_PARTICIPANT_RULES",
+    "ZENLINK_MCP_PARTICIPANT_RULES_FILE",
+    "ZENLINK_MCP_PARTICIPANT_RULES_WRITE",
     "ZENLINK_MCP_OPENCLAW_HOOK_BASE",
     "ZENLINK_MCP_OPENCLAW_HOOK_TOKEN",
     "ZENLINK_MCP_OPENCLAW_WAKE_MODE",
     "ZENLINK_MCP_OPENCLAW_PUSH_FRAME_TYPES",
     "ZENLINK_MCP_OPENCLAW_PUSH_DEDUPE_MS",
+    "ZENLINK_MCP_OPENCLAW_WAKE_COALESCE_ROOM_MESSAGE_MS",
     "ZENHEART_HOST",
     "ZENHEART_USE_TLS",
     "ZENHEART_V2_HOST",
@@ -529,6 +376,16 @@ async function main() {
   }
 
   finalizeOpenClawHooksForRegister(env);
+  applyDefaultOpenClawWakeModeIfHooksPresent(env);
+
+  const pushOk =
+    Boolean(env.ZENLINK_MCP_OPENCLAW_HOOK_BASE?.trim()) &&
+    Boolean(env.ZENLINK_MCP_OPENCLAW_HOOK_TOKEN?.trim());
+  console.error(
+    `note: OpenClaw hook push (zenlink_status.openclaw_push): ${
+      pushOk ? "enabled — base+token set in registration env" : "disabled — set hooks in openclaw.json and/or zenlink-deploy.env, then re-run"
+    }`,
+  );
 
   const spec = {
     command: process.execPath,
@@ -559,25 +416,6 @@ async function main() {
   const st = result.status ?? 1;
   if (st !== 0) {
     return st;
-  }
-
-  if (!plainStdio && env.ZENLINK_MCP_USE_DAEMON !== "0") {
-    console.error("");
-    console.error(
-      `note: registered MCP env uses daemon forwarding (${env.ZENLINK_MCP_DAEMON_ADDR_FILE}).`,
-    );
-    console.error(
-      "      Run one zenlink-mcp --daemon before OpenClaw (same agent env). See README Daemon mode.",
-    );
-  }
-
-  if (
-    daemonProbeDesired() &&
-    !plainStdio &&
-    env.ZENLINK_MCP_USE_DAEMON !== "0" &&
-    typeof env.ZENLINK_MCP_DAEMON_ADDR_FILE === "string"
-  ) {
-    await probeDaemonZenlinkStatus(env.ZENLINK_MCP_DAEMON_ADDR_FILE);
   }
 
   /** Default smoke-on-success when **`ZENLINK_MCP_HOOK_SMOKE` unset.** */

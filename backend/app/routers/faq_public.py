@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import Settings
 from app.crypto_tokens import generate_agent_id, generate_token, sha256_hex
 from app.deps import DbSession, SettingsDep
-from app.models import Agent, AgentEventLog, AgentMessage, AgentPoints, EmailLog, SocialMessage
+from app.model_defs import Agent, AgentEventLog, AgentMessage, AgentPoints, EmailLog, SocialMessage
 from app.schemas import (
     A2aNetworkEdgeRow,
     A2aNetworkEdgesResponse,
@@ -74,18 +74,13 @@ _AGENT_ACTIVITY_FEED_LABELS: dict[str, str] = {
 DOCS_DIR = Path(__file__).parent.parent.parent.parent / "docs"
 GAME_DIR = Path(__file__).parent.parent.parent.parent / "games"
 
-# Old FAQ slugs from renamed files; GET /v2/faq/docs/<slug> still resolves.
+# Alternate FAQ doc slugs → canonical slug (same Markdown).
 _LEGACY_FAQ_DOC_SLUGS: dict[str, str] = {
-    # 05_zen-robot_Architecture.md removed; keep old URLs on welcome
     "robot-protocol": "welcome",
     "zen-robot_Architecture": "welcome",
-    # Renamed: 01_edge-access-layer.md -> 01_agent-connectivity-spec.md
     "edge-access-layer": "agent-connectivity-spec",
-    # Merged 02_base-protocol.md -> 01_agent-connectivity-spec.md (§8)
     "base-protocol": "agent-connectivity-spec",
-    # Merged 00_signal-system-map.md -> 01_agent-connectivity-spec.md (§9)
     "signal-system-map": "agent-connectivity-spec",
-    # Merged into 03_msgbox / 02_agent-registration / welcome (doc consolidation)
     "msgbox-architecture": "msgbox",
     "agent-to-agent-messaging": "msgbox",
     "agent-points": "agent-registration",

@@ -33,7 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.crypto_tokens import generate_token, sha256_hex
-from app.models import Agent, LevelPermission, NewsArticle
+from app.model_defs import Agent, LevelPermission, NewsArticle
 from app.services.agent_event_log import record_agent_event
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.msgbox import push_message
@@ -809,7 +809,7 @@ async def handle_admin_dissolve_social_room(
 
     await social.broadcast_dissolution(room, reason="admin_dissolve")
 
-    from app.services.social_db import record_room_dissolved
+    from app.domains.social.persistence.social_repository import record_room_dissolved
     await record_room_dissolved(
         session_factory,
         room_id=room.room_id,
@@ -894,7 +894,7 @@ async def handle_admin_resurrect_social_room(
         return {"type": "error", "reason": "room_already_active"}
 
     from app.services.display_name_resolve import load_agent_name_map
-    from app.services.social_db import record_room_reopened
+    from app.domains.social.persistence.social_repository import record_room_reopened
     from app.social_registry import chat_room_from_social_row
 
     row, reopen_err = await record_room_reopened(session_factory, payload.room_id)
@@ -919,7 +919,9 @@ async def handle_admin_resurrect_social_room(
             if len(row.creator_agent_id) > 8
             else row.creator_agent_id
         )
-    room = chat_room_from_social_row(row, creator_name=creator_display)
+    room = chat_room_from_social_row(
+        row, creator_name=creator_display, agent_cap=social.max_concurrent_agents
+    )
     if not await social.register_resurrected_room(room):
         return {"type": "error", "reason": "room_already_active"}
 

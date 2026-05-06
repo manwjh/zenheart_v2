@@ -22,10 +22,10 @@ SOCIAL_ROOM_IDLE_HOURS_MIN = 0.5  # 30 minutes
 SOCIAL_ROOM_IDLE_HOURS_MAX = 30.0 * 24.0  # 30 days
 SOCIAL_ROOM_IDLE_HOURS_DEFAULT = 7.0 * 24.0  # 7 days
 
-# --- Defaults for fields also exposed via env ---
-_DEFAULT_AGENT_WS_PRESENCE_PING_INTERVAL_S = 20.0
-_DEFAULT_AGENT_WS_PRESENCE_PONG_TIMEOUT_S = 60.0
-
+# Hard ceiling for agent participant WebSockets per room (env cannot exceed this).
+SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_CAP = 100
+# When SOCIAL_ROOM_MAX_CONCURRENT_AGENTS is unset, pydantic uses this default.
+SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_DEFAULT = 10
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -53,22 +53,18 @@ class Settings(BaseSettings):
     agent_ws_auth_timeout_seconds: int = Field(validation_alias="AGENT_WS_AUTH_TIMEOUT_SECONDS")
     agent_ws_max_message_bytes: int = Field(validation_alias="AGENT_WS_MAX_MESSAGE_BYTES")
     agent_ws_rate_limit_per_minute: int = Field(
-        default=120,
         validation_alias="AGENT_WS_RATE_LIMIT_PER_MINUTE",
     )
     agent_ws_rate_window_seconds: float = Field(
-        default=60.0,
         validation_alias="AGENT_WS_RATE_WINDOW_SECONDS",
     )
 
     # --- Presence: ping/pong on /v2/agent/ws and /v2/social/observe ---
     agent_ws_presence_ping_interval_seconds: float = Field(
-        default=_DEFAULT_AGENT_WS_PRESENCE_PING_INTERVAL_S,
         gt=0,
         validation_alias="AGENT_WS_PRESENCE_PING_INTERVAL_SECONDS",
     )
     agent_ws_presence_pong_timeout_seconds: float = Field(
-        default=_DEFAULT_AGENT_WS_PRESENCE_PONG_TIMEOUT_S,
         gt=0,
         validation_alias="AGENT_WS_PRESENCE_PONG_TIMEOUT_SECONDS",
     )
@@ -119,6 +115,8 @@ class Settings(BaseSettings):
     news_agent_daily_publish_limit: int = Field(
         default=5, ge=0, validation_alias="NEWS_AGENT_DAILY_PUBLISH_LIMIT"
     )
+    # Comma-separated agent_id list for featured news columns (order preserved). Empty = no columns endpoint rows.
+    news_column_agent_ids: str = Field(default="", validation_alias="NEWS_COLUMN_AGENT_IDS")
 
     # --- A2A rooms ---
     social_room_idle_hours: float = Field(
@@ -154,10 +152,15 @@ class Settings(BaseSettings):
         return x
 
     social_room_max_concurrent_agents: int = Field(
-        default=50, validation_alias="SOCIAL_ROOM_MAX_CONCURRENT_AGENTS"
+        default=SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_DEFAULT,
+        ge=1,
+        le=SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_CAP,
+        validation_alias="SOCIAL_ROOM_MAX_CONCURRENT_AGENTS",
     )
     social_room_max_concurrent_observers: int = Field(
-        default=50, validation_alias="SOCIAL_ROOM_MAX_CONCURRENT_OBSERVERS"
+        default=50,
+        ge=1,
+        validation_alias="SOCIAL_ROOM_MAX_CONCURRENT_OBSERVERS",
     )
 
     social_webhook_timeout_seconds: float = Field(
@@ -168,6 +171,10 @@ class Settings(BaseSettings):
     social_observe_shared_token: str = Field(
         default="",
         validation_alias="SOCIAL_OBSERVE_SHARED_TOKEN",
+    )
+    social_require_explicit_mentions: bool = Field(
+        default=False,
+        validation_alias="SOCIAL_REQUIRE_EXPLICIT_MENTIONS",
     )
 
     def smtp_configured(self) -> bool:

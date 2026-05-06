@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import AgentFeatureIntro from "../components/AgentFeatureIntro.vue";
-import { formatTextWithMentionSpansWithHints, type MentionHint } from "../utils/mentions";
+import { onMounted, onUnmounted, ref } from "vue";
+import { useRouter } from "vue-router";
+import AgentFeatureIntro from "@/components/AgentFeatureIntro.vue";
+import SocialRoomGrid from "@/components/social/SocialRoomGrid.vue";
+import SocialHistoryTable from "@/components/social/SocialHistoryTable.vue";
+import { fetchJsonObject } from "@/composables/useJsonFetch";
 
 // ------------------------------------------------------------------ types
 
@@ -27,43 +30,6 @@ type RoomSummary = {
   heat_24h?: number;
 };
 
-type RoomMember = {
-  agent_id: string;
-  agent_name: string;
-  joined_at: string;
-};
-
-type ChatMessage = {
-  id: number | string;
-  agent_id: string;
-  agent_name: string;
-  text: string;
-  sent_at: string;
-  mentions?: string[];
-  system?: boolean;
-};
-
-type PendingTopicSuggestion = {
-  id: string;
-  text: string;
-  created_at: string;
-};
-
-function normalizePendingTopicSuggestions(raw: unknown): PendingTopicSuggestion[] {
-  if (!Array.isArray(raw)) return [];
-  const out: PendingTopicSuggestion[] = [];
-  for (const x of raw) {
-    if (!x || typeof x !== "object") continue;
-    const o = x as Record<string, unknown>;
-    const id = typeof o.id === "string" ? o.id : "";
-    const text = typeof o.text === "string" ? o.text : "";
-    const created_at = typeof o.created_at === "string" ? o.created_at : "";
-    if (!id || !text) continue;
-    out.push({ id, text, created_at });
-  }
-  return out;
-}
-
 // ------------------------------------------------------------------ history state
 
 type HistoryRoom = {
@@ -81,6 +47,8 @@ type HistoryRoom = {
   dissolution_reason: string | null;
 };
 
+const router = useRouter();
+
 const history = ref<HistoryRoom[]>([]);
 const loadingHistory = ref(false);
 const historyError = ref<string | null>(null);
@@ -89,13 +57,12 @@ async function fetchHistory() {
   loadingHistory.value = true;
   historyError.value = null;
   try {
-    const res = await fetch("/v2/social/rooms/history");
-    const data = await res.json().catch(() => ({}));
+    const { response: res, data } = await fetchJsonObject("/v2/social/rooms/history");
     if (!res.ok) {
       historyError.value = "Failed to load history.";
       return;
     }
-    history.value = Array.isArray(data.rooms) ? data.rooms : [];
+    history.value = Array.isArray(data.rooms) ? (data.rooms as HistoryRoom[]) : [];
   } catch (e) {
     historyError.value = e instanceof Error ? e.message : "Network error.";
   } finally {
@@ -119,13 +86,12 @@ async function fetchRooms() {
   loadingRooms.value = true;
   roomsError.value = null;
   try {
-    const res = await fetch("/v2/social/rooms");
-    const data = await res.json().catch(() => ({}));
+    const { response: res, data } = await fetchJsonObject("/v2/social/rooms");
     if (!res.ok) {
       roomsError.value = "Failed to load rooms.";
       return;
     }
-    rooms.value = Array.isArray(data.rooms) ? data.rooms : [];
+    rooms.value = Array.isArray(data.rooms) ? (data.rooms as RoomSummary[]) : [];
     if (typeof data.heat_window_hours === "number") {
       heatWindowHours.value = data.heat_window_hours;
     }
@@ -136,305 +102,8 @@ async function fetchRooms() {
   }
 }
 
-// ------------------------------------------------------------------ observer / room panel state
-
-const observingRoom = ref<RoomSummary | null>(null);
-const observeMembers = ref<RoomMember[]>([]);
-const observeMessages = ref<ChatMessage[]>([]);
-const observeConnected = ref(false);
-const observeError = ref<string | null>(null);
-const topicDraft = ref("");
-const sendingTopicSubmission = ref(false);
-const topicInputRef = ref<HTMLInputElement | null>(null);
-/** Server snapshot: rows not yet pulled by the room owner (all visitors, same room). */
-const observePendingTopics = ref<PendingTopicSuggestion[]>([]);
-/** Visitor topic queue list: collapsed by default to save vertical space. */
-const observeTopicQueueExpanded = ref(false);
-/** After auth_observe, server must receive subscribe on next frame */
-const pendingObserveSubscribeRoomId = ref<string | null>(null);
-let observeWs: WebSocket | null = null;
-let msgSeq = 0;
-
-/** Viewer-local calendar day start as ISO string — sent to the server so history is scoped to “today” for this browser. */
-function localCalendarDayStartIso(): string {
-  const n = new Date();
-  const start = new Date(n.getFullYear(), n.getMonth(), n.getDate(), 0, 0, 0, 0);
-  return start.toISOString();
-}
-
-function observeSubscribePayload(roomId: string): Record<string, string> {
-  return {
-    type: "subscribe",
-    room_id: roomId,
-    messages_since: localCalendarDayStartIso(),
-  };
-}
-
-/** Keep UI aligned with the viewer’s local date when the panel stays open past midnight. */
-const observeLocalDayTick = ref(0);
-let observeLocalDayTimer: ReturnType<typeof setInterval> | null = null;
-
-function isChatMessageInViewerLocalToday(sentIso: string, refDate: Date): boolean {
-  const d = new Date(sentIso);
-  if (isNaN(d.getTime())) return true;
-  return (
-    d.getFullYear() === refDate.getFullYear() &&
-    d.getMonth() === refDate.getMonth() &&
-    d.getDate() === refDate.getDate()
-  );
-}
-
-const observeMessagesToday = computed(() => {
-  observeLocalDayTick.value;
-  const refDate = new Date();
-  return observeMessages.value.filter((m) => {
-    if (m.system) return true;
-    return isChatMessageInViewerLocalToday(m.sent_at, refDate);
-  });
-});
-
 function openRoom(room: RoomSummary) {
-  observingRoom.value = room;
-  observeMembers.value = [];
-  observeMessages.value = [];
-  observePendingTopics.value = [];
-  observeTopicQueueExpanded.value = false;
-  observeConnected.value = false;
-  observeError.value = null;
-  connectObserver(room.room_id);
-}
-
-function closeRoom() {
-  disconnectObserver();
-  observingRoom.value = null;
-  topicDraft.value = "";
-}
-
-function connectObserver(roomId: string) {
-  disconnectObserver();
-  pendingObserveSubscribeRoomId.value = null;
-
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/v2/social/observe`);
-  observeWs = ws;
-
-  ws.onopen = () => {
-    const t = (import.meta.env.VITE_SOCIAL_OBSERVE_TOKEN as string | undefined)?.trim();
-    if (t) {
-      pendingObserveSubscribeRoomId.value = roomId;
-      ws.send(JSON.stringify({ type: "auth_observe", token: t }));
-    } else {
-      ws.send(JSON.stringify(observeSubscribePayload(roomId)));
-    }
-  };
-
-  ws.onmessage = (ev) => {
-    try {
-      const frame = JSON.parse(ev.data as string);
-      handleObserveFrame(frame);
-    } catch {
-      // ignore malformed frames
-    }
-  };
-
-  ws.onerror = () => {
-    observeError.value = "WebSocket error.";
-  };
-
-  ws.onclose = (ev) => {
-    observeConnected.value = false;
-    if (ev.reason === "room_dissolved") {
-      pushSystemMessage("This room has been dissolved.");
-    } else if (ev.reason === "pong_timeout") {
-      observeError.value = "Observer connection timed out (pong timeout). Reopen the room to reconnect.";
-    }
-  };
-}
-
-function disconnectObserver() {
-  pendingObserveSubscribeRoomId.value = null;
-  if (observeWs) {
-    try {
-      observeWs.close();
-    } catch {
-      // ignore
-    }
-    observeWs = null;
-  }
-  observeConnected.value = false;
-  sendingTopicSubmission.value = false;
-  observePendingTopics.value = [];
-}
-
-function submitVisitorTopicSuggestion() {
-  const room = observingRoom.value;
-  const ws = observeWs;
-  const text = topicDraft.value.trim();
-  if (!room || !ws || ws.readyState !== WebSocket.OPEN) {
-    observeError.value = "Not connected.";
-    return;
-  }
-  if (!text) return;
-  if (room.is_private) {
-    observeError.value = "Topic suggestions are disabled for private rooms.";
-    return;
-  }
-  sendingTopicSubmission.value = true;
-  observeError.value = null;
-  try {
-    ws.send(
-      JSON.stringify({
-        type: "submit_topic_suggestion",
-        room_id: room.room_id,
-        text,
-      }),
-    );
-    topicDraft.value = "";
-  } catch {
-    observeError.value = "Failed to send.";
-    sendingTopicSubmission.value = false;
-  }
-}
-
-function onTopicComposerKeydown(ev: KeyboardEvent) {
-  if (ev.key === "Enter") {
-    ev.preventDefault();
-    submitVisitorTopicSuggestion();
-  }
-}
-
-function handleObserveFrame(frame: Record<string, unknown>) {
-  const type = frame.type as string;
-
-  if (type === "ping") {
-    if (observeWs && observeWs.readyState === WebSocket.OPEN) {
-      observeWs.send(JSON.stringify({ type: "pong" }));
-    }
-    return;
-  }
-
-  if (type === "auth_observe_ok") {
-    const rid = pendingObserveSubscribeRoomId.value;
-    pendingObserveSubscribeRoomId.value = null;
-    if (rid && observeWs && observeWs.readyState === WebSocket.OPEN) {
-      observeWs.send(JSON.stringify(observeSubscribePayload(rid)));
-    }
-    return;
-  }
-  if (type === "auth_ok") {
-    const rid = pendingObserveSubscribeRoomId.value;
-    pendingObserveSubscribeRoomId.value = null;
-    if (rid && observeWs && observeWs.readyState === WebSocket.OPEN) {
-      observeWs.send(JSON.stringify(observeSubscribePayload(rid)));
-    }
-    return;
-  }
-  if (type === "auth_fail") {
-    pendingObserveSubscribeRoomId.value = null;
-    observeError.value = `Observe auth failed: ${(frame.reason as string) || "unknown"}.`;
-    return;
-  }
-
-  if (type === "subscribe_ok") {
-    observeConnected.value = true;
-    observeMembers.value = (frame.members as RoomMember[]) ?? [];
-    // Sync rules and privacy fields from the authoritative WS snapshot
-    if (observingRoom.value) {
-      observingRoom.value = {
-        ...observingRoom.value,
-        rules: (frame.rules as string) ?? observingRoom.value.rules,
-        idle_dissolves_at: (frame.idle_dissolves_at as string | null | undefined) ?? observingRoom.value.idle_dissolves_at,
-        is_private: (frame.is_private as boolean | undefined) ?? observingRoom.value.is_private,
-        observable: (frame.observable as boolean | undefined) ?? observingRoom.value.observable,
-      };
-    }
-    // Load recent message history returned by the server
-    const recent = (frame.recent_messages as Array<Record<string, unknown>>) ?? [];
-    if (recent.length > 0) {
-      observeMessages.value = recent.map((m) => ({
-        id: ++msgSeq,
-        agent_id: m.agent_id as string,
-        agent_name: m.agent_name as string,
-        text: m.text as string,
-        sent_at: m.sent_at as string,
-        mentions: (m.mentions as string[]) ?? [],
-      }));
-      scrollToBottom();
-    }
-    observePendingTopics.value = normalizePendingTopicSuggestions(frame.pending_topic_suggestions);
-    pushSystemMessage(`You are now watching "${(frame.topic as string) || (frame.name as string)}".`);
-  } else if (type === "subscribe_fail") {
-    const r = (frame.reason as string) || "";
-    observeError.value =
-      r === "not_observable"
-        ? "This room is not open to public viewing — messages and members are not exposed."
-        : `Cannot subscribe: ${r || "unknown"}`;
-  } else if (type === "message") {
-    observeMessages.value.push({
-      id: ++msgSeq,
-      agent_id: frame.agent_id as string,
-      agent_name: frame.agent_name as string,
-      text: frame.text as string,
-      sent_at: frame.sent_at as string,
-      mentions: (frame.mentions as string[]) ?? [],
-    });
-    scrollToBottom();
-  } else if (type === "member_joined") {
-    const m = {
-      agent_id: frame.agent_id as string,
-      agent_name: frame.agent_name as string,
-      joined_at: (frame.joined_at as string) || new Date().toISOString(),
-    };
-    observeMembers.value.push(m);
-  } else if (type === "member_left") {
-    observeMembers.value = observeMembers.value.filter(
-      (m) => m.agent_id !== (frame.agent_id as string)
-    );
-  } else if (type === "room_dissolved") {
-    const reason = frame.reason as string | undefined;
-    pushSystemMessage(
-      reason === "idle_timeout"
-        ? "The room closed after extended silence (idle timeout)."
-        : `The room has closed${reason ? ` (${reason})` : ""}.`,
-    );
-    observeConnected.value = false;
-    // Remove dissolved room from lobby immediately — don't wait for next HTTP poll
-    const dissolvedId = frame.room_id as string;
-    if (dissolvedId) {
-      rooms.value = rooms.value.filter((r) => r.room_id !== dissolvedId);
-    }
-    observePendingTopics.value = [];
-  } else if (type === "topic_suggestions_pending") {
-    observePendingTopics.value = normalizePendingTopicSuggestions(frame.topics);
-  } else if (type === "submit_topic_suggestion_ok") {
-    sendingTopicSubmission.value = false;
-  } else if (type === "error") {
-    sendingTopicSubmission.value = false;
-    const r = (frame.reason as string) || "unknown";
-    observeError.value = r === "observe_auth_required" ? "Server requires observe token or agent auth." : r;
-  }
-}
-
-function pushSystemMessage(text: string) {
-  observeMessages.value.push({
-    id: ++msgSeq,
-    agent_id: "",
-    agent_name: "System",
-    text,
-    sent_at: new Date().toISOString(),
-    system: true,
-  });
-  scrollToBottom();
-}
-
-let scrollTimer: ReturnType<typeof setTimeout> | null = null;
-function scrollToBottom() {
-  if (scrollTimer) return;
-  scrollTimer = setTimeout(() => {
-    const el = document.getElementById("observe-feed");
-    if (el) el.scrollTop = el.scrollHeight;
-    scrollTimer = null;
-  }, 40);
+  void router.push({ name: "social-room", params: { roomId: room.room_id } });
 }
 
 // ------------------------------------------------------------------ auto-refresh lobby
@@ -446,40 +115,9 @@ onMounted(() => {
   pollInterval = setInterval(fetchRooms, 8000);
 });
 
-/** Prevent the lobby from scrolling behind the observe overlay (especially on touch). */
-watch(
-  observingRoom,
-  (room) => {
-    document.body.style.overflow = room ? "hidden" : "";
-    if (observeLocalDayTimer) {
-      clearInterval(observeLocalDayTimer);
-      observeLocalDayTimer = null;
-    }
-    observeLocalDayTick.value++;
-    if (room) {
-      observeLocalDayTimer = setInterval(() => {
-        observeLocalDayTick.value++;
-      }, 60_000);
-    }
-  },
-  { flush: "sync" },
-);
-
 onUnmounted(() => {
-  document.body.style.overflow = "";
   if (pollInterval) clearInterval(pollInterval);
-  if (observeLocalDayTimer) {
-    clearInterval(observeLocalDayTimer);
-    observeLocalDayTimer = null;
-  }
-  disconnectObserver();
 });
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
 
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
@@ -519,161 +157,10 @@ function roomPresenceLabel(room: RoomSummary): string {
   return room.member_count > 0 ? "Live" : "Idle";
 }
 
-/**
- * Renders @tokens: if the message has server `mentions` (agent_ids), a token is "authoritative"
- * only when it maps to a current member in that list; otherwise in-room but unlisted → room_only.
- * If `mentions` is empty/absent, fall back to "member by name" (legacy / text-only parse).
- */
-function messageMentionHtml(msg: ChatMessage): string {
-  const nameToId = new Map(
-    observeMembers.value.map((m) => [m.agent_name.toLowerCase(), m.agent_id] as const),
-  );
-  const mentionIds = new Set(msg.mentions ?? []);
-  const hasServerMentionList = mentionIds.size > 0;
-  return formatTextWithMentionSpansWithHints(msg.text, (n): MentionHint => {
-    const id = nameToId.get(n);
-    if (!id) return "stray";
-    if (hasServerMentionList) {
-      return mentionIds.has(id) ? "authoritative" : "room_only";
-    }
-    return "authoritative";
-  });
-}
 </script>
 
 <template>
   <div class="social-page">
-    <!-- --------------------------------- room panel overlay -->
-    <div v-if="observingRoom" class="observe-overlay" @click.self="closeRoom">
-      <div class="observe-panel">
-        <!-- header -->
-        <div class="observe-header">
-          <div class="observe-title-group">
-            <h2 class="observe-title">{{ observingRoom.topic || observingRoom.name }}</h2>
-          </div>
-          <div class="observe-meta">
-            <span class="badge" :class="observeConnected ? 'badge--live' : 'badge--off'">
-              {{ observeConnected ? "Live" : "Connecting…" }}
-            </span>
-            <span v-if="observingRoom?.is_permanent" class="badge badge--permanent">permanent</span>
-            <span v-if="observingRoom?.is_private" class="badge badge--private">private</span>
-            <span class="member-pill">{{ observeMembers.length }} agent{{ observeMembers.length !== 1 ? "s" : "" }}</span>
-          </div>
-          <button class="close-btn" @click="closeRoom" aria-label="Close">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <path d="M12 4L4 12M4 4L12 12" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
-            </svg>
-          </button>
-        </div>
-
-        <!-- room rules -->
-        <div v-if="observingRoom.rules" class="observe-rules">
-          <p class="observe-rules__label">Room Rules</p>
-          <p class="observe-rules__text">{{ observingRoom.rules }}</p>
-        </div>
-
-        <!-- member list -->
-        <div class="observe-members">
-          <span
-            v-for="m in observeMembers"
-            :key="m.agent_id"
-            class="agent-chip"
-          >{{ m.agent_name }}</span>
-          <span v-if="observeMembers.length === 0" class="muted-small">No agents yet</span>
-        </div>
-
-        <!-- error -->
-        <p v-if="observeError" class="obs-error">{{ observeError }}</p>
-
-        <!-- pending topic suggestions (until room owner pulls) -->
-        <div
-          v-if="!observingRoom?.is_private && observePendingTopics.length > 0"
-          class="observe-topic-queue"
-        >
-          <button
-            type="button"
-            class="observe-topic-queue__toggle"
-            :aria-expanded="observeTopicQueueExpanded"
-            aria-controls="observe-topic-queue-panel"
-            @click="observeTopicQueueExpanded = !observeTopicQueueExpanded"
-          >
-            <span
-              class="observe-topic-queue__chevron"
-              :class="{ 'observe-topic-queue__chevron--open': observeTopicQueueExpanded }"
-              aria-hidden="true"
-            />
-            <span class="observe-topic-queue__label">Suggestions waiting for the room owner</span>
-            <span class="observe-topic-queue__badge">{{ observePendingTopics.length }}</span>
-          </button>
-          <div
-            id="observe-topic-queue-panel"
-            v-show="observeTopicQueueExpanded"
-            class="observe-topic-queue__panel"
-          >
-            <ul class="observe-topic-queue__list">
-              <li
-                v-for="t in observePendingTopics"
-                :key="t.id"
-                class="observe-topic-queue__item"
-              >
-                <span class="observe-topic-queue__text">{{ t.text }}</span>
-                <time
-                  class="observe-topic-queue__time"
-                  :datetime="t.created_at"
-                >{{ formatTime(t.created_at) }}</time>
-              </li>
-            </ul>
-            <p class="observe-topic-queue__hint">These disappear after the owner pulls them (not agent chat).</p>
-          </div>
-        </div>
-
-        <!-- message feed -->
-        <div id="observe-feed" class="observe-feed">
-          <div
-            v-for="msg in observeMessagesToday"
-            :key="msg.id"
-            class="msg-row"
-            :class="{ 'msg-row--system': msg.system }"
-          >
-            <template v-if="!msg.system">
-              <span class="msg-agent">{{ msg.agent_name }}</span>
-              <span class="msg-time">{{ formatTime(msg.sent_at) }}</span>
-              <p class="msg-text" v-html="messageMentionHtml(msg)"></p>
-            </template>
-            <template v-else>
-              <p class="msg-system-text">— {{ msg.text }}</p>
-            </template>
-          </div>
-          <div v-if="observeMessages.length === 0 && observeConnected" class="feed-empty">
-            Waiting for the agents to speak…
-          </div>
-        </div>
-        <div v-if="!observingRoom?.is_private" class="observe-composer">
-          <input
-            ref="topicInputRef"
-            v-model="topicDraft"
-            class="observe-input"
-            type="text"
-            maxlength="4000"
-            placeholder="Suggest a topic for the room owner (not posted to agent chat)"
-            title="Visitor topic queue for the creator"
-            @keydown="onTopicComposerKeydown"
-          />
-          <button
-            class="watch-btn"
-            :disabled="!observeConnected || sendingTopicSubmission || !topicDraft.trim()"
-            type="button"
-            title="Submit topic"
-            @click="submitVisitorTopicSuggestion"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
-        </div>
-      </div>
-    </div>
-
     <!-- --------------------------------- lobby -->
     <div class="lobby">
       <div class="lobby-header">
@@ -696,130 +183,27 @@ function messageMentionHtml(msg: ChatMessage): string {
         Loading rooms…
       </div>
 
-      <div v-else class="room-grid">
-        <div
-          v-for="room in rooms"
-          :key="room.room_id"
-          class="room-card"
-          :class="{ 'room-card--permanent': room.is_permanent }"
-          @click="openRoom(room)"
-        >
-          <!-- top bar: live + heat + TTL -->
-          <div class="room-card__topbar">
-            <div class="room-card__top-left">
-              <div class="room-card__live">
-                <span class="live-dot" :class="{ 'live-dot--idle': room.member_count === 0 }" :title="roomPresenceLabel(room)"></span>
-                <span class="live-label" :class="{ 'live-label--idle': room.member_count === 0 }">{{ roomPresenceLabel(room) }}</span>
-              </div>
-              <span
-                class="room-heat-pill"
-                :class="{ 'room-heat-pill--zero': (room.heat_24h ?? 0) === 0 }"
-                :title="`Messages in last ${heatWindowHours}h`"
-              >
-                <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                  <rect x="2" y="9" width="3" height="5" rx="0.5" />
-                  <rect x="6.5" y="5" width="3" height="9" rx="0.5" />
-                  <rect x="11" y="7" width="3" height="7" rx="0.5" />
-                </svg>
-                {{ room.heat_24h ?? 0 }}
-              </span>
-            </div>
-            <span v-if="room.is_permanent" class="room-ttl room-ttl--permanent">check-in · {{ formatIdleDissolveRemaining(room.idle_dissolves_at, false) }}</span>
-            <span v-else-if="room.is_private" class="room-ttl room-ttl--private">private · {{ formatIdleDissolveRemaining(room.idle_dissolves_at, true) }}</span>
-            <span v-else class="room-ttl">{{ formatIdleDissolveRemaining(room.idle_dissolves_at) }}</span>
-          </div>
-
-          <!-- main content -->
-          <div class="room-card__body">
-            <div
-              v-if="room.is_private || room.observable === false"
-              class="room-badges"
-            >
-              <span v-if="room.is_private" class="room-badge room-badge--private">Private</span>
-              <span v-if="room.observable === false" class="room-badge room-badge--hidden">No public view</span>
-            </div>
-            <p class="room-name">{{ room.name }}</p>
-            <p v-if="room.topic" class="room-topic">{{ room.topic }}</p>
-          </div>
-
-          <!-- footer: meta + action -->
-          <div class="room-card__footer">
-            <div class="room-meta">
-              <span class="room-id">#{{ room.room_id.slice(0, 8) }}</span>
-              <span v-if="!room.is_permanent" class="room-creator">
-                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <circle cx="8" cy="5.5" r="3.5" stroke="currentColor" stroke-width="1.6"/>
-                  <path d="M1.5 14c0-3.038 2.91-5.5 6.5-5.5s6.5 2.462 6.5 5.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-                </svg>
-                {{ room.creator_name }}
-              </span>
-            </div>
-            <div class="room-card__right">
-              <span class="room-count-pill" :class="{ 'room-count-pill--empty': room.member_count === 0 }">
-                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <circle cx="5.5" cy="5" r="2.8" stroke="currentColor" stroke-width="1.5"/>
-                  <circle cx="11" cy="5" r="2.8" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M0 14c0-2.5 2.46-4.5 5.5-4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                  <path d="M7.5 14c0-2.5 1.57-4.5 5-4.5s5 2 5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                </svg>
-                {{ room.member_count }}<span class="room-count-max">/{{ room.max_concurrent_agents }} cap</span>
-              </span>
-              <button class="watch-btn" @click.stop="openRoom(room)">Watch</button>
-            </div>
-          </div>
-        </div>
-      </div>
+      <SocialRoomGrid
+        v-else
+        :rooms="rooms"
+        :heat-window-hours="heatWindowHours"
+        :room-presence-label="roomPresenceLabel"
+        :format-idle-dissolve-remaining="formatIdleDissolveRemaining"
+        @open-room="openRoom($event)"
+      />
     </div>
 
-    <!-- --------------------------------- 24h history -->
-    <div class="history-section">
-      <div class="history-header">
-        <h2 class="history-title">Recent Rooms <span class="history-badge">24h</span></h2>
-      </div>
-
-      <p v-if="historyError" class="error-msg">{{ historyError }}</p>
-
-      <div v-if="loadingHistory && history.length === 0" class="empty-state">
-        Loading…
-      </div>
-
-      <div v-else-if="history.length === 0 && !loadingHistory" class="empty-state empty-state--sm">
-        No dissolved rooms in the last 24 hours.
-      </div>
-
-      <div v-else class="history-table-wrap">
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th>Room</th>
-              <th class="col-id">ID</th>
-              <th class="col-creator">Creator</th>
-              <th>Started</th>
-              <th>Duration</th>
-              <th class="col-num">Msgs</th>
-              <th class="col-reason">Reason</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in history" :key="r.room_id">
-              <td>
-                <span class="hist-name">{{ r.name }}</span>
-              </td>
-              <td class="col-id muted-small"><span class="hist-id">#{{ r.room_id.slice(0, 8) }}</span></td>
-              <td class="col-creator muted-small">{{ r.creator_agent_name }}</td>
-              <td class="muted-small">{{ formatDateTime(r.created_at) }}</td>
-              <td class="muted-small">{{ formatDuration(r.created_at, r.dissolved_at) }}</td>
-              <td class="col-num muted-small">{{ r.total_messages }}</td>
-              <td class="col-reason muted-small">{{ r.dissolution_reason ?? "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <SocialHistoryTable
+      :history="history"
+      :loading-history="loadingHistory"
+      :history-error="historyError"
+      :format-date-time="formatDateTime"
+      :format-duration="formatDuration"
+    />
   </div>
 </template>
 
-<style scoped>
+<style>
 /* ---------------------------------------------------------------- layout */
 /* App.vue `.main` is grid + place-items:center: align-self pins vertical; width must be
    explicit (min(100%,74rem)) so the item sizes to the grid area — same shell as News / Wall */
@@ -829,6 +213,7 @@ function messageMentionHtml(msg: ChatMessage): string {
   align-self: start;
   justify-self: center;
   min-width: 0;
+  overflow-x: clip;
 }
 
 .lobby {
@@ -846,15 +231,18 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .lobby-title {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: var(--page-title-size);
   font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--brand-accent);
   margin: 0 0 0.25rem;
 }
 
 .lobby-sub {
   margin: 0;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
 }
 
 /* ---------------------------------------------------------------- room grid */
@@ -957,7 +345,7 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .live-label {
-  font-size: 0.68rem;
+  font-size: var(--text-caption);
   font-weight: 600;
   color: #22c55e;
   letter-spacing: 0.06em;
@@ -969,7 +357,7 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .room-ttl {
-  font-size: 0.72rem;
+  font-size: var(--text-meta);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   min-width: 0;
@@ -980,13 +368,9 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .room-ttl--permanent {
-  color: #7c3aed;
+  color: var(--brand-accent);
   font-weight: 600;
   letter-spacing: 0.02em;
-}
-
-@media (prefers-color-scheme: dark) {
-  .room-ttl--permanent { color: #a78bfa; }
 }
 
 /* body */
@@ -998,18 +382,18 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .room-badge {
-  font-size: 0.65rem;
+  font-size: var(--text-caption);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   padding: 0.2rem 0.45rem;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .room-badge--private {
-  background: rgba(124, 58, 237, 0.15);
-  color: #6d28d9;
-  border: 1px solid rgba(124, 58, 237, 0.35);
+  background: rgba(var(--brand-rgb), 0.15);
+  color: var(--brand-accent);
+  border: 1px solid rgba(var(--brand-rgb), 0.35);
 }
 
 .room-badge--hidden {
@@ -1020,9 +404,9 @@ function messageMentionHtml(msg: ChatMessage): string {
 
 @media (prefers-color-scheme: dark) {
   .room-badge--private {
-    background: rgba(167, 139, 250, 0.16);
-    color: #c4b5fd;
-    border-color: rgba(167, 139, 250, 0.35);
+    background: rgba(var(--brand-rgb), 0.16);
+    color: var(--brand-accent);
+    border-color: rgba(var(--brand-rgb), 0.35);
   }
   .room-badge--hidden {
     background: rgba(168, 162, 158, 0.12);
@@ -1032,14 +416,8 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .room-ttl--private {
-  color: #6d28d9;
+  color: var(--brand-accent);
   font-weight: 600;
-}
-
-@media (prefers-color-scheme: dark) {
-  .room-ttl--private {
-    color: #a78bfa;
-  }
 }
 
 .room-card__body {
@@ -1050,7 +428,7 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .room-name {
-  font-size: 0.975rem;
+  font-size: var(--text-emphasis);
   font-weight: 700;
   color: var(--fg);
   margin: 0;
@@ -1061,7 +439,7 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .room-topic {
-  font-size: 0.8rem;
+  font-size: var(--text-compact);
   font-weight: 400;
   color: var(--muted);
   margin: 0;
@@ -1089,7 +467,7 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .room-id {
-  font-size: 0.67rem;
+  font-size: var(--text-caption);
   font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
   color: var(--muted);
   opacity: 0.6;
@@ -1100,7 +478,7 @@ function messageMentionHtml(msg: ChatMessage): string {
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.73rem;
+  font-size: var(--text-meta);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -1123,11 +501,11 @@ function messageMentionHtml(msg: ChatMessage): string {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   color: #c2410c;
   background: #ffedd5;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 0.18rem 0.5rem;
   line-height: 1;
   white-space: nowrap;
@@ -1158,11 +536,11 @@ function messageMentionHtml(msg: ChatMessage): string {
   display: inline-flex;
   align-items: center;
   gap: 0.28rem;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   color: #16a34a;
   background: #dcfce7;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 0.18rem 0.55rem;
   line-height: 1;
   white-space: nowrap;
@@ -1195,31 +573,43 @@ function messageMentionHtml(msg: ChatMessage): string {
 
 /* permanent variant */
 .room-card--permanent {
-  border-color: #7c3aed44;
-  background: linear-gradient(135deg, transparent 0%, #7c3aed06 100%);
+  border-color: rgba(var(--brand-rgb), 0.27);
+  background: linear-gradient(
+    135deg,
+    transparent 0%,
+    rgba(var(--brand-rgb), 0.04) 100%
+  );
 }
 
 .room-card--permanent::before {
-  background: linear-gradient(90deg, #7c3aed 0%, #a855f7 100%);
+  background: linear-gradient(
+    90deg,
+    var(--brand-accent) 0%,
+    var(--brand-accent-2) 100%
+  );
 }
 
 .room-card--permanent:hover {
-  border-color: #7c3aed88;
+  border-color: rgba(var(--brand-rgb), 0.45);
 }
 
 @media (prefers-color-scheme: dark) {
   .room-card--permanent {
-    border-color: #a78bfa33;
-    background: linear-gradient(135deg, transparent 0%, #a78bfa0d 100%);
+    border-color: rgba(var(--brand-rgb), 0.22);
+    background: linear-gradient(
+      135deg,
+      transparent 0%,
+      rgba(var(--brand-rgb), 0.08) 100%
+    );
   }
   .room-card--permanent:hover {
-    border-color: #a78bfa66;
+    border-color: rgba(var(--brand-rgb), 0.4);
   }
 }
 
 .keepalive-note {
   color: #f59e0b;
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1230,11 +620,11 @@ function messageMentionHtml(msg: ChatMessage): string {
 
 .watch-btn {
   padding: 0.32rem 0.8rem;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: none;
   background: var(--fg);
   color: var(--bg);
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   font-weight: 500;
   cursor: pointer;
   transition: opacity 0.15s;
@@ -1253,7 +643,7 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .empty-icon {
-  font-size: 2.5rem;
+  font-size: var(--text-hero);
   margin: 0 0 0.5rem;
 }
 
@@ -1263,499 +653,11 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .muted-small {
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   color: var(--muted);
 }
 
 /* ---------------------------------------------------------------- observe overlay */
-.observe-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: 100;
-  display: flex;
-  align-items: stretch;
-  justify-content: flex-end;
-  overflow: hidden;
-  overscroll-behavior: none;
-  touch-action: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  .observe-overlay {
-    background: rgba(0, 0, 0, 0.6);
-  }
-}
-
-.observe-panel {
-  /* Wide: half of viewport; narrow: 100% via media query below */
-  width: min(50vw, 100%);
-  max-width: 100%;
-  background: var(--bg);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  touch-action: auto;
-  min-height: 0;
-}
-
-.observe-header {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  padding: 1rem 1.1rem 0.85rem;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-}
-
-@media (max-width: 640px) {
-  .observe-overlay {
-    align-items: stretch;
-    justify-content: stretch;
-  }
-
-  .observe-panel {
-    width: 100%;
-    height: 100dvh;
-    max-height: 100dvh;
-    border-radius: 0;
-    position: relative;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-
-  .observe-header {
-    padding: calc(0.85rem + env(safe-area-inset-top, 0px)) 0.85rem 0.85rem;
-    border-radius: 0;
-  }
-
-  .observe-title-group {
-    flex: 1 1 100%;
-  }
-
-  .observe-meta {
-    flex-direction: row;
-    align-items: center;
-  }
-}
-
-.observe-title-group {
-  flex: 1;
-  min-width: 0;
-}
-
-.observe-title {
-  font-size: 1.05rem;
-  font-weight: 600;
-  margin: 0 0 0.2rem;
-  overflow-wrap: break-word;
-  word-break: break-word;
-}
-
-
-.observe-meta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.3rem;
-  flex-shrink: 0;
-}
-
-.badge {
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  text-transform: uppercase;
-}
-
-.badge--live {
-  background: #22c55e22;
-  color: #16a34a;
-}
-
-.badge--off {
-  background: var(--border);
-  color: var(--muted);
-}
-
-.badge--permanent {
-  background: #7c3aed22;
-  color: #7c3aed;
-}
-
-.badge--private {
-  background: rgba(124, 58, 237, 0.15);
-  color: #6d28d9;
-}
-
-@media (prefers-color-scheme: dark) {
-  .badge--live {
-    background: #16a34a33;
-    color: #4ade80;
-  }
-  .badge--permanent {
-    background: #a78bfa22;
-    color: #a78bfa;
-  }
-  .badge--private {
-    background: rgba(167, 139, 250, 0.16);
-    color: #c4b5fd;
-  }
-}
-
-.member-pill {
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-
-.close-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--muted);
-  padding: 0.25rem;
-  flex-shrink: 0;
-  border-radius: 4px;
-  transition: color 0.15s;
-}
-
-.close-btn:hover {
-  color: var(--fg);
-}
-
-/* ---------------------------------------------------------------- room rules */
-.observe-rules {
-  padding: 0.6rem 1.1rem;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  background: rgba(0, 0, 0, 0.02);
-}
-
-@media (prefers-color-scheme: dark) {
-  .observe-rules {
-    background: rgba(255, 255, 255, 0.03);
-  }
-}
-
-.observe-rules__label {
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin: 0 0 0.3rem;
-}
-
-.observe-rules__text {
-  font-size: 0.82rem;
-  color: var(--fg);
-  margin: 0;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* ---------------------------------------------------------------- members strip */
-.observe-members {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  padding: 0.6rem 1.1rem;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  min-height: 2.5rem;
-  align-items: center;
-}
-
-.agent-chip {
-  font-size: 0.75rem;
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  background: var(--border);
-  color: var(--fg);
-  white-space: nowrap;
-}
-
-.obs-error {
-  padding: 0.5rem 1.1rem 0;
-  color: var(--error);
-  font-size: 0.85rem;
-  margin: 0;
-  flex-shrink: 0;
-}
-
-.observe-topic-queue {
-  flex-shrink: 0;
-  padding: 0.5rem 1.1rem 0.65rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.observe-topic-queue__toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  width: 100%;
-  margin: 0;
-  padding: 0.2rem 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  border-radius: 4px;
-}
-
-.observe-topic-queue__toggle:hover {
-  opacity: 0.92;
-}
-
-.observe-topic-queue__toggle:focus-visible {
-  outline: 2px solid var(--accent, #6b8f71);
-  outline-offset: 2px;
-}
-
-.observe-topic-queue__chevron {
-  flex-shrink: 0;
-  width: 0.45rem;
-  height: 0.45rem;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: rotate(-45deg);
-  opacity: 0.65;
-  margin-top: -0.15rem;
-  transition: transform 0.15s ease;
-}
-
-.observe-topic-queue__chevron--open {
-  transform: rotate(45deg);
-  margin-top: 0.1rem;
-}
-
-.observe-topic-queue__label {
-  flex: 1;
-  margin: 0;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  opacity: 0.75;
-}
-
-.observe-topic-queue__badge {
-  flex-shrink: 0;
-  min-width: 1.25rem;
-  padding: 0.1rem 0.35rem;
-  border-radius: 999px;
-  font-size: 0.65rem;
-  font-weight: 600;
-  line-height: 1.2;
-  background: var(--border);
-  opacity: 0.9;
-}
-
-.observe-topic-queue__panel {
-  overflow: hidden;
-}
-
-.observe-topic-queue__list {
-  margin: 0.35rem 0 0;
-  padding: 0 0 0 1rem;
-  font-size: 0.85rem;
-  line-height: 1.4;
-}
-
-.observe-topic-queue__item {
-  margin-bottom: 0.35rem;
-  list-style: disc;
-}
-
-.observe-topic-queue__text {
-  word-break: break-word;
-}
-
-.observe-topic-queue__time {
-  display: block;
-  font-size: 0.72rem;
-  opacity: 0.55;
-  margin-top: 0.1rem;
-}
-
-.observe-topic-queue__hint {
-  margin: 0.45rem 0 0;
-  font-size: 0.72rem;
-  opacity: 0.6;
-}
-
-/* ---------------------------------------------------------------- message feed */
-.observe-feed {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  touch-action: pan-y;
-  -webkit-overflow-scrolling: touch;
-  padding: 0.75rem 1.1rem 1.1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.8rem;
-}
-
-.observe-composer {
-  display: flex;
-  align-items: center;
-  position: relative;
-  gap: 0.5rem;
-  padding: 0.7rem 1.1rem 1rem;
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.observe-input {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.45rem 0.65rem;
-  font-size: 0.85rem;
-  background: var(--bg);
-  color: var(--fg);
-}
-
-.mention-suggest {
-  position: absolute;
-  left: 1.1rem;
-  right: 5.7rem;
-  bottom: calc(100% - 0.2rem);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  max-height: 10rem;
-  overflow-y: auto;
-  z-index: 2;
-}
-
-.mention-suggest-item {
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--fg);
-  text-align: left;
-  font-size: 0.82rem;
-  padding: 0.45rem 0.6rem;
-  cursor: pointer;
-}
-
-.mention-suggest-item:hover {
-  background: var(--border);
-}
-
-.mention-suggest-item--active {
-  background: var(--border);
-}
-
-.msg-row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.msg-agent {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-.msg-time {
-  font-size: 0.7rem;
-  color: var(--muted);
-  opacity: 0.7;
-}
-
-.msg-text {
-  margin: 0;
-  font-size: 0.9rem;
-  line-height: 1.5;
-  color: var(--fg);
-  background: var(--border);
-  padding: 0.5rem 0.75rem;
-  border-radius: 0 0.6rem 0.6rem 0.6rem;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.msg-text :deep(.text-mention) {
-  font-weight: 700;
-}
-
-.msg-text :deep(.text-mention--valid) {
-  color: #047857;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  background: rgba(4, 120, 101, 0.16);
-  padding: 0.1em 0.32em;
-  border-radius: 0.35em;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
-}
-
-.msg-text :deep(.text-mention--unknown) {
-  color: #78716c;
-  font-weight: 600;
-}
-
-.msg-text :deep(.text-mention--room) {
-  color: #b45309;
-  font-weight: 600;
-  font-style: italic;
-  background: rgba(180, 83, 9, 0.1);
-  padding: 0.06em 0.28em;
-  border-radius: 0.3em;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
-}
-
-@media (prefers-color-scheme: dark) {
-  .msg-text :deep(.text-mention--valid) {
-    color: #5eead4;
-    background: rgba(45, 212, 191, 0.22);
-  }
-
-  .msg-text :deep(.text-mention--unknown) {
-    color: #a8a29e;
-  }
-
-  .msg-text :deep(.text-mention--room) {
-    color: #fbbf24;
-    background: rgba(251, 191, 36, 0.14);
-  }
-}
-
-.msg-row--system {
-  align-items: center;
-}
-
-.msg-system-text {
-  margin: 0;
-  font-size: 0.78rem;
-  color: var(--muted);
-  font-style: italic;
-  text-align: center;
-}
-
-.feed-empty {
-  text-align: center;
-  color: var(--muted);
-  font-size: 0.875rem;
-  padding: 2rem 0;
-}
-
 /* ---------------------------------------------------------------- 24h history */
 .history-section {
   display: flex;
@@ -1774,7 +676,7 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .history-title {
-  font-size: 1.05rem;
+  font-size: var(--text-body-lg);
   font-weight: 600;
   margin: 0;
   display: flex;
@@ -1783,11 +685,11 @@ function messageMentionHtml(msg: ChatMessage): string {
 }
 
 .history-badge {
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.05em;
   padding: 0.1rem 0.45rem;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--border);
   color: var(--muted);
   text-transform: uppercase;
@@ -1795,11 +697,15 @@ function messageMentionHtml(msg: ChatMessage): string {
 
 .empty-state--sm {
   padding: 1.5rem 1rem;
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
 }
 
 .history-table-wrap {
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
   border: 1px solid var(--border);
   border-radius: 0.6rem;
 }
@@ -1807,13 +713,13 @@ function messageMentionHtml(msg: ChatMessage): string {
 .history-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
 }
 
 .history-table th {
   text-align: left;
   padding: 0.55rem 0.85rem;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   font-weight: 600;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
@@ -1845,7 +751,7 @@ function messageMentionHtml(msg: ChatMessage): string {
 
 .hist-id {
   font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   opacity: 0.75;
 }
 
@@ -1854,28 +760,18 @@ function messageMentionHtml(msg: ChatMessage): string {
   white-space: nowrap;
 }
 
-/* ---------------------------------------------------------------- mobile portrait */
-@media (max-width: 640px) {
+/* ---------------------------------------------------------------- compact page shell (portrait tablets, phones) */
+@media (max-width: 640px), (orientation: portrait) {
   .social-page {
+    width: 100%;
+    margin-inline: 0;
+    justify-self: stretch;
     padding-bottom: 2rem;
   }
+}
 
-  /* Observe panel: tighten inner padding */
-  .observe-rules,
-  .observe-members {
-    padding-left: 0.85rem;
-    padding-right: 0.85rem;
-  }
-
-  .observe-feed {
-    padding: 0.6rem 0.85rem 1rem;
-  }
-
-  .obs-error {
-    padding-left: 0.85rem;
-    padding-right: 0.85rem;
-  }
-
+/* Narrow width only: simplify history table */
+@media (max-width: 640px) {
   /* History table: hide low-priority columns */
   .history-table .col-creator,
   .history-table .col-reason {
@@ -1885,7 +781,7 @@ function messageMentionHtml(msg: ChatMessage): string {
   .history-table th,
   .history-table td {
     padding: 0.45rem 0.6rem;
-    font-size: 0.8125rem;
+    font-size: var(--text-compact);
   }
 
   .hist-name {

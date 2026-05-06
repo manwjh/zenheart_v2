@@ -296,6 +296,8 @@ onUnmounted(() => {
 <style scoped>
 .panel {
   max-width: min(38rem, 100%);
+  min-width: 0;
+  overflow-x: clip;
   text-align: center;
 }
 
@@ -317,17 +319,19 @@ onUnmounted(() => {
 
 .eyebrow {
   margin: 0 0 0.7rem;
-  font-size: 0.6875rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: var(--text-overline);
   font-weight: 500;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
 h1 {
-  font-size: clamp(1.85rem, 5vw, 2.35rem);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: var(--text-home-hero);
   font-weight: 600;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
   line-height: 1.08;
   margin: 0 0 0.65rem;
   color: var(--brand-accent);
@@ -336,7 +340,7 @@ h1 {
 .tagline {
   margin: 0 auto;
   max-width: 22rem;
-  font-size: clamp(0.98rem, 2.6vw, 1.08rem);
+  font-size: var(--text-home-tagline);
   line-height: 1.45;
   font-weight: 400;
   font-style: italic;
@@ -355,7 +359,7 @@ h1 {
 
 .stanza {
   margin: 0;
-  font-size: clamp(0.96rem, 2.7vw, 1.07rem);
+  font-size: var(--text-home-stanza);
   line-height: 1.72;
   font-weight: 400;
   color: var(--fg);
@@ -384,8 +388,9 @@ h1 {
   text-align: center;
   border: 1px solid var(--border);
   border-radius: 0.5rem;
-  background: rgba(127, 127, 127, 0.045);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  background: rgba(var(--brand-rgb), 0.055);
+  box-shadow: 0 1px 0 rgba(var(--brand-rgb), 0.1) inset,
+    0 0 0 1px rgba(var(--brand-rgb), 0.04);
   /* Flex child of .hero-copy: without this, min-height:auto uses full list height → “整块展开”. */
   min-height: 0;
   overflow: hidden;
@@ -393,8 +398,9 @@ h1 {
 
 @media (prefers-color-scheme: dark) {
   .live-visitors {
-    background: rgba(255, 255, 255, 0.04);
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+    background: rgba(var(--brand-rgb), 0.09);
+    box-shadow: 0 1px 0 rgba(var(--brand-rgb), 0.12) inset,
+      0 0 0 1px rgba(var(--brand-rgb), 0.06);
   }
 }
 
@@ -416,16 +422,17 @@ h1 {
 }
 
 .live-visitors-title {
-  font-size: 0.65rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: var(--text-caption);
   font-weight: 600;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
 .live-feed-viewport {
   --live-visible-rows: 3;
-  --live-feed-fs: 0.8125rem;
+  --live-feed-fs: var(--text-compact);
   --live-feed-lh: 1.45;
   --live-feed-gap: 0.42rem;
   /* One row slot: single line of copy + spacing; every <li> uses exactly this height. */
@@ -470,7 +477,7 @@ h1 {
   flex-direction: column;
   /* Spacing is inside each row slot (padding-bottom on .live-feed-row), not gap — otherwise short 1-line rows pack 5–6 into a “3-row” window. */
   gap: 0;
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   line-height: 1.45;
   color: var(--muted);
   flex-shrink: 0;
@@ -544,10 +551,6 @@ h1 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-dot {
-    animation: none;
-  }
-
   .live-feed-viewport {
     mask-image: none;
   }
@@ -586,22 +589,25 @@ h1 {
   text-align: center;
   border: 1px solid var(--border);
   border-radius: 0.625rem;
-  background: rgba(127, 127, 127, 0.045);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  background: rgba(var(--brand-rgb), 0.055);
+  box-shadow: 0 1px 0 rgba(var(--brand-rgb), 0.1) inset,
+    0 0 0 1px rgba(var(--brand-rgb), 0.04);
 }
 
 @media (prefers-color-scheme: dark) {
   .enter-block {
-    background: rgba(255, 255, 255, 0.04);
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+    background: rgba(var(--brand-rgb), 0.09);
+    box-shadow: 0 1px 0 rgba(var(--brand-rgb), 0.12) inset,
+      0 0 0 1px rgba(var(--brand-rgb), 0.06);
   }
 }
 
 .enter-title {
   margin: 0 0 0.55rem;
-  font-size: 0.65rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: var(--text-caption);
   font-weight: 600;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -614,7 +620,7 @@ h1 {
   flex-direction: column;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.9375rem;
+  font-size: var(--text-emphasis);
   line-height: 1.4;
 }
 
@@ -632,14 +638,14 @@ h1 {
 }
 
 .enter-list a:hover {
-  color: var(--fg);
-  border-bottom-color: var(--fg);
+  color: var(--brand-accent);
+  border-bottom-color: var(--brand-accent);
 }
 
 .closing {
   margin: 0 auto;
   max-width: min(24rem, 100%);
-  font-size: clamp(0.92rem, 2.5vw, 1.02rem);
+  font-size: var(--text-home-closing);
   line-height: 1.65;
   font-weight: 400;
   font-style: italic;
@@ -677,13 +683,13 @@ img {
 }
 
 .name {
-  font-size: 1rem;
+  font-size: var(--text-body);
   font-weight: 600;
   margin: 0 0 0.35rem;
 }
 
 .bio {
-  font-size: 0.875rem;
+  font-size: var(--text-ui);
   color: var(--muted);
   margin: 0 0 1rem;
   line-height: 1.5;
@@ -697,7 +703,7 @@ img {
 }
 
 .contact {
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   color: var(--muted);
   text-decoration: none;
 }
@@ -709,7 +715,16 @@ img {
 
 .foot {
   margin: 0;
-  font-size: 0.8125rem;
+  font-size: var(--text-compact);
   color: var(--muted);
+}
+
+@media (max-width: 640px), (orientation: portrait) {
+  .panel {
+    max-width: 100%;
+    width: 100%;
+    align-self: stretch;
+    justify-self: stretch;
+  }
 }
 </style>

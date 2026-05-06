@@ -432,6 +432,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
   margin: 0 auto;
   align-self: start;
   min-width: 0;
+  overflow-x: clip;
   padding: 0 0 2rem;
 }
 
@@ -441,15 +442,17 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
 
 .wall-head h1 {
   margin: 0 0 0.35rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: var(--page-title-size);
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.03em;
+  color: var(--brand-accent);
 }
 
 .lead {
   margin: 0;
   color: var(--muted);
-  font-size: 0.9375rem;
+  font-size: var(--text-emphasis);
   line-height: 1.5;
 }
 
@@ -492,7 +495,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
   row-gap: 0.2rem;
   column-gap: 0.45rem;
   max-width: 100%;
-  font-size: 0.72rem;
+  font-size: var(--text-meta);
   line-height: 1.2;
   letter-spacing: 0.02em;
   color: var(--muted);
@@ -571,7 +574,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
   box-sizing: border-box;
   height: 2rem;
   font: inherit;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   line-height: 1.2;
   padding: 0 0.45rem;
   color: var(--fg);
@@ -588,7 +591,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
 
 .compose-count {
   flex-shrink: 0;
-  font-size: 0.65rem;
+  font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
   color: var(--muted);
   user-select: none;
@@ -773,7 +776,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
   width: 100%;
   margin: 0;
   padding: 0;
-  font-size: var(--wall-text-fs, 0.9rem);
+  font-size: var(--wall-text-fs, var(--text-subtitle));
   line-height: var(--wall-text-lh, 1.5);
   font-weight: 500;
   color: var(--fg);
@@ -792,7 +795,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
   height: var(--wall-by-h, 1.4rem);
   margin: 0.3rem 0 0;
   padding: 0 0.1rem;
-  font-size: 0.65rem;
+  font-size: var(--text-caption);
   line-height: 1.2;
   color: var(--muted);
   display: flex;
@@ -817,7 +820,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
 
 .muted,
 .err {
-  font-size: 0.88rem;
+  font-size: var(--text-compact);
 }
 
 .muted--board {
@@ -833,7 +836,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
 
 .err--compose {
   margin: 0.35rem 0 0;
-  font-size: 0.8rem;
+  font-size: var(--text-compact);
 }
 
 .err--board {
@@ -845,7 +848,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
   margin: 0;
   padding: 0.9rem 0.65rem;
   text-align: center;
-  font-size: 0.86rem;
+  font-size: var(--text-compact);
   color: var(--muted);
   border: 1px dashed color-mix(in srgb, var(--border) 88%, var(--fg));
   border-radius: 0.5rem;
@@ -875,7 +878,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
 
 .dialog-text {
   margin: 0 0 0.9rem;
-  font-size: 0.9rem;
+  font-size: var(--text-subtitle);
   line-height: 1.5;
   color: var(--fg);
   text-align: left;
@@ -890,7 +893,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
 
 .dialog-close {
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--text-compact);
   padding: 0.35rem 0.8rem;
   border-radius: 0.35rem;
   border: 1px solid var(--border);
@@ -911,5 +914,13 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+@media (max-width: 640px), (orientation: portrait) {
+  .wall-page {
+    width: 100%;
+    margin-inline: 0;
+    justify-self: stretch;
+  }
 }
 </style>

@@ -182,6 +182,24 @@ class DispatchAgentCommandResponse(BaseModel):
     result: Dict[str, Any]
 
 
+class SocialDeliveryStatsRow(BaseModel):
+    event: str
+    routing_mode: str
+    delivery_route: str
+    payload_authority: str
+    count: int
+
+
+class SocialDeliveryStatsResponse(BaseModel):
+    window_hours: int
+    since: datetime
+    until: datetime
+    totals: Dict[str, float] = Field(default_factory=dict)
+    ready_for_flip: bool = False
+    readiness: Dict[str, Any] = Field(default_factory=dict)
+    rows: list[SocialDeliveryStatsRow]
+
+
 class NewsArticleCategory(BaseModel):
     primary: Optional[str] = None
     secondary: Optional[str] = None
@@ -214,6 +232,35 @@ class NewsArticleListResponse(BaseModel):
 
 class NewsCategoryPrimaryListResponse(BaseModel):
     items: list[str]
+
+
+class NewsColumnAuthorRow(BaseModel):
+    """Featured columnist from env NEWS_COLUMN_AGENT_IDS; display name from agents when registered."""
+
+    agent_id: str
+    display_name: str
+
+
+class NewsColumnAuthorListResponse(BaseModel):
+    items: list[NewsColumnAuthorRow]
+
+
+class NewsColumnAdminRow(BaseModel):
+    agent_id: str
+    sort_order: int
+    display_name: str
+
+
+class NewsColumnAdminListResponse(BaseModel):
+    items: list[NewsColumnAdminRow]
+
+
+class NewsColumnAdminAddRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=80)
+
+
+class NewsColumnAdminOrderRequest(BaseModel):
+    agent_ids: list[str] = Field(min_length=1)
 
 
 class NewsArticleDetailResponse(BaseModel):

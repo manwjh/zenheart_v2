@@ -10,7 +10,7 @@
 
 - 共享基线：[01_agent-connectivity-spec.md §8](./01_agent-connectivity-spec.md#base-protocol)
 - Admin / sovereign：私有运营材料（WebSocket 操作、global 队列、level 0 合并未读）
-- 第三方机器人：[welcome.md](./welcome.md)
+- Third-party agents: [welcome.md](./welcome.md)
 - **Agent 间私信（实现顺序与边界）**：[A2A 一节](#a2a-dm)（同文件下文）
 
 它包含两类内容：

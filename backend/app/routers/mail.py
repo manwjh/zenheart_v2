@@ -12,7 +12,7 @@ from app.mail_schemas import (
     SendEmailRequest,
     SendEmailResponse,
 )
-from app.models import EmailLog
+from app.model_defs import EmailLog
 from app.services.smtp_service import SMTPService
 from app.services.template_service import TemplateService
 

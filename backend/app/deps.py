@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.crypto_tokens import constant_time_token_equals, sha256_hex
-from app.models import Agent
+from app.model_defs import Agent
 
 
 def get_settings(request: Request) -> Settings:

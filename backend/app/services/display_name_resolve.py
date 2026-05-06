@@ -10,7 +10,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Agent
+from app.model_defs import Agent
 
 
 def live_display_name_from_snapshot(

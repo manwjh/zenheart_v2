@@ -21,7 +21,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
 from app.config import Settings
-from app.models import Agent
+from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.games.maze_ws_side_effects import (
     MazeSideEffectContext,

@@ -2,10 +2,10 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.deps import DbSession, SettingsDep, admin_or_sovereign_guard
-from app.models import Agent, NewsArticle
+from app.model_defs import Agent, NewsArticle, NewsColumnMember
 from app.schemas import (
     NewsArticleCategory,
     NewsArticleAdminCreateRequest,
@@ -14,7 +14,12 @@ from app.schemas import (
     NewsArticleAdminUpdateRequest,
     NewsArticleListResponse,
     NewsArticleListRow,
+    NewsColumnAdminAddRequest,
+    NewsColumnAdminListResponse,
+    NewsColumnAdminOrderRequest,
+    NewsColumnAdminRow,
 )
+from app.services.display_name_resolve import live_display_name_from_snapshot
 from app.services.markdown_storage import resolve_markdown_path
 
 router = APIRouter(
@@ -65,6 +70,120 @@ async def _get_agent_or_404(session: DbSession, agent_id: str) -> Agent:
             detail="Publisher agent not found.",
         )
     return agent
+
+
+async def _list_column_members_ordered(session: DbSession) -> list[NewsColumnMember]:
+    return list(
+        (
+            await session.scalars(
+                select(NewsColumnMember).order_by(
+                    NewsColumnMember.sort_order.asc(), NewsColumnMember.agent_id.asc()
+                )
+            )
+        ).all()
+    )
+
+
+def _admin_column_rows(
+    members: list[NewsColumnMember], agents_by_id: dict[str, Agent]
+) -> list[NewsColumnAdminRow]:
+    return [
+        NewsColumnAdminRow(
+            agent_id=m.agent_id,
+            sort_order=m.sort_order,
+            display_name=live_display_name_from_snapshot(
+                "", agents_by_id.get(m.agent_id), fallback_id=m.agent_id
+            ),
+        )
+        for m in members
+    ]
+
+
+@router.get("/columns", response_model=NewsColumnAdminListResponse)
+async def admin_list_news_columns(session: DbSession) -> NewsColumnAdminListResponse:
+    members = await _list_column_members_ordered(session)
+    if not members:
+        return NewsColumnAdminListResponse(items=[])
+    ids = [m.agent_id for m in members]
+    agents = (await session.scalars(select(Agent).where(Agent.agent_id.in_(ids)))).all()
+    by_id = {a.agent_id: a for a in agents}
+    return NewsColumnAdminListResponse(items=_admin_column_rows(members, by_id))
+
+
+@router.put("/columns/order", response_model=NewsColumnAdminListResponse)
+async def admin_order_news_columns(
+    body: NewsColumnAdminOrderRequest, session: DbSession
+) -> NewsColumnAdminListResponse:
+    ordered = [x.strip() for x in body.agent_ids]
+    if not ordered or not all(ordered):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="agent_ids must be non-empty strings.",
+        )
+    if len(set(ordered)) != len(ordered):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Duplicate agent_id in agent_ids.",
+        )
+    for a in ordered:
+        if len(a) > 80:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="agent_id too long.",
+            )
+    members = await _list_column_members_ordered(session)
+    current_ids = [m.agent_id for m in members]
+    if set(ordered) != set(current_ids) or len(ordered) != len(current_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="agent_ids must list every column member exactly once.",
+        )
+    member_by_id = {m.agent_id: m for m in members}
+    for idx, aid in enumerate(ordered):
+        member_by_id[aid].sort_order = idx
+    await session.commit()
+    members2 = await _list_column_members_ordered(session)
+    ids2 = [m.agent_id for m in members2]
+    agents = (await session.scalars(select(Agent).where(Agent.agent_id.in_(ids2)))).all()
+    by_id = {a.agent_id: a for a in agents}
+    return NewsColumnAdminListResponse(items=_admin_column_rows(members2, by_id))
+
+
+@router.post("/columns", response_model=NewsColumnAdminRow, status_code=status.HTTP_201_CREATED)
+async def admin_add_news_column(body: NewsColumnAdminAddRequest, session: DbSession) -> NewsColumnAdminRow:
+    aid = body.agent_id.strip()
+    await _get_agent_or_404(session, aid)
+    existing = await session.scalar(select(NewsColumnMember).where(NewsColumnMember.agent_id == aid))
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Agent already in news columns.",
+        )
+    max_ord = await session.scalar(select(func.max(NewsColumnMember.sort_order)))
+    nxt = (max_ord + 1) if max_ord is not None else 0
+    row = NewsColumnMember(agent_id=aid, sort_order=nxt)
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    agent = await session.scalar(select(Agent).where(Agent.agent_id == aid))
+    return NewsColumnAdminRow(
+        agent_id=row.agent_id,
+        sort_order=row.sort_order,
+        display_name=live_display_name_from_snapshot("", agent, fallback_id=aid),
+    )
+
+
+@router.delete("/columns/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def admin_delete_news_column(agent_id: str, session: DbSession) -> None:
+    aid = agent_id.strip()
+    row = await session.scalar(select(NewsColumnMember).where(NewsColumnMember.agent_id == aid))
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Column entry not found.",
+        )
+    await session.delete(row)
+    await session.commit()
 
 
 @router.post("/articles", response_model=NewsArticleAdminDetailResponse, status_code=status.HTTP_201_CREATED)

@@ -8,7 +8,8 @@ or the same { "type": "auth", "agent_id", "token" } used on /v2/agent/ws.
 When the env is unset or empty, the socket accepts traffic immediately (local dev only).
 
 Visitors may enqueue topic suggestions (`submit_topic_suggestion`) for the room
-creator to pull on `/v2/agent/ws` (`pull_room_topics`). Those lines are not A2A chat.
+creator. In-room agents receive `topic_suggestions_pending` on `/v2/agent/ws`;
+`pull_room_topics` dequeues rows for the creator. Those lines are not A2A chat.
 """
 from __future__ import annotations
 
@@ -19,11 +20,11 @@ from collections import deque
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
-from app.models import Agent
+from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import get_limit_value
 from app.services.display_name_resolve import enrich_member_dicts_live, enrich_social_lobby_snapshots
-from app.services.social_db import (
+from app.domains.social.persistence.social_repository import (
     get_room_messages,
     list_pending_topic_suggestions,
     parse_client_iso_datetime,
@@ -31,6 +32,14 @@ from app.services.social_db import (
 )
 from app.services.ws_auth import verify_agent_auth_payload, verify_observe_shared_token
 from app.social_registry import SocialRoomRegistry
+
+
+def _is_send_after_close_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return (
+        "Cannot call \"send\" once a close message has been sent." in message
+        or "Unexpected ASGI message 'websocket.send'" in message
+    )
 
 
 async def _observe_handshake_required(
@@ -166,9 +175,15 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
             await asyncio.sleep(interval)
             now = time.monotonic()
             if (now - last_pong_at) > timeout:
-                await websocket.close(code=4008, reason="pong_timeout")
+                try:
+                    await websocket.close(code=4008, reason="pong_timeout")
+                except Exception:
+                    pass
                 return
-            await websocket.send_text(json.dumps({"type": "ping"}))
+            try:
+                await websocket.send_text(json.dumps({"type": "ping"}))
+            except Exception:
+                return
 
     heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
@@ -313,7 +328,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     "type": "submit_topic_suggestion_ok",
                     "room_id": room_id,
                 }))
-                await social.notify_observers_topic_pending(session_factory, room_id)
+                await social.notify_topic_suggestions_pending(session_factory, room_id)
 
             else:
                 if msg_type in ("send_message", "create_room", "join_room", "leave_room"):
@@ -329,6 +344,9 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
 
     except WebSocketDisconnect:
         pass
+    except RuntimeError as exc:
+        if not _is_send_after_close_error(exc):
+            raise
     finally:
         heartbeat_task.cancel()
         try:

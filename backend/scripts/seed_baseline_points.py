@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from app.config import load_settings
-from app.models import Agent, AgentPointEvent, AgentPoints
+from app.model_defs import Agent, AgentPointEvent, AgentPoints
 
 BASELINE_POINTS = 100
 REASON = "baseline_grant"

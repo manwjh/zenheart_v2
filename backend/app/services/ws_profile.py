@@ -13,7 +13,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import AgentPoints, NewsArticle
+from app.model_defs import AgentPoints, NewsArticle
 
 logger = logging.getLogger(__name__)
 

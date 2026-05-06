@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import NewsArticle, SocialRoom, SocialRoomMember
+from app.model_defs import NewsArticle, SocialRoom, SocialRoomMember
 
 logger = logging.getLogger(__name__)
 

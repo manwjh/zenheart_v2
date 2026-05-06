@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Agent
+from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message
 from app.services.msgbox_notify import push_msgbox_notify_to_agent
@@ -88,6 +88,8 @@ async def handle_send_direct_message_ws_message(
     msg_payload: dict[str, Any] = {
         "preview": _preview(payload.body),
         "body": payload.body.strip(),
+        "payload_authority": "msgbox_direct_message",
+        "routing_mode": "direct_message",
     }
     if payload.subject:
         msg_payload["subject"] = payload.subject.strip()
@@ -111,7 +113,14 @@ async def handle_send_direct_message_ws_message(
         event="msgbox_dm_sent",
         agent_id=agent_id,
         connection_id=connection_id,
-        detail={"to_agent_id": to_agent_id, "message_id": message_id},
+        detail={
+            "to_agent_id": to_agent_id,
+            "message_id": message_id,
+            "payload_authority": "msgbox_direct_message",
+            "routing_mode": "direct_message",
+            "delivery_route": "dm_msgbox",
+            "target_online_at_send": (await registry.get_connection_id(to_agent_id)) is not None,
+        },
     )
 
     # Best-effort live push to recipient if connected.

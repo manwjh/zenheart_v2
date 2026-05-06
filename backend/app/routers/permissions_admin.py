@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, select
 
 from app.deps import DbSession, admin_or_sovereign_guard
-from app.models import LevelPermission
+from app.model_defs import LevelPermission
 from app.schemas import (
     LevelPermissionListResponse,
     LevelPermissionRow,

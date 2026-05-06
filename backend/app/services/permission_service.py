@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import LevelPermission
+from app.model_defs import LevelPermission
 
 
 async def check_permission(

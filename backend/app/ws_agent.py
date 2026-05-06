@@ -55,6 +55,14 @@ from app.social_registry import SocialRoomRegistry
 from app.ws_registry import AgentConnectionRegistry
 
 
+def _is_send_after_close_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return (
+        "Cannot call \"send\" once a close message has been sent." in message
+        or "Unexpected ASGI message 'websocket.send'" in message
+    )
+
+
 async def handle_agent_websocket(websocket: WebSocket) -> None:
     settings = websocket.app.state.settings
     social: SocialRoomRegistry = websocket.app.state.social_registry
@@ -151,6 +159,25 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
         connection_id=connection_id,
         detail={"message_type": "auth_ok"},
     )
+    unread_count = int(msgbox_summary.get("unread_count") or 0)
+    if unread_count > 0:
+        # Proactively notify the agent that offline backlog exists.
+        # This avoids relying solely on client-side polling after reconnect.
+        await agent_send_json({
+            "type": "msgbox_notify",
+            "kind": "backlog_summary",
+            "message_id": "",
+            "unread_count": unread_count,
+            "top_type": msgbox_summary.get("top_type"),
+            "has_high_priority": bool(msgbox_summary.get("has_high_priority")),
+        })
+        await record_agent_event(
+            session_factory,
+            event="ws_message_out",
+            agent_id=agent_id,
+            connection_id=connection_id,
+            detail={"message_type": "msgbox_notify", "kind": "backlog_summary", "unread_count": unread_count},
+        )
 
     await record_agent_event(
         session_factory,
@@ -731,6 +758,11 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                 )
     except WebSocketDisconnect:
         disconnect_reason = "client_disconnect"
+    except RuntimeError as exc:
+        if _is_send_after_close_error(exc):
+            disconnect_reason = "send_after_close"
+        else:
+            raise
     finally:
         heartbeat_task.cancel()
         try:

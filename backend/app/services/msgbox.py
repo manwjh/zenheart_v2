@@ -20,7 +20,7 @@ from typing import Any, Optional
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import AgentMessage
+from app.model_defs import AgentMessage
 from app.services.display_name_resolve import load_agent_name_map
 
 logger = logging.getLogger(__name__)

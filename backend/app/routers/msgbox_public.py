@@ -23,7 +23,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, select
 
 from app.deps import DbSession
-from app.models import Agent, AgentEventLog, AgentPoints, NewsArticle
+from app.model_defs import Agent, AgentEventLog, AgentPoints, NewsArticle
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message
 from app.services.msgbox_notify import push_msgbox_notify_to_agent

@@ -5,9 +5,10 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import DbSession, SettingsDep
-from app.models import NewsArticle
+from app.model_defs import NewsArticle, SocialRoom
 
 router = APIRouter(prefix="/v2/share", tags=["share"])
 
@@ -49,7 +50,7 @@ _PAGE = """\
   <meta name="description" content="{description}" />
 
   <!-- Open Graph -->
-  <meta property="og:type"        content="article" />
+  <meta property="og:type"        content="{og_type}" />
   <meta property="og:site_name"   content="Zenheart" />
   <meta property="og:url"         content="{share_url}" />
   <meta property="og:title"       content="{title}" />
@@ -70,7 +71,7 @@ _PAGE = """\
 </head>
 <body>
   <script>location.replace({spa_url_js});</script>
-  <p><a href="{spa_url}">Continue to article</a></p>
+  <p><a href="{spa_url}">{cta_label}</a></p>
 </body>
 </html>
 """
@@ -87,7 +88,7 @@ _PAGE_WECHAT = """\
   <title>{title}</title>
   <meta name="description" content="{description}" />
 
-  <meta property="og:type"        content="article" />
+  <meta property="og:type"        content="{og_type}" />
   <meta property="og:site_name"   content="Zenheart" />
   <meta property="og:url"         content="{share_url}" />
   <meta property="og:title"       content="{title}" />
@@ -129,7 +130,7 @@ async def share_news_article(
 
     base = settings.public_site_base_url.rstrip("/")
     share_url = f"{base}/v2/share/news/{article_id}"
-    spa_url = f"{base}/#/news?article={article_id}"
+    spa_url = f"{base}/#/news/{article_id}"
 
     title = html.escape(article.title, quote=True)
     raw_summary = (article.summary or "").strip()
@@ -160,6 +161,93 @@ async def share_news_article(
         "og_image": og_image,
         "twitter_image": twitter_image,
         "twitter_card": twitter_card,
+        "og_type": "article",
+        "cta_label": html.escape("Continue to article", quote=True),
+    }
+
+    ua = (request.headers.get("user-agent") or "").lower()
+    is_wechat = "micromessenger" in ua
+    if is_wechat:
+        body = _PAGE_WECHAT.format(**common)
+    else:
+        body = _PAGE.format(**common, spa_url_js=json.dumps(spa_url))
+    return HTMLResponse(
+        content=body, status_code=200, headers=dict(_SHARE_HTML_HEADERS)
+    )
+
+
+_SOCIAL_ROOM_ID_MAX_LEN = 80
+
+
+async def _social_room_share_title_description(
+    request: Request,
+    room_id: str,
+    session: AsyncSession,
+) -> tuple[str, str]:
+    """Return (raw_title, raw_description) before HTML escaping."""
+    rid = (room_id or "").strip()
+    if not rid or len(rid) > _SOCIAL_ROOM_ID_MAX_LEN:
+        return "Social room", "Open this link in Zenheart."
+
+    social = request.app.state.social_registry
+    live = await social.get_room(rid)
+    if live is not None:
+        if not live.observable or live.is_private:
+            return "Zenheart", "Social room on Zenheart."
+        topic = (live.topic or "").strip()
+        name = (live.name or "").strip()
+        headline = topic or name or "Social room"
+        rules = (live.rules or "").strip()
+        raw_desc = rules or topic or name or "Join this room on Zenheart."
+        return headline[:200], raw_desc[:500]
+
+    row = await session.get(SocialRoom, rid)
+    if row is not None:
+        if not row.observable or row.is_private:
+            return "Zenheart", "Social room on Zenheart."
+        topic = (row.topic or "").strip()
+        name = (row.name or "").strip()
+        headline = topic or name or "Social room"
+        rules = (row.rules or "").strip()
+        raw_desc = rules or topic or name or "Open this room on Zenheart."
+        return headline[:200], raw_desc[:500]
+
+    return "Social room", "Open this link in Zenheart."
+
+
+@router.get("/social/room/{room_id}", response_class=HTMLResponse)
+async def share_social_room(
+    request: Request,
+    room_id: str,
+    session: DbSession,
+    settings: SettingsDep,
+) -> HTMLResponse:
+    base = settings.public_site_base_url.rstrip("/")
+    rid = (room_id or "").strip()
+    if not rid or len(rid) > _SOCIAL_ROOM_ID_MAX_LEN:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid room id.")
+
+    share_url = f"{base}/v2/share/social/room/{rid}"
+    spa_url = f"{base}/#/social/room/{rid}"
+
+    raw_title, raw_desc = await _social_room_share_title_description(request, rid, session)
+    title = html.escape((raw_title or "Social room").strip() or "Social room", quote=True)
+    description = html.escape((raw_desc or "Zenheart").strip()[:200] or "Zenheart", quote=True)
+
+    og_image = ""
+    twitter_image = ""
+    twitter_card = "summary"
+
+    common = {
+        "title": title,
+        "description": description,
+        "share_url": html.escape(share_url, quote=True),
+        "spa_url": html.escape(spa_url, quote=True),
+        "og_image": og_image,
+        "twitter_image": twitter_image,
+        "twitter_card": twitter_card,
+        "og_type": "website",
+        "cta_label": html.escape("Open room", quote=True),
     }
 
     ua = (request.headers.get("user-agent") or "").lower()
