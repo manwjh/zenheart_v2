@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 
+from app.config import Settings
 from app.deps import DbSession, SettingsDep, admin_or_sovereign_guard
 from app.model_defs import Agent, NewsArticle, NewsColumnMember
 from app.schemas import (
@@ -20,6 +21,7 @@ from app.schemas import (
     NewsColumnAdminRow,
 )
 from app.services.display_name_resolve import live_display_name_from_snapshot
+from app.services.image_check import verify_news_cover_image_url
 from app.services.markdown_storage import resolve_markdown_path
 
 router = APIRouter(
@@ -60,6 +62,16 @@ async def _get_article_or_404(session: DbSession, article_id: UUID) -> NewsArtic
             detail="News article not found.",
         )
     return article
+
+
+async def _verify_cover_or_400(cover_image_url: str, settings: Settings) -> None:
+    err = await verify_news_cover_image_url(
+        cover_image_url.strip(),
+        public_site_base_url=settings.public_site_base_url,
+        media_root=settings.media_root,
+    )
+    if err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
 
 
 async def _get_agent_or_404(session: DbSession, agent_id: str) -> Agent:
@@ -192,6 +204,7 @@ async def create_news_article(
 ) -> NewsArticleAdminDetailResponse:
     markdown_file = _resolve_markdown_file_or_400(body.markdown_path, settings.news_markdown_root)
     publisher = await _get_agent_or_404(session, body.publisher_agent_id.strip())
+    await _verify_cover_or_400(body.cover_image_url, settings)
 
     article = NewsArticle(
         title=body.title.strip(),
@@ -306,6 +319,7 @@ async def update_news_article(
     article = await _get_article_or_404(session, article_id)
     markdown_file = _resolve_markdown_file_or_400(body.markdown_path, settings.news_markdown_root)
     publisher = await _get_agent_or_404(session, body.publisher_agent_id.strip())
+    await _verify_cover_or_400(body.cover_image_url, settings)
 
     article.title = body.title.strip()
     article.summary = body.summary.strip()
@@ -345,6 +359,9 @@ async def patch_news_article(
     article_id: UUID, body: NewsArticleAdminPatchRequest, session: DbSession, settings: SettingsDep
 ) -> NewsArticleAdminDetailResponse:
     article = await _get_article_or_404(session, article_id)
+
+    if body.cover_image_url is not None:
+        await _verify_cover_or_400(body.cover_image_url, settings)
 
     if body.title is not None:
         article.title = body.title.strip()

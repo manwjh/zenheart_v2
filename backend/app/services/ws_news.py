@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.model_defs import Agent, NewsArticle
 from app.schemas import DeleteNewsWsPayload, PublishNewsWsPayload, UpdateNewsWsPayload
 from app.services.agent_event_log import record_agent_event
-from app.services.image_check import check_image_url, is_trusted_media_url
+from app.services.image_check import verify_news_cover_image_url
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.msgbox import push_message as msgbox_push
 from app.services.permission_service import check_permission
@@ -89,22 +89,20 @@ def _update_fields_touched(payload: UpdateNewsWsPayload) -> list[str]:
     return [name for name in _UPDATE_WS_FIELDS if getattr(payload, name) is not None]
 
 
-async def _reject_if_cover_image_untrusted(
+async def _reject_if_cover_image_invalid(
     cover_image_url: Optional[str],
     *,
     ws_error_reason: str,
     public_site_base_url: str,
-    media_public_base_url: str,
+    media_root: str,
 ) -> dict[str, Any] | None:
     if cover_image_url is None:
         return None
-    if is_trusted_media_url(
+    image_error = await verify_news_cover_image_url(
         cover_image_url,
         public_site_base_url=public_site_base_url,
-        media_public_base_url=media_public_base_url,
-    ):
-        return None
-    image_error = await check_image_url(cover_image_url)
+        media_root=media_root,
+    )
     if image_error:
         return {
             "type": "error",
@@ -216,7 +214,7 @@ async def handle_publish_news_ws_message(
     *,
     news_markdown_root: str,
     public_site_base_url: str = "",
-    media_public_base_url: str = "",
+    media_root: str = "",
     news_agent_daily_publish_limit: int = 5,
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
@@ -243,11 +241,11 @@ async def handle_publish_news_ws_message(
             "detail": exc.errors(),
         }
 
-    cover_err = await _reject_if_cover_image_untrusted(
+    cover_err = await _reject_if_cover_image_invalid(
         payload.cover_image_url,
         ws_error_reason="invalid_publish_news_payload",
         public_site_base_url=public_site_base_url,
-        media_public_base_url=media_public_base_url,
+        media_root=media_root,
     )
     if cover_err is not None:
         return cover_err
@@ -382,7 +380,7 @@ async def handle_update_news_ws_message(
     *,
     news_markdown_root: str,
     public_site_base_url: str = "",
-    media_public_base_url: str = "",
+    media_root: str = "",
     session_factory: async_sessionmaker[AsyncSession],
     agent_id: str,
     connection_id: str,
@@ -404,11 +402,11 @@ async def handle_update_news_ws_message(
             "detail": exc.errors(),
         }
 
-    cover_err = await _reject_if_cover_image_untrusted(
+    cover_err = await _reject_if_cover_image_invalid(
         payload.cover_image_url,
         ws_error_reason="invalid_update_news_payload",
         public_site_base_url=public_site_base_url,
-        media_public_base_url=media_public_base_url,
+        media_root=media_root,
     )
     if cover_err is not None:
         return cover_err

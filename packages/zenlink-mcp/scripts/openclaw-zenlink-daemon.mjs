@@ -4,13 +4,18 @@
  *
  * Commands: start | stop | status
  *
- * Requires for start: ZENLINK_AGENT_ID, ZENLINK_TOKEN (or ZENHEART_* aliases).
+ * Requires for start: ZENLINK_AGENT_ID, ZENLINK_TOKEN from the registration email.
  * Optional: ZENLINK_MCP_DAEMON_ADDR_FILE, ZENLINK_MCP_DAEMON_SUPERVISOR_PID_FILE
  *   (default: <addrFile>.run.pid).
  *
  * Upgrade: if addr file already points at a live TCP endpoint, start is a no-op
  * (avoids spawning a second daemon when .run.pid was lost). Use stop first, or
  * ZENLINK_MCP_DAEMON_SUPERVISOR_FORCE_START=1 after killing the old process.
+ *
+ * stop --require-dead (or ZENLINK_MCP_DAEMON_STOP_REQUIRE_DEAD=1): wait until the
+ * daemon PID exits (SIGKILL if needed) and until TCP at addr-file host:port is down,
+ * else exit 1. Used by upgrade-offline-install.sh so upgrades fail closed instead of
+ * swapping trees while a listener is still up.
  */
 import { spawn } from "node:child_process";
 import {
@@ -22,10 +27,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import * as net from "node:net";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { resolveNodeCommand } from "./node-command-helper.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(scriptDir, "..");
@@ -47,7 +53,7 @@ function defaultAddrFile() {
   ) {
     return "/tmp/zenlink-mcp-daemon.addr";
   }
-  return join(tmpdir(), "zenlink-mcp-daemon.addr");
+  return join(homedir(), ".openclaw", "tmp", "zenlink-mcp-daemon.addr");
 }
 
 function defaultPidFile(addrFile) {
@@ -91,6 +97,22 @@ function parseAddrLine(addrFile) {
   return { host, port };
 }
 
+function tokenFileForAddrFile(addrFile) {
+  return `${addrFile}.token`;
+}
+
+function readDaemonToken(addrFile) {
+  const tokenFile = tokenFileForAddrFile(addrFile);
+  if (!existsSync(tokenFile)) {
+    return { ok: false, tokenFile, error: "token_file_missing" };
+  }
+  const token = readFileSync(tokenFile, "utf8").trim();
+  if (!token) {
+    return { ok: false, tokenFile, error: "token_file_empty" };
+  }
+  return { ok: true, tokenFile, token };
+}
+
 function probeTcp(host, port, ms = 2000) {
   return new Promise((resolve) => {
     const sock = net.connect({ host, port }, () => {
@@ -103,6 +125,142 @@ function probeTcp(host, port, ms = 2000) {
       resolve(false);
     }, ms);
   });
+}
+
+function invokeDaemonRpc(host, port, token, tool, args = {}, ms = 3000) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    let buffer = "";
+    let settled = false;
+    let timer;
+    const done = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    timer = setTimeout(() => {
+      done({ ok: false, error: "daemon_rpc_timeout" });
+    }, ms);
+    socket.setEncoding("utf8");
+    socket.once("connect", () => {
+      socket.write(JSON.stringify({ id: 1, token, tool, args }) + "\n");
+    });
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const idx = buffer.indexOf("\n");
+      if (idx < 0) {
+        return;
+      }
+      const line = buffer.slice(0, idx).trim();
+      try {
+        const msg = JSON.parse(line);
+        if (msg.error) {
+          done({ ok: false, error: msg.error });
+        } else {
+          done({ ok: true, result: msg.result });
+        }
+      } catch (error) {
+        done({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    socket.once("error", (error) => {
+      done({ ok: false, error: error.message });
+    });
+    socket.once("close", () => {
+      done({ ok: false, error: "daemon_rpc_closed" });
+    });
+  });
+}
+
+function daemonRpcTimeoutMs() {
+  const raw = process.env.ZENLINK_MCP_DAEMON_HEALTH_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return 3000;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("ZENLINK_MCP_DAEMON_HEALTH_TIMEOUT_MS must be a positive number");
+  }
+  return Math.floor(value);
+}
+
+function requireWsOnline() {
+  const raw = process.env.ZENLINK_MCP_REQUIRE_WS_ONLINE?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function parseToolTextJson(result) {
+  const text = result?.content?.find?.((item) => item?.type === "text")?.text;
+  if (typeof text !== "string") {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function checkDaemonHealth(addrFile) {
+  if (!existsSync(addrFile)) {
+    return { ok: false, reason: "addr_file_missing" };
+  }
+  let addr;
+  try {
+    addr = parseAddrLine(addrFile);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "addr_file_invalid",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const tcpReachable = await probeTcp(addr.host, addr.port);
+  if (!tcpReachable) {
+    return { ok: false, reason: "tcp_unreachable", ...addr };
+  }
+  const token = readDaemonToken(addrFile);
+  if (!token.ok) {
+    return { ok: false, reason: token.error, token_file: token.tokenFile, ...addr };
+  }
+  const rpc = await invokeDaemonRpc(
+    addr.host,
+    addr.port,
+    token.token,
+    "zenlink_status",
+    {},
+    daemonRpcTimeoutMs(),
+  );
+  if (!rpc.ok) {
+    return { ok: false, reason: "daemon_rpc_failed", detail: rpc.error, ...addr };
+  }
+  const status = parseToolTextJson(rpc.result);
+  const wsOnline = status?.online === true;
+  if (requireWsOnline() && !wsOnline) {
+    return {
+      ok: false,
+      reason: "ws_offline",
+      detail: "daemon RPC is healthy but ZenHeart WebSocket is offline",
+      token_file: token.tokenFile,
+      status,
+      ...addr,
+    };
+  }
+  return {
+    ok: true,
+    reason: "ok",
+    token_file: token.tokenFile,
+    ws_online: wsOnline,
+    status,
+    ...addr,
+  };
 }
 
 function readPid(path) {
@@ -151,7 +309,7 @@ function requireAgentEnv() {
     process.env.ZENHEART_V2_TOKEN;
   if (!aid?.trim() || !tok?.trim()) {
     console.error(
-      "error: set ZENLINK_AGENT_ID and ZENLINK_TOKEN (or ZENHEART_* / ZENHEART_V2_*)",
+      "error: set ZENLINK_AGENT_ID and ZENLINK_TOKEN from the registration email",
     );
     process.exit(1);
   }
@@ -175,16 +333,32 @@ async function cmdStart() {
     try {
       const { host, port } = parseAddrLine(addrFile);
       if (await probeTcp(host, port)) {
+        const health = await checkDaemonHealth(addrFile);
         const supPid = readPid(pidFile);
         const statusPid = readDaemonPidFromStatus(addrFile);
+        if (!health.ok) {
+          console.error(
+            `error: daemon TCP is reachable at ${host}:${port}, but authenticated health failed (${health.reason}${health.detail ? `: ${health.detail}` : ""})`,
+          );
+          console.error(
+            `       This usually means an old daemon is still running, the ${tokenFileForAddrFile(addrFile)} file is missing/stale, or OpenClaw workers have not been recycled.`,
+          );
+          console.error(
+            "       Run: node scripts/openclaw-zenlink-daemon.mjs stop --require-dead, then start, then openclaw gateway restart.",
+          );
+          if (statusPid && alive(statusPid)) {
+            console.error(`note: status.json pid ${statusPid} (likely the daemon process)`);
+          }
+          process.exit(1);
+        }
         if (supPid && alive(supPid)) {
           console.error(
-            `note: daemon already reachable at ${host}:${port} (supervisor pid ${supPid})`,
+            `note: daemon already healthy at ${host}:${port} (supervisor pid ${supPid})`,
           );
           return;
         }
         console.error(
-          `note: daemon already reachable at ${host}:${port} — not spawning another (upgrade: run stop first, or kill pid from ${addrFile}.status.json, or set ZENLINK_MCP_DAEMON_SUPERVISOR_FORCE_START=1)`,
+          `note: daemon already healthy at ${host}:${port} — not spawning another (upgrade: run stop first, or kill pid from ${addrFile}.status.json, or set ZENLINK_MCP_DAEMON_SUPERVISOR_FORCE_START=1)`,
         );
         if (statusPid && alive(statusPid)) {
           console.error(`note: status.json pid ${statusPid} (likely the daemon process)`);
@@ -196,11 +370,16 @@ async function cmdStart() {
     }
   }
 
+  const nodeCommand = resolveNodeCommand();
   const logFd = openAppendingLog(logFile);
-  const child = spawn(process.execPath, [cliJs, "--daemon"], {
+  const child = spawn(nodeCommand, [cliJs, "--daemon"], {
     detached: true,
     stdio: ["ignore", logFd, logFd],
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      ZENLINK_MCP_DAEMON_ADDR_FILE: addrFile,
+      ZENLINK_MCP_USE_DAEMON: "0",
+    },
     cwd: pkgRoot,
   });
   child.unref();
@@ -208,6 +387,7 @@ async function cmdStart() {
   console.error(
     `note: spawned zenlink-mcp --daemon pid=${child.pid} (recorded in ${pidFile})`,
   );
+  console.error(`note: daemon command: ${nodeCommand}`);
   console.error(`note: daemon stdout/stderr -> ${logFile}`);
   console.error(`note: waiting for ${addrFile} …`);
 
@@ -218,7 +398,8 @@ async function cmdStart() {
     }
     try {
       const { host, port } = parseAddrLine(addrFile);
-      if (await probeTcp(host, port, 1500)) {
+      const health = await checkDaemonHealth(addrFile);
+      if (health.ok) {
         console.error(`note: daemon ready ${host}:${port}`);
         return;
       }
@@ -230,7 +411,17 @@ async function cmdStart() {
   process.exit(1);
 }
 
-function cmdStop() {
+async function verifyTcpDown(host, port) {
+  for (let i = 0; i < 48; i += 1) {
+    if (!(await probeTcp(host, port, 400))) {
+      return true;
+    }
+    await delay(250);
+  }
+  return false;
+}
+
+async function cmdStop({ requireDead }) {
   const addrFile = defaultAddrFile();
   const pidFile = defaultPidFile(addrFile);
   let pid = readPid(pidFile);
@@ -242,7 +433,9 @@ function cmdStop() {
     }
   }
   if (!pid) {
-    console.error(`note: no supervisor pid in ${pidFile} and no live pid in status — nothing to stop`);
+    console.error(
+      `note: no supervisor pid in ${pidFile} and no live pid in status — nothing to stop`,
+    );
     try {
       if (existsSync(pidFile)) {
         unlinkSync(pidFile);
@@ -250,28 +443,65 @@ function cmdStop() {
     } catch {
       /* ignore */
     }
-    return;
-  }
-  if (!alive(pid)) {
+  } else if (!alive(pid)) {
     console.error(`note: pid ${pid} not running`);
     try {
       unlinkSync(pidFile);
     } catch {
       /* ignore */
     }
+  } else {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : e);
+      process.exit(1);
+    }
+    console.error(`note: sent SIGTERM to pid ${pid}`);
+    try {
+      unlinkSync(pidFile);
+    } catch {
+      /* ignore */
+    }
+    if (requireDead) {
+      for (let i = 0; i < 48; i += 1) {
+        await delay(250);
+        if (!alive(pid)) {
+          break;
+        }
+      }
+      if (alive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+          console.error(`note: sent SIGKILL to pid ${pid}`);
+        } catch (e) {
+          console.error(e instanceof Error ? e.message : e);
+          process.exit(1);
+        }
+        await delay(400);
+      }
+    }
+  }
+
+  if (!requireDead) {
     return;
   }
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch (e) {
-    console.error(e instanceof Error ? e.message : e);
-    process.exit(1);
+  if (!existsSync(addrFile)) {
+    return;
   }
-  console.error(`note: sent SIGTERM to pid ${pid}`);
+  let host;
+  let port;
   try {
-    unlinkSync(pidFile);
+    ({ host, port } = parseAddrLine(addrFile));
   } catch {
-    /* ignore */
+    return;
+  }
+  const ok = await verifyTcpDown(host, port);
+  if (!ok) {
+    console.error(
+      `error: zenlink-mcp daemon TCP still reachable at ${host}:${port} after stop — wrong ZENLINK_MCP_DAEMON_ADDR_FILE, stale addr file, or unrelated listener`,
+    );
+    process.exit(1);
   }
 }
 
@@ -279,8 +509,11 @@ async function cmdStatus() {
   const addrFile = defaultAddrFile();
   const pidFile = defaultPidFile(addrFile);
   const logFile = defaultLogFile(addrFile);
+  const tokenFile = tokenFileForAddrFile(addrFile);
   const pid = readPid(pidFile);
+  const statusPid = readDaemonPidFromStatus(addrFile);
   console.error(`addr_file: ${addrFile}`);
+  console.error(`token_file: ${tokenFile}`);
   console.error(`supervisor_pid_file: ${pidFile}`);
   console.error(`log_file: ${logFile}`);
   console.error(`recorded_pid: ${pid ?? "(none)"}`);
@@ -289,6 +522,15 @@ async function cmdStatus() {
   } else {
     console.error(`recorded_pid_alive: false`);
   }
+  console.error(`status_json_pid: ${statusPid ?? "(none)"}`);
+  if (statusPid && alive(statusPid)) {
+    console.error(`status_json_pid_alive: true`);
+  } else {
+    console.error(`status_json_pid_alive: false`);
+  }
+  const token = readDaemonToken(addrFile);
+  console.error(`token_file_exists: ${existsSync(tokenFile)}`);
+  console.error(`token_file_ok: ${token.ok}`);
   if (!existsSync(addrFile)) {
     console.error("tcp: addr file missing");
     return;
@@ -297,6 +539,26 @@ async function cmdStatus() {
     const { host, port } = parseAddrLine(addrFile);
     const ok = await probeTcp(host, port);
     console.error(`tcp: ${host}:${port} reachable=${ok}`);
+    const health = await checkDaemonHealth(addrFile);
+    console.error(`authenticated_rpc: ok=${health.ok} reason=${health.reason}`);
+    if (health.status) {
+      console.error(`ws_online: ${health.ws_online}`);
+      console.error(`connection_state: ${health.status.connection_state ?? "(unknown)"}`);
+      console.error(`last_ws_frame_at: ${health.status.last_ws_frame_at ?? "(none)"}`);
+      console.error(`last_ws_close_at: ${health.status.last_ws_close_at ?? "(none)"}`);
+      console.error(`last_ws_close_code: ${health.status.last_ws_close_code ?? "(none)"}`);
+      console.error(`passive_disconnect_total: ${health.status.passive_disconnect_total ?? 0}`);
+      console.error(`connect_failure_total: ${health.status.connect_failure_total ?? 0}`);
+      console.error(`ws_superseded_total: ${health.status.ws_superseded_total ?? 0}`);
+    }
+    if (health.detail) {
+      console.error(`authenticated_rpc_detail: ${health.detail}`);
+    }
+    if (!health.ok) {
+      console.error(
+        "next: stop old daemon with --require-dead, start this version, then run openclaw gateway restart",
+      );
+    }
   } catch (e) {
     console.error(
       `tcp: error ${e instanceof Error ? e.message : String(e)}`,
@@ -305,18 +567,25 @@ async function cmdStatus() {
 }
 
 const sub = process.argv[2];
+const rest = process.argv.slice(3);
+const stopRequireDead =
+  rest.includes("--require-dead") ||
+  process.env.ZENLINK_MCP_DAEMON_STOP_REQUIRE_DEAD === "1";
 if (sub === "start") {
   await cmdStart();
 } else if (sub === "stop") {
-  cmdStop();
+  await cmdStop({ requireDead: stopRequireDead });
 } else if (sub === "status") {
   await cmdStatus();
 } else {
   console.error(
-    `usage: node scripts/openclaw-zenlink-daemon.mjs start|stop|status [--force]`,
+    `usage: node scripts/openclaw-zenlink-daemon.mjs start|stop|status [--force] [--require-dead]`,
   );
   console.error(
     `  start: optional --force or ZENLINK_MCP_DAEMON_SUPERVISOR_FORCE_START=1 to ignore live addr (use after killing old daemon manually)`,
+  );
+  console.error(
+    `  stop: optional --require-dead (or ZENLINK_MCP_DAEMON_STOP_REQUIRE_DEAD=1) wait until process + TCP addr are down`,
   );
   process.exit(2);
 }

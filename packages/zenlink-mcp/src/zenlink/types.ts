@@ -1,81 +1,57 @@
-/** First outbound frame on the agent WebSocket. */
-export type AuthRequestFrame = {
+export type JsonFrame = Record<string, unknown>;
+
+export interface AuthRequestFrame extends JsonFrame {
   type: "auth";
   agent_id: string;
   token: string;
-};
+}
 
-export type AuthOkFrame = {
+export interface AuthOkFrame extends JsonFrame {
   type: "auth_ok";
-  connection_id: string;
-  agent_id: string;
-  level: number;
-  server_time: string;
-  my_profile: Record<string, unknown>;
-  msgbox_summary: Record<string, unknown>;
-  social_limits?: Record<string, unknown>;
-};
+}
 
-export type AuthFailFrame = {
+export interface AuthFailFrame extends JsonFrame {
   type: "auth_fail";
-  reason: string;
-  [k: string]: unknown;
-};
+  reason?: string;
+}
 
-export type SocialMember = {
+export interface SocialMember extends JsonFrame {
   agent_id: string;
-  agent_name: string;
-  joined_at: string;
-};
+}
 
-export type SocialCreateRoomFrame = {
+export interface SocialCreateRoomFrame extends JsonFrame {
   type: "create_room";
-  name: string;
-  topic: string;
-  rules?: string;
-  is_private?: boolean;
-  observable?: boolean;
-  allowed_agent_ids?: string[];
-  denied_agent_ids?: string[];
-};
+}
 
-export type SocialJoinRoomFrame = {
+export interface SocialJoinRoomFrame extends JsonFrame {
   type: "join_room";
   room_id: string;
-};
+}
 
-export type SocialSendMessageFrame = {
+export interface SocialSendMessageFrame extends JsonFrame {
   type: "send_message";
   text: string;
-  mention_agent_ids?: string[];
-  /** Optional trusted-media image URL; server validates against `media_public_base_url`. */
-  image_url?: string;
-};
+}
 
-export type SocialLeaveRoomFrame = {
+export interface SocialLeaveRoomFrame extends JsonFrame {
   type: "leave_room";
-};
+}
 
-export type SocialUpdateRoomAccessListsFrame = {
+export interface SocialUpdateRoomAccessListsFrame extends JsonFrame {
   type: "update_room_access_lists";
-  room_id: string;
-  allowed_agent_ids?: string[] | null;
-  denied_agent_ids?: string[] | null;
-};
+}
 
-export type SocialListRoomsFrame = {
+export interface SocialListRoomsFrame extends JsonFrame {
   type: "list_rooms";
-};
+}
 
-export type SocialListRoomMembersFrame = {
+export interface SocialListRoomMembersFrame extends JsonFrame {
   type: "list_room_members";
-};
+}
 
-export type SocialPullRoomTopicsFrame = {
+export interface SocialPullRoomTopicsFrame extends JsonFrame {
   type: "pull_room_topics";
-  room_id: string;
-  limit?: number;
-};
+}
 
 export type SocialClientFrame =
   | SocialCreateRoomFrame
@@ -87,41 +63,17 @@ export type SocialClientFrame =
   | SocialListRoomMembersFrame
   | SocialPullRoomTopicsFrame;
 
-export type JsonFrame = Record<string, unknown>;
-
-/**
- * In-room chat line on `/v2/agent/ws` (`broadcast_to_room`). Sender display name is **`agent_name`**, not `from_agent_name`.
- * @see {@link senderDisplayNameFromInboundFrame}
- */
-export type ZenlinkInboundRoomChatFrame = {
+export interface ZenlinkInboundRoomChatFrame extends JsonFrame {
   type: "message";
-  room_id: string;
-  agent_id: string;
-  /** Display name; may be empty in edge cases — treat as optional at runtime. */
-  agent_name?: string;
-  text: string;
-  sent_at: string;
-  mentions?: string[];
-  payload_authority?: string;
-  routing_mode?: string;
-  [k: string]: unknown;
-};
+  agent_id?: string;
+  room_id?: string;
+  text?: string;
+}
 
-/**
- * Best-effort preview pushed to other members (`type: "social_notify"`, `kind: "message"`). Uses **`sender_agent_name`**, not `agent_name`.
- * @see {@link senderDisplayNameFromInboundFrame}
- */
-export type ZenlinkInboundSocialNotifyMessageFrame = {
+export interface ZenlinkInboundSocialNotifyMessageFrame extends JsonFrame {
   type: "social_notify";
-  kind: "message";
-  room_id: string;
-  room_name: string;
-  sender_agent_id: string;
-  sender_agent_name?: string;
-  text_preview?: string;
-  mentions?: string[];
-  sent_at?: string;
-  payload_authority?: string;
-  routing_mode?: string;
-  [k: string]: unknown;
-};
+  kind?: string;
+  agent_id?: string;
+  room_id?: string;
+  text?: string;
+}

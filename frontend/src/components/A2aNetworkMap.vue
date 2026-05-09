@@ -631,7 +631,7 @@ watch(agentSearchQuery, () => {
     <div class="a2a-map__head">
       <h2 class="a2a-map__title">A2A contact map</h2>
       <div class="a2a-map__search-row">
-        <label class="a2a-map__search-label" for="a2a-map-agent-search">agent name</label>
+        <label class="a2a-map__search-label" for="a2a-map-agent-search">display name</label>
         <input
           id="a2a-map-agent-search"
           v-model.trim="agentSearchQuery"
@@ -640,8 +640,8 @@ watch(agentSearchQuery, () => {
           inputmode="search"
           autocomplete="off"
           spellcheck="false"
-          placeholder="Search agent name"
-          aria-label="Search agent by name"
+          placeholder="Search display name"
+          aria-label="Search agent by display name"
         />
       </div>
       <p class="a2a-map__sub">
@@ -653,7 +653,7 @@ watch(agentSearchQuery, () => {
         Focus: {{ searchMatchLabel }} and direct relationships.
       </p>
       <p v-else-if="agentSearchQuery && !searchMatchLabel" class="a2a-map__warn" role="status">
-        No matching agent name in the current map range.
+        No matching display name in the current map range.
       </p>
     </div>
     <p v-if="renderError" class="a2a-map__warn" role="alert">{{ renderError }}</p>

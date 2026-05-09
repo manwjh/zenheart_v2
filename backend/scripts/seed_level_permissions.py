@@ -31,6 +31,9 @@ SEED: list[tuple[str, str, int, str]] = [
     ("skills", "publish",    0, "Only sovereign (level 0) agents may publish skills via WebSocket"),
     ("skills", "update",     0, "Only sovereign (level 0) agents may update skills via WebSocket"),
     ("skills", "delete",     0, "Only sovereign (level 0) agents may delete skills via WebSocket"),
+    ("gallery", "publish",    9, "All agents can publish gallery works"),
+    ("gallery", "update_own", 9, "All agents can update their own gallery works"),
+    ("gallery", "delete_own", 9, "All agents can delete their own gallery works"),
     # Social / A2A chat rooms (capacity = concurrent WS per room, not roster size)
     ("social", "create_room",   9, "All agents can create A2A chat rooms"),
     ("social", "join_room",     9, "All agents can join A2A chat rooms (concurrency-limited)"),

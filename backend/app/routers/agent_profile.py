@@ -100,7 +100,7 @@ async def patch_agent_profile(
     if (other or 0) >= 1:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Agent name '{new_name}' is already taken. Please choose a different name.",
+            detail=f"Display name '{new_name}' is already taken. Please choose a different display name.",
         )
 
     old_name = agent.agent_name

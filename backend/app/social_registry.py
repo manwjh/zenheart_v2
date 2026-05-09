@@ -417,6 +417,27 @@ class SocialRoomRegistry:
             self._agent_room[agent_id] = room_id
             return room
 
+    async def confirm_live_room(
+        self,
+        room_id: str,
+        agent_id: str,
+        agent_name: str,
+        ws: WebSocket,
+    ) -> ChatRoom | None:
+        """Refresh and return the live room when the agent is already in ``room_id``."""
+        async with self._lock:
+            if self._agent_room.get(agent_id) != room_id:
+                return None
+            room = self._rooms.get(room_id)
+            if room is None:
+                return None
+            member = room.members.get(agent_id)
+            if member is None:
+                return None
+            member.agent_name = agent_name
+            member.ws = ws
+            return room
+
     async def leave_room(self, agent_id: str) -> ChatRoom | None:
         """Remove the agent from their current room. Returns None if not in a room."""
         async with self._lock:
@@ -532,6 +553,20 @@ class SocialRoomRegistry:
         async with self._lock:
             return self._agent_room.get(agent_id)
 
+    async def is_live_member(self, agent_id: str, room_id: str) -> bool:
+        """Return True only when the agent is currently online in this room."""
+        async with self._lock:
+            if self._agent_room.get(agent_id) != room_id:
+                return False
+            room = self._rooms.get(room_id)
+            return room is not None and agent_id in room.members
+
+    async def get_live_room_for_agent(self, agent_id: str) -> ChatRoom | None:
+        """Return the agent's current live room, not historical membership."""
+        async with self._lock:
+            room_id = self._agent_room.get(agent_id)
+            return self._rooms.get(room_id) if room_id else None
+
     async def get_room(self, room_id: str) -> ChatRoom | None:
         async with self._lock:
             return self._rooms.get(room_id)
@@ -586,6 +621,55 @@ class SocialRoomRegistry:
                 return "allowlist_not_supported_public_room"
             room.denylist_agent_ids = set(deny)
         return None
+
+    async def validate_room_metadata_update(
+        self,
+        room_id: str,
+        creator_id: str,
+        *,
+        name: str | None = None,
+    ) -> str | None:
+        """Validate creator and active-name uniqueness before persisting metadata."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return "room_not_found"
+            if room.creator_id != creator_id:
+                return "forbidden"
+            if name is not None:
+                want = _active_room_name_key(name)
+                for existing in self._rooms.values():
+                    if existing.room_id != room_id and _active_room_name_key(existing.name) == want:
+                        return "room_name_taken"
+        return None
+
+    async def apply_room_metadata_after_persist(
+        self,
+        room_id: str,
+        creator_id: str,
+        *,
+        name: str | None = None,
+        topic: str | None = None,
+        rules: str | None = None,
+    ) -> ChatRoom | str:
+        """Set in-memory room metadata after DB success."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return "room_not_found"
+            if room.creator_id != creator_id:
+                return "forbidden"
+            if name is not None:
+                want = _active_room_name_key(name)
+                for existing in self._rooms.values():
+                    if existing.room_id != room_id and _active_room_name_key(existing.name) == want:
+                        return "room_name_taken"
+                room.name = name
+            if topic is not None:
+                room.topic = topic
+            if rules is not None:
+                room.rules = rules
+            return room
 
     # ---------------------------------------------------------------- observer management
 
@@ -691,14 +775,33 @@ class SocialRoomRegistry:
             except (RuntimeError, OSError):
                 pass
 
+    async def send_to_room_creator_only(
+        self,
+        room_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Deliver ``frame`` only to the room creator's live in-room WebSocket."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return
+            creator = room.members.get(room.creator_id)
+            if creator is None or creator.ws is None:
+                return
+            target = creator.ws
+        text = json.dumps(frame, ensure_ascii=False)
+        try:
+            await target.send_text(text)
+        except (RuntimeError, OSError):
+            pass
+
     async def notify_topic_suggestions_pending(
         self,
         session_factory: object,
         room_id: str,
     ) -> None:
-        """Broadcast current DB pending topic snapshot to observers and in-room agents.
+        """Send the current DB pending topic snapshot to observers and the room creator.
 
-        Agents receive the same ``topic_suggestions_pending`` frame on ``/v2/agent/ws``;
         ``pull_room_topics`` still dequeues rows for the room creator.
         """
         from app.domains.social.persistence.social_repository import (
@@ -712,7 +815,7 @@ class SocialRoomRegistry:
             "topics": topics,
         }
         await self.broadcast_to_observers_only(room_id, frame)
-        await self.broadcast_to_members_only(room_id, frame)
+        await self.send_to_room_creator_only(room_id, frame)
 
     async def broadcast_dissolution(
         self,

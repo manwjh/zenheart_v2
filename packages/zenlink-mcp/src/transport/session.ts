@@ -1,654 +1,814 @@
-import {
-  ZenlinkManagedConnection,
-  createZenlinkManagedFromEnv,
-  type ZenlinkClient,
-  type AuthOkFrame,
-  type JsonFrame,
-} from "../zenlink/index.js";
-import {
-  OpenClawPushNotifier,
-  readOpenClawPushConfig,
-  describeOpenClawPushPublic,
-  type OpenClawPushRuntimeConfig,
-} from "../social/openclaw-push.js";
-import {
-  ZENHEART_WORKSPACE_CONTEXT_REMINDER,
-  getEffectiveParticipantRules,
-  type ParticipantRulesSource,
-} from "../social/participant-rules.js";
-import {
-  readClientPingIntervalMs,
-  readInboundDropTypes,
-  readInboundQueueMax,
-  readLongLivedAutostart,
-  readWsWaitTimeoutMs,
-} from "./session-env.js";
-import {
-  ZenlinkInboundFrameBuffer,
-  type InboundPollResult,
-  type InboundStatsResult,
-} from "./session-inbound-buffer.js";
+import { OpenClawWakeNotifier } from "../social/openclaw-wake-notifier.js";
+import { ZenlinkClient } from "../zenlink/index.js";
+import { fetchSocialRoomMessages } from "../zenlink/index.js";
+import type { WakeNotifierStatus } from "../social/openclaw-wake-notifier.js";
 
-type PendingWait = {
-  accept: (f: JsonFrame) => boolean;
-  resolve: (f: JsonFrame) => void;
-  reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-};
+type FramePredicate = string | ((frame: Record<string, unknown>) => boolean);
 
-export type ZenlinkSessionOptions = {
-  onSuperseded?: (payload: { total: number }) => void;
-  onRoomStateChanged?: (payload: {
-    current_room_id: string | null;
-    room_restore_pending: boolean;
-  }) => void;
-  onLifecycleLog?: (payload: { event: string; detail?: Record<string, unknown> }) => void;
-};
+interface PendingWaiter {
+  predicate: (frame: Record<string, unknown>) => boolean;
+  resolve: (frame: Record<string, unknown>) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+interface PendingInboundWaiter {
+  types: Set<string> | null;
+  roomId?: string | null;
+  resolve: (result: "frame" | "closed") => void;
+  timer: NodeJS.Timeout;
+}
+
+interface InboundFilterOptions {
+  roomId?: string | null;
+  currentRoomOnly?: boolean;
+}
+
+interface SendMessageOptions {
+  roomId?: string;
+  mentionAgentIds?: string[];
+  imageUrl?: string;
+}
+
+export interface ZenlinkSessionStatus {
+  agent_id: string;
+  online: boolean;
+  current_room_id: string | null;
+  room_online_assumption: "confirmed" | "restore_pending" | "unknown";
+  room_confirmed_at: string | null;
+  room_join_skipped_total: number;
+  inbound_queue_depth: number;
+  inbound_queue_max: number;
+  overflow_dropped_total: number;
+  self_echo_dropped_total: number;
+  ws_superseded_total: number;
+  connect_total: number;
+  reconnect_total: number;
+  ws_disconnect_total: number;
+  passive_disconnect_total: number;
+  connect_failure_total: number;
+  wait_timeout_total: number;
+  room_restore_pending: boolean;
+  connection_state: string;
+  last_ws_close_code: number | null;
+  last_ws_close_reason: string | null;
+  last_ws_close_at: string | null;
+  last_ws_frame_at: string | null;
+  last_inbound_enqueue_at: string | null;
+  last_wait_timeout_at: string | null;
+  last_backfill_at: string | null;
+  last_backfill_error: string | null;
+  last_inbound_dequeue_at: string | null;
+  last_inbound_dequeue_count: number;
+  last_inbound_dequeue_tool: string | null;
+  last_msgbox_fetch_at: string | null;
+  last_msgbox_fetch_count: number;
+  last_msgbox_fetch_unread_count: number | null;
+  last_msgbox_ack_at: string | null;
+  last_msgbox_ack_count: number;
+  openclaw_push: WakeNotifierStatus;
+  process_pid: number;
+}
 
 export class ZenlinkSession {
-  private readonly managed: ZenlinkManagedConnection;
   readonly client: ZenlinkClient;
-  private readonly openclawPush: OpenClawPushNotifier | undefined;
-  private readonly openclawPushConfigSnapshot: OpenClawPushRuntimeConfig | undefined;
-  private readonly wsWaitTimeoutMs: number;
-  private readonly inbound: ZenlinkInboundFrameBuffer;
-  private tail: Promise<unknown> = Promise.resolve();
-  private pending: PendingWait | null = null;
-  private lastSocialRoomId: string | null = null;
-  private roomRestorePending = false;
+
+  private readonly inboundQueue: Record<string, unknown>[] = [];
+  private readonly waiters = new Set<PendingWaiter>();
+  private readonly inboundWaiters = new Set<PendingInboundWaiter>();
+  private readonly notifier: OpenClawWakeNotifier;
+  private readonly inboundQueueMax: number;
+  private readonly inboundDropTypes: Set<string>;
+  private overflowDroppedTotal = 0;
+  private selfEchoDroppedTotal = 0;
   private wsSupersededTotal = 0;
-  private lastRoomSnapshot: {
-    room_id: string;
-    name: string | null;
-    topic: string | null;
-    rules: string | null;
-    creator_agent_id: string | null;
-    creator_agent_name: string | null;
-  } | null = null;
-  private readonly selfCreatedRoomIds = new Set<string>();
-  private readonly options: ZenlinkSessionOptions;
-  private roomRestoreLoopActive = false;
+  private connectTotal = 0;
+  private reconnectTotal = 0;
+  private wsDisconnectTotal = 0;
+  private passiveDisconnectTotal = 0;
+  private connectFailureTotal = 0;
+  private waitTimeoutTotal = 0;
+  private longLived = process.env.ZENLINK_MCP_LONG_LIVED?.toLowerCase() !== "0";
+  private currentRoomId: string | null = null;
+  private roomConfirmedAt: string | null = null;
+  private roomJoinSkippedTotal = 0;
+  private roomRestorePending = false;
+  private roomNeedsRestore = false;
+  private started = false;
+  private hasConnected = false;
+  private explicitDisconnect = false;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectDelayMs = 1_000;
+  private readonly reconnectMaxDelayMs = 30_000;
+  private lastWsCloseCode: number | null = null;
+  private lastWsCloseReason: string | null = null;
+  private lastWsCloseAt: string | null = null;
+  private lastWsFrameAt: string | null = null;
+  private lastInboundEnqueueAt: string | null = null;
+  private lastWaitTimeoutAt: string | null = null;
+  private lastBackfillAt: string | null = null;
+  private lastBackfillError: string | null = null;
+  private lastInboundDequeueAt: string | null = null;
+  private lastInboundDequeueCount = 0;
+  private lastInboundDequeueTool: string | null = null;
+  private lastMsgboxFetchAt: string | null = null;
+  private lastMsgboxFetchCount = 0;
+  private lastMsgboxFetchUnreadCount: number | null = null;
+  private lastMsgboxAckAt: string | null = null;
+  private lastMsgboxAckCount = 0;
 
-  constructor(options?: ZenlinkSessionOptions) {
-    this.options = options ?? {};
-    this.wsWaitTimeoutMs = readWsWaitTimeoutMs();
-    const pushCfg = readOpenClawPushConfig();
-    this.openclawPushConfigSnapshot = pushCfg;
-    this.openclawPush = pushCfg
-      ? new OpenClawPushNotifier(pushCfg)
-      : undefined;
-    this.managed = createZenlinkManagedFromEnv({
-      pingIntervalMs: readClientPingIntervalMs(),
-      onMessage: (frame) => this.onFrame(frame),
-      onClose: () => {
-        if (this.lastSocialRoomId !== null) {
-          this.roomRestorePending = true;
-          this.emitRoomStateChanged();
-          this.scheduleAutoRoomRestore();
-        }
-        this.emitLifecycleLog("ws_closed", {
-          tracked_room_id: this.lastSocialRoomId,
-          room_restore_pending: this.roomRestorePending,
-        });
-        this.abortPendingWait(
-          new Error("zenlink-mcp: WebSocket closed before response"),
-        );
-      },
-      onAuthFailure: (err) => {
-        console.error(`zenlink-mcp: long-lived auth failed: ${err.message}`);
-        this.emitLifecycleLog("ws_auth_failed", { message: err.message });
-      },
-    });
-    this.client = this.managed.client;
-    this.inbound = new ZenlinkInboundFrameBuffer(
-      readInboundQueueMax(),
-      readInboundDropTypes(),
-      this.client.agentId,
-    );
-    if (readLongLivedAutostart()) {
-      this.managed.startLongLived();
-    }
-  }
-
-  status(): {
-    connected: boolean;
-    longLived: boolean;
-    agentId: string;
-    host: string;
-    process_pid: number;
-    ws_superseded_total: number;
-    current_room_id: string | null;
-    room_restore_pending: boolean;
-    openclaw_push: ReturnType<typeof describeOpenClawPushPublic> &
-      ReturnType<OpenClawPushNotifier["status"]>;
-  } {
-    const base = describeOpenClawPushPublic(this.openclawPushConfigSnapshot);
-    const st = this.openclawPush?.status() ?? {
-      last_error: null,
-      last_ok_at_ms: null,
-      last_ok_frame: null,
-      last_failed_frame: null,
-      sent_total_by_type: {},
-      failed_total_by_type: {},
-      skipped_dedupe_by_type: {},
-      skipped_room_line_coalesce_by_type: {},
-      skipped_frame_type_filter_by_type: {},
-    };
-    return {
-      connected: this.client.isConnected(),
-      longLived: this.managed.isLongLivedEnabled(),
-      agentId: this.client.agentId,
-      host: this.client.host,
-      process_pid: process.pid,
-      ws_superseded_total: this.wsSupersededTotal,
-      current_room_id: this.lastSocialRoomId,
-      room_restore_pending: this.roomRestorePending,
-      openclaw_push: { ...base, ...st },
-    };
-  }
-
-  startLongLived(): void {
-    this.managed.startLongLived();
-  }
-
-  socialGrounding(): {
-    workspace_context_reminder: string;
-    participant_rules: string;
-    participant_rules_source: ParticipantRulesSource;
-    agent: { agent_id: string; host: string };
-    room: {
-      room_id: string;
-      name: string | null;
-      topic: string | null;
-      rules: string | null;
-      creator_agent_id: string | null;
-      creator_agent_name: string | null;
-      is_room_creator: boolean | null;
-    } | null;
-    note: string | null;
-  } {
-    const pr = getEffectiveParticipantRules();
-    const agentId = this.client.agentId;
-    const roomId = this.lastSocialRoomId;
-    const snap = this.lastRoomSnapshot;
-    let isRoomCreator: boolean | null = null;
-    if (roomId && snap?.room_id === roomId) {
-      if (snap.creator_agent_id && snap.creator_agent_id.length > 0) {
-        isRoomCreator = snap.creator_agent_id === agentId;
-      } else if (this.selfCreatedRoomIds.has(roomId)) {
-        isRoomCreator = true;
-      }
-    }
-    const needNote =
-      roomId !== null &&
-      isRoomCreator === null &&
-      (snap === null || snap.creator_agent_id == null);
-
-    const parts: string[] = [];
-    if (needNote) {
-      parts.push(
-        "is_room_creator unknown: join or create a room so room_joined/room_created can be processed; ensure ZenHeart backend exposes creator_agent_id (current servers include it).",
-      );
-    }
-    if (pr.participant_rules_file_missing) {
-      parts.push(
-        "ZENLINK_MCP_PARTICIPANT_RULES_FILE is set but the file is missing; effective participant_rules text is env/default until created. Use zenlink_participant_rules_set after enabling ZENLINK_MCP_PARTICIPANT_RULES_WRITE, or zenlink_participant_rules_get to inspect.",
-      );
-    }
-
-    return {
-      workspace_context_reminder: ZENHEART_WORKSPACE_CONTEXT_REMINDER,
-      participant_rules: pr.text,
-      participant_rules_source: pr.source,
-      agent: { agent_id: agentId, host: this.client.host },
-      room:
-        roomId === null
-          ? null
-          : {
-              room_id: roomId,
-              name: snap?.name ?? null,
-              topic: snap?.topic ?? null,
-              rules: snap?.rules ?? null,
-              creator_agent_id: snap?.creator_agent_id ?? null,
-              creator_agent_name: snap?.creator_agent_name ?? null,
-              is_room_creator: isRoomCreator,
-            },
-      note: parts.length > 0 ? parts.join(" ") : null,
-    };
-  }
-
-  private static strField(f: JsonFrame, k: string): string | undefined {
-    const v = f[k];
-    return typeof v === "string" ? v : undefined;
-  }
-
-  private applyRoomSnapshotFromFrame(frame: JsonFrame): void {
-    const t = frame.type;
-    if (t !== "room_joined" && t !== "room_created") {
-      return;
-    }
-    const room_id = ZenlinkSession.roomIdFromFrame(frame);
-    if (!room_id) {
-      return;
-    }
-    const nameRaw = ZenlinkSession.strField(frame, "name");
-    const name = nameRaw && nameRaw.length > 0 ? nameRaw : null;
-    const rawCr = ZenlinkSession.strField(frame, "creator_agent_id");
-    const creatorId =
-      rawCr && rawCr.length > 0
-        ? rawCr
-        : t === "room_created"
-          ? this.client.agentId
-          : undefined;
-    const cname = ZenlinkSession.strField(frame, "creator_agent_name");
-    const topicRaw = ZenlinkSession.strField(frame, "topic");
-    const rulesRaw = ZenlinkSession.strField(frame, "rules");
-    const topic =
-      topicRaw !== undefined && topicRaw.trim().length > 0 ? topicRaw : null;
-    const rules =
-      rulesRaw !== undefined && rulesRaw.trim().length > 0 ? rulesRaw : null;
-    this.lastRoomSnapshot = {
-      room_id,
-      name,
-      topic,
-      rules,
-      creator_agent_id: creatorId ?? null,
-      creator_agent_name: cname && cname.length > 0 ? cname : null,
-    };
-    if (t === "room_created") {
-      this.selfCreatedRoomIds.add(room_id);
-    }
-  }
-
-  private clearRoomSocialState(): void {
-    this.lastSocialRoomId = null;
-    this.lastRoomSnapshot = null;
-    this.roomRestorePending = false;
-    this.selfCreatedRoomIds.clear();
-    this.emitRoomStateChanged();
-  }
-
-  private onFrame(frame: JsonFrame): void {
-    const p = this.pending;
-    const t = frame.type;
-
-    if (t === "superseded") {
-      this.wsSupersededTotal += 1;
-      this.options.onSuperseded?.({ total: this.wsSupersededTotal });
-      this.emitLifecycleLog("ws_superseded", {
-        total: this.wsSupersededTotal,
+  constructor(client = new ZenlinkClient(), notifier = new OpenClawWakeNotifier()) {
+    this.client = client;
+    this.notifier = notifier;
+    this.inboundQueueMax = parseQueueMax();
+    this.inboundDropTypes = parseInboundDropTypes();
+    this.client.onMessage((frame: unknown) => this.handleFrame(frame));
+    this.client.onClose((event: { code: number; reason: string; at: string }) => this.handleClientClose(event));
+    this.client.onError((error: Error) => this.handleClientError(error));
+    if (this.longLived) {
+      queueMicrotask(() => {
+        void this.startLongLived();
       });
     }
-
-    if (p) {
-      if (t === "error") {
-        const reason =
-          typeof frame["reason"] === "string" ? frame["reason"] : "error";
-        const detailRaw = frame["detail"];
-        const detail =
-          typeof detailRaw === "string" ? `: ${detailRaw}` : "";
-        this.abortPendingWait(new Error(`zenlink: ${reason}${detail}`));
-        return;
-      }
-      if (t === "superseded") {
-        this.abortPendingWait(new Error("zenlink: connection superseded"));
-        return;
-      }
-      if (p.accept(frame)) {
-        if (t === "room_joined" || t === "room_created") {
-          this.applyRoomSnapshotFromFrame(frame);
-        } else if (t === "room_left") {
-          const rid = ZenlinkSession.roomIdFromFrame(frame);
-          if (rid && rid === this.lastSocialRoomId) {
-            this.clearRoomSocialState();
-          }
-        }
-        p.resolve(frame);
-        return;
-      }
-    }
-
-    if (t === "room_joined" || t === "room_created") {
-      this.applyRoomSnapshotFromFrame(frame);
-    } else if (t === "room_left") {
-      const rid = ZenlinkSession.roomIdFromFrame(frame);
-      if (rid && rid === this.lastSocialRoomId) {
-        this.clearRoomSocialState();
-      }
-    }
-
-    this.inbound.tryEnqueue(frame, (f) =>
-      this.openclawPush?.notifyInboundQueued(f),
-    );
   }
 
-  inboundPoll(limit: number, types?: string[]): InboundPollResult {
-    return this.inbound.poll(limit, types);
-  }
-
-  inboundWait(
-    limit: number,
-    timeoutMs: number,
-    types?: string[],
-  ): Promise<InboundPollResult> {
-    return this.inbound.wait(limit, timeoutMs, types);
-  }
-
-  inboundStats(): InboundStatsResult {
-    return this.inbound.stats();
-  }
-
-  private clearInboundQueue(): void {
-    this.inbound.clear();
-  }
-
-  private abortPendingWait(err: Error): void {
-    const p = this.pending;
-    if (!p) {
-      return;
-    }
-    clearTimeout(p.timer);
-    this.pending = null;
-    p.reject(err);
-  }
-
-  private cancelWait(): void {
-    this.abortPendingWait(
-      new Error("zenlink-mcp: WebSocket response wait cancelled"),
-    );
-  }
-
-  private beginWait(
-    describe: string,
-    accept: (f: JsonFrame) => boolean,
-  ): Promise<JsonFrame> {
-    if (this.pending) {
-      return Promise.reject(
-        new Error(
-          "zenlink-mcp: overlapping WebSocket response waits (serialize tool calls)",
-        ),
-      );
-    }
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const cur = this.pending;
-        if (!cur || cur.timer !== timer) {
-          return;
-        }
-        this.pending = null;
-        cur.reject(
-          new Error(
-            `timeout waiting for ${describe} (${this.wsWaitTimeoutMs}ms)`,
-          ),
-        );
-      }, this.wsWaitTimeoutMs);
-      this.pending = {
-        accept,
-        resolve: (f) => {
-          clearTimeout(timer);
-          this.pending = null;
-          resolve(f);
-        },
-        reject: (err) => {
-          clearTimeout(timer);
-          this.pending = null;
-          reject(err);
-        },
-        timer,
-      };
-    });
-  }
-
-  private withLock<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.tail.then(fn);
-    this.tail = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
-  }
-
-  async connect(): Promise<AuthOkFrame> {
-    return this.withLock(async () => {
-      this.clearInboundQueue();
-      return this.managed.connect();
-    });
+  async connect(): Promise<unknown> {
+    this.longLived = false;
+    this.clearReconnectTimer();
+    this.explicitDisconnect = false;
+    this.clearInbound();
+    const frame = await this.client.connect();
+    this.recordConnectSuccess(frame);
+    return frame;
   }
 
   async disconnect(): Promise<void> {
-    return this.withLock(async () => {
-      this.cancelWait();
-      this.clearInboundQueue();
-      this.clearRoomSocialState();
-      this.managed.disconnect();
+    this.longLived = false;
+    this.explicitDisconnect = true;
+    this.clearReconnectTimer();
+    this.notifier.stop();
+    this.rejectAllWaiters(new Error("Zenlink WebSocket disconnected"));
+    this.resolveInboundWaiters("closed");
+    this.client.disconnect();
+    this.clearInbound();
+    this.started = false;
+    this.currentRoomId = null;
+    this.roomConfirmedAt = null;
+    this.roomRestorePending = false;
+    this.roomNeedsRestore = false;
+  }
+
+  startLongLived(): void {
+    this.longLived = true;
+    if (this.started) return;
+    this.started = true;
+    void this.ensureOnline();
+  }
+
+  status(): ZenlinkSessionStatus {
+    return {
+      agent_id: this.client.agentId,
+      online: this.client.isOnline(),
+      current_room_id: this.currentRoomId,
+      room_online_assumption: this.roomOnlineAssumption(),
+      room_confirmed_at: this.roomConfirmedAt,
+      room_join_skipped_total: this.roomJoinSkippedTotal,
+      inbound_queue_depth: this.inboundQueue.length,
+      inbound_queue_max: this.inboundQueueMax,
+      overflow_dropped_total: this.overflowDroppedTotal,
+      self_echo_dropped_total: this.selfEchoDroppedTotal,
+      ws_superseded_total: this.wsSupersededTotal,
+      connect_total: this.connectTotal,
+      reconnect_total: this.reconnectTotal,
+      ws_disconnect_total: this.wsDisconnectTotal,
+      passive_disconnect_total: this.passiveDisconnectTotal,
+      connect_failure_total: this.connectFailureTotal,
+      wait_timeout_total: this.waitTimeoutTotal,
+      room_restore_pending: this.roomRestorePending,
+      connection_state: this.client.connectionState(),
+      last_ws_close_code: this.lastWsCloseCode,
+      last_ws_close_reason: this.lastWsCloseReason,
+      last_ws_close_at: this.lastWsCloseAt,
+      last_ws_frame_at: this.lastWsFrameAt,
+      last_inbound_enqueue_at: this.lastInboundEnqueueAt,
+      last_wait_timeout_at: this.lastWaitTimeoutAt,
+      last_backfill_at: this.lastBackfillAt,
+      last_backfill_error: this.lastBackfillError,
+      last_inbound_dequeue_at: this.lastInboundDequeueAt,
+      last_inbound_dequeue_count: this.lastInboundDequeueCount,
+      last_inbound_dequeue_tool: this.lastInboundDequeueTool,
+      last_msgbox_fetch_at: this.lastMsgboxFetchAt,
+      last_msgbox_fetch_count: this.lastMsgboxFetchCount,
+      last_msgbox_fetch_unread_count: this.lastMsgboxFetchUnreadCount,
+      last_msgbox_ack_at: this.lastMsgboxAckAt,
+      last_msgbox_ack_count: this.lastMsgboxAckCount,
+      openclaw_push: this.notifier.status(),
+      process_pid: process.pid,
+    };
+  }
+
+  socialGrounding(): Record<string, unknown> {
+    return {
+      agent_id: this.client.agentId,
+      current_room_id: this.currentRoomId,
+    };
+  }
+
+  inboundStats(): Record<string, unknown> {
+    return {
+      depth: this.inboundQueue.length,
+      max: this.inboundQueueMax,
+      overflow_dropped_total: this.overflowDroppedTotal,
+      self_echo_dropped_total: this.selfEchoDroppedTotal,
+    };
+  }
+
+  inboundPoll(
+    limit: number,
+    types?: string[],
+    tool = "zenlink_inbound_poll",
+    filter: InboundFilterOptions = {},
+  ): Record<string, unknown> {
+    const roomId = this.resolveInboundRoomFilter(filter);
+    const frames = this.dequeue(limit, types, roomId);
+    this.recordInboundDequeue(tool, frames.length);
+    return {
+      ok: true,
+      frames,
+      room_filter: roomId,
+      stats: this.inboundStats(),
+    };
+  }
+
+  async inboundWait(
+    limit: number,
+    timeoutMs: number,
+    types?: string[],
+    options: { backfillOnTimeout?: boolean; tool?: string } & InboundFilterOptions = {},
+  ): Promise<Record<string, unknown>> {
+    const tool = options.tool ?? "zenlink_inbound_wait";
+    const roomId = this.resolveInboundRoomFilter(options);
+    const immediate = this.dequeue(limit, types, roomId);
+    if (immediate.length || timeoutMs === 0) {
+      this.recordInboundDequeue(tool, immediate.length);
+      return {
+        ok: true,
+        source: immediate.length ? "inbound_fifo" : "timeout",
+        frames: immediate,
+        room_filter: roomId,
+        stats: this.inboundStats(),
+      };
+    }
+    if (!this.client.isOnline()) {
+      await this.ensureOnline();
+    }
+    const waitResult = await this.waitForInbound(types, timeoutMs, roomId);
+    if (waitResult === "closed") {
+      return {
+        ok: false,
+        source: "ws_closed",
+        reason: "ws_disconnected",
+        frames: [],
+        stats: this.inboundStats(),
+      };
+    }
+    if (waitResult === "timeout") {
+      this.waitTimeoutTotal++;
+      this.lastWaitTimeoutAt = new Date().toISOString();
+      const frames = this.dequeue(limit, types, roomId);
+      this.recordInboundDequeue(tool, frames.length);
+      const backfill =
+        frames.length === 0 && this.shouldBackfillOnTimeout(options)
+          ? await this.backfillRoom(roomId ?? this.currentRoomId, limit)
+          : null;
+      return {
+        ok: true,
+        source: frames.length ? "inbound_fifo" : backfill ? "http_backfill" : "timeout",
+        reason: frames.length ? undefined : "ws_wait_timeout",
+        frames,
+        room_filter: roomId,
+        ...(backfill ? { backfill } : {}),
+        stats: this.inboundStats(),
+      };
+    }
+    return {
+      ok: true,
+      source: "inbound_fifo",
+      frames: this.recordAndReturnDequeue(tool, limit, types, roomId),
+      room_filter: roomId,
+      stats: this.inboundStats(),
+    };
+  }
+
+  recordMsgboxFetch(count: number, unreadCount?: number | null): void {
+    this.lastMsgboxFetchAt = new Date().toISOString();
+    this.lastMsgboxFetchCount = count;
+    this.lastMsgboxFetchUnreadCount = unreadCount ?? null;
+  }
+
+  recordMsgboxAck(count: number): void {
+    this.lastMsgboxAckAt = new Date().toISOString();
+    this.lastMsgboxAckCount = count;
+  }
+
+  async joinRoomTool(roomId: string): Promise<Record<string, unknown>> {
+    const frame = await this.wsRpc((candidate) => isJoinRoomSuccess(candidate, roomId), () => {
+      this.client.sendJson({ type: "join_room", room_id: roomId });
+    }, { skipRoomRestore: true });
+    this.currentRoomId = roomId;
+    this.roomConfirmedAt = new Date().toISOString();
+    this.roomNeedsRestore = false;
+    return normalizeJoinRoomSuccess(frame, roomId);
+  }
+
+  async leaveRoomTool(): Promise<Record<string, unknown>> {
+    const frame = await this.wsRpc(["room_left"], () => {
+      this.client.sendJson({ type: "leave_room" });
+    });
+    this.currentRoomId = null;
+    this.roomConfirmedAt = null;
+    this.roomNeedsRestore = false;
+    return frame;
+  }
+
+  async createRoomTool(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const frame = await this.wsRpc(["room_created"], () => {
+      this.client.sendJson({ type: "create_room", ...payload });
+    });
+    if (typeof frame.room_id === "string") this.currentRoomId = frame.room_id;
+    if (typeof frame.room_id === "string") this.roomConfirmedAt = new Date().toISOString();
+    this.roomNeedsRestore = false;
+    return frame;
+  }
+
+  async pullRoomTopicsTool(roomId: string, limit?: number): Promise<Record<string, unknown>> {
+    return this.wsRpc(["room_topics"], () => {
+      this.client.sendJson({ type: "pull_room_topics", room_id: roomId, ...(limit !== undefined ? { limit } : {}) });
     });
   }
 
-  private static roomIdFromFrame(f: JsonFrame): string | undefined {
-    const id = f["room_id"];
-    return typeof id === "string" ? id : undefined;
+  async updateRoomMetadataTool(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const roomId = typeof payload.room_id === "string" ? payload.room_id : null;
+    return this.wsRpc((frame) => (
+      frame.type === "room_metadata_updated" &&
+      (roomId === null || frame.room_id === roomId)
+    ), () => {
+      this.client.sendUpdateRoomMetadata(payload);
+    });
   }
 
-  private async restoreRoomMembershipIfNeeded(): Promise<void> {
-    if (!this.roomRestorePending || !this.lastSocialRoomId) {
-      return;
-    }
-    const roomId = this.lastSocialRoomId;
-    const waitPromise = this.beginWait(
-      "frame type(s): room_joined",
-      (f) =>
-        typeof f.type === "string" &&
-        f.type === "room_joined" &&
-        (ZenlinkSession.roomIdFromFrame(f) ?? roomId) === roomId,
-    );
-    try {
-      this.client.sendJoinRoom(roomId);
-    } catch (e) {
-      this.cancelWait();
-      throw e instanceof Error ? e : new Error(String(e));
-    }
-    try {
-      await waitPromise;
-    } catch (e) {
-      this.lastSocialRoomId = null;
-      this.roomRestorePending = false;
-      this.emitRoomStateChanged();
-      this.emitLifecycleLog("room_restore_failed", { room_id: roomId });
-      throw e;
-    }
-    this.roomRestorePending = false;
-    this.emitRoomStateChanged();
-    this.emitLifecycleLog("room_restored", { room_id: roomId });
+  async socialReply(roomId: string, text: string): Promise<Record<string, unknown>> {
+    const roomJoined = await this.ensureRoomReady(roomId);
+    const messageEcho = await this.sendMessageTool(text);
+    return {
+      room_joined: roomJoined,
+      message_echo: messageEcho,
+    };
   }
 
-  async joinRoomTool(roomId: string): Promise<JsonFrame> {
-    const frame = await this.wsRpc(
-      ["room_joined"],
-      () => this.client.sendJoinRoom(roomId),
-      { skipRoomRestore: true },
-    );
-    const id = ZenlinkSession.roomIdFromFrame(frame) ?? roomId;
-    this.lastSocialRoomId = id;
-    this.roomRestorePending = false;
-    this.emitRoomStateChanged();
-    return frame;
-  }
-
-  async pullRoomTopicsTool(
-    roomId: string,
-    limit?: number,
-  ): Promise<JsonFrame> {
+  async sendMessageTool(text: string, options: SendMessageOptions = {}): Promise<Record<string, unknown>> {
+    if (options.roomId) {
+      await this.ensureRoomReady(options.roomId);
+    }
+    const targetRoomId = options.roomId ?? this.currentRoomId;
     return this.wsRpc(
-      ["pull_room_topics_ok"],
+      (frame) =>
+        frame.type === "message" &&
+        frame.agent_id === this.client.agentId &&
+        (targetRoomId === null || frame.room_id === targetRoomId),
       () =>
-        this.client.sendPullRoomTopics(roomId,
-          limit !== undefined ? { limit } : {}),
-      { skipRoomRestore: true },
+        this.client.sendSocialMessage(text, {
+          mentionAgentIds: options.mentionAgentIds,
+          imageUrl: options.imageUrl,
+        }),
     );
   }
 
-  async leaveRoomTool(): Promise<JsonFrame> {
-    const frame = await this.wsRpc(
-      ["room_left"],
-      () => this.client.sendLeaveRoom(),
-      { skipRoomRestore: true },
-    );
-    this.clearRoomSocialState();
-    return frame;
-  }
-
-  async createRoomTool(
-    payload: Parameters<ZenlinkClient["sendCreateRoom"]>[0],
-  ): Promise<JsonFrame> {
-    const frame = await this.wsRpc(
-      ["room_created"],
-      () => this.client.sendCreateRoom(payload),
-      { skipRoomRestore: true },
-    );
-    const id = ZenlinkSession.roomIdFromFrame(frame);
-    if (id) {
-      this.lastSocialRoomId = id;
-      this.roomRestorePending = false;
-      this.emitRoomStateChanged();
-    }
-    return frame;
-  }
-
-  async socialReply(roomId: string, text: string): Promise<{
-    room_joined: JsonFrame;
-    message_echo: JsonFrame;
-  }> {
-    const myId = this.client.agentId;
-    const room_joined = await this.wsRpc(
-      ["room_joined"],
-      () => this.client.sendJoinRoom(roomId),
-      { skipRoomRestore: true },
-    );
-    const rid = ZenlinkSession.roomIdFromFrame(room_joined) ?? roomId;
-    this.lastSocialRoomId = rid;
-    this.roomRestorePending = false;
-    this.emitRoomStateChanged();
-    const message_echo = await this.wsRpc(
-      (f) => f.type === "message" && f.agent_id === myId,
-      () => this.client.sendSocialMessage(text),
-    );
-    return { room_joined, message_echo };
+  async adminWsRpc(okType: string, frame: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.wsRpc([okType], () => this.client.sendJson(frame), { skipRoomRestore: true });
   }
 
   async wsRpc(
-    expectedTypesOrAccept:
-      | string[]
-      | ((f: JsonFrame) => boolean),
+    predicates: FramePredicate | FramePredicate[],
     send: () => void,
-    options?: { skipRoomRestore?: boolean },
-  ): Promise<JsonFrame> {
-    const describe = Array.isArray(expectedTypesOrAccept)
-      ? `frame type(s): ${expectedTypesOrAccept.join(", ")}`
-      : "predicate match";
-    const accept = Array.isArray(expectedTypesOrAccept)
-      ? (f: JsonFrame) =>
-          typeof f.type === "string" &&
-          expectedTypesOrAccept.includes(f.type)
-      : expectedTypesOrAccept;
-
-    return this.withLock(async () => {
-      await this.managed.awaitOnline(this.wsWaitTimeoutMs);
-      if (!options?.skipRoomRestore) {
-        await this.restoreRoomMembershipIfNeeded();
-      }
-      const waitPromise = this.beginWait(describe, accept);
-      try {
-        send();
-      } catch (e) {
-        this.cancelWait();
-        throw e;
-      }
-      return waitPromise;
-    });
-  }
-
-  /**
-   * Sovereign WebSocket `admin_*` request/response (level 0 on server). Skips room restore.
-   */
-  adminWsRpc(okType: string, frame: Record<string, unknown>): Promise<JsonFrame> {
-    return this.wsRpc([okType], () => this.client.sendJson(frame as JsonFrame), {
-      skipRoomRestore: true,
-    });
-  }
-
-  getTrackedRoomId(): string | null {
-    return this.lastSocialRoomId;
-  }
-
-  markRoomRestorePending(roomId: string): void {
-    this.lastSocialRoomId = roomId;
-    this.roomRestorePending = true;
-    this.emitRoomStateChanged();
-    this.scheduleAutoRoomRestore();
-  }
-
-  async restoreTrackedRoomMembership(): Promise<{
-    restored: boolean;
-    room_id: string | null;
-  }> {
-    return this.withLock(async () => {
-      await this.managed.awaitOnline(this.wsWaitTimeoutMs);
-      const before = this.roomRestorePending;
-      await this.restoreRoomMembershipIfNeeded();
-      return {
-        restored: before && !this.roomRestorePending,
-        room_id: this.lastSocialRoomId,
-      };
-    });
-  }
-
-  private emitRoomStateChanged(): void {
-    this.options.onRoomStateChanged?.({
-      current_room_id: this.lastSocialRoomId,
-      room_restore_pending: this.roomRestorePending,
-    });
-  }
-
-  private emitLifecycleLog(
-    event: string,
-    detail?: Record<string, unknown>,
-  ): void {
-    this.options.onLifecycleLog?.({ event, detail });
-  }
-
-  private scheduleAutoRoomRestore(): void {
-    if (this.roomRestoreLoopActive) {
-      return;
+    options: { skipRoomRestore?: boolean } = {},
+  ): Promise<Record<string, unknown>> {
+    await this.ensureOnline();
+    if (!options.skipRoomRestore) {
+      await this.restoreRoomIfNeeded();
     }
-    if (!this.roomRestorePending || !this.lastSocialRoomId) {
-      return;
-    }
-    this.roomRestoreLoopActive = true;
-    void this.runAutoRoomRestoreLoop();
-  }
-
-  private async runAutoRoomRestoreLoop(): Promise<void> {
+    const predicate = normalizePredicates(predicates);
+    const waiter = this.createWaiter(predicate);
     try {
-      while (this.roomRestorePending && this.lastSocialRoomId) {
-        try {
-          await this.restoreTrackedRoomMembership();
-          if (!this.roomRestorePending) {
-            return;
-          }
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          this.emitLifecycleLog("room_restore_retry_wait", {
-            room_id: this.lastSocialRoomId,
-            message,
-          });
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
+      send();
+      return await waiter.promise;
+    } catch (error) {
+      this.waiters.delete(waiter.entry);
+      throw error;
+    }
+  }
+
+  injectInboundForTest(frame: Record<string, unknown>): void {
+    this.handleFrame(frame);
+  }
+
+  private async ensureOnline(): Promise<void> {
+    if (this.client.isOnline()) return;
+    try {
+      const frame = await this.client.connect();
+      this.recordConnectSuccess(frame);
+    } catch (error) {
+      this.started = false;
+      this.connectFailureTotal++;
+      this.wsDisconnectTotal++;
+      if (this.longLived) {
+        this.scheduleReconnect();
       }
+      throw error;
+    }
+  }
+
+  private recordConnectSuccess(frame: unknown): void {
+    if (isRecord(frame) && frame.type === "already_online") return;
+    this.connectTotal++;
+    if (this.hasConnected) {
+      this.reconnectTotal++;
+    }
+    this.hasConnected = true;
+    this.started = true;
+    this.reconnectDelayMs = 1_000;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer || !this.longLived) return;
+    const delayMs = this.reconnectDelayMs;
+    this.reconnectDelayMs = Math.min(this.reconnectMaxDelayMs, delayMs * 2);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.started = false;
+      this.startLongLived();
+    }, delayMs);
+    this.reconnectTimer.unref?.();
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private handleClientClose(event: { code: number; reason: string; at: string }): void {
+    this.lastWsCloseCode = event.code;
+    this.lastWsCloseReason = event.reason;
+    this.lastWsCloseAt = event.at;
+    this.started = false;
+    this.wsDisconnectTotal++;
+    this.rejectAllWaiters(new Error(`Zenlink WebSocket closed (${event.code})`));
+    this.resolveInboundWaiters("closed");
+    if (this.explicitDisconnect) {
+      this.explicitDisconnect = false;
+      return;
+    }
+    this.passiveDisconnectTotal++;
+    if (this.currentRoomId) {
+      this.roomNeedsRestore = true;
+    }
+    if (this.longLived) {
+      this.scheduleReconnect();
+    }
+  }
+
+  private handleClientError(error: Error): void {
+    emitSessionEvent("ws_error", { error: error.message });
+  }
+
+  private rejectAllWaiters(error: Error): void {
+    for (const waiter of [...this.waiters]) {
+      clearTimeout(waiter.timer);
+      this.waiters.delete(waiter);
+      waiter.reject(error);
+    }
+  }
+
+  private resolveInboundWaiters(result: "frame" | "closed"): void {
+    for (const waiter of [...this.inboundWaiters]) {
+      clearTimeout(waiter.timer);
+      this.inboundWaiters.delete(waiter);
+      waiter.resolve(result);
+    }
+  }
+
+  private async restoreRoomIfNeeded(): Promise<void> {
+    if (!this.currentRoomId || !this.roomNeedsRestore || this.roomRestorePending) return;
+    if (!this.client.isOnline()) return;
+    this.roomRestorePending = true;
+    const roomId = this.currentRoomId;
+    try {
+      await this.wsRpc(
+        (frame) => isJoinRoomSuccess(frame, roomId),
+        () => this.client.sendJson({ type: "join_room", room_id: roomId }),
+        { skipRoomRestore: true },
+      );
+      this.roomConfirmedAt = new Date().toISOString();
+      this.roomNeedsRestore = false;
     } finally {
-      this.roomRestoreLoopActive = false;
-      if (this.roomRestorePending && this.lastSocialRoomId) {
-        this.scheduleAutoRoomRestore();
+      this.roomRestorePending = false;
+    }
+  }
+
+  private async ensureRoomReady(roomId: string): Promise<Record<string, unknown>> {
+    if (this.canTrustCurrentRoom(roomId)) {
+      this.roomJoinSkippedTotal++;
+      return {
+        ok: true,
+        type: "room_joined",
+        room_id: roomId,
+        already_in_room: true,
+        trusted_local_state: true,
+        room_confirmed_at: this.roomConfirmedAt,
+      };
+    }
+    return this.joinRoomTool(roomId);
+  }
+
+  private canTrustCurrentRoom(roomId: string): boolean {
+    return (
+      this.client.isOnline() &&
+      this.currentRoomId === roomId &&
+      this.roomConfirmedAt !== null &&
+      !this.roomNeedsRestore &&
+      !this.roomRestorePending
+    );
+  }
+
+  private roomOnlineAssumption(): "confirmed" | "restore_pending" | "unknown" {
+    if (!this.currentRoomId || !this.roomConfirmedAt) return "unknown";
+    if (!this.client.isOnline() || this.roomNeedsRestore || this.roomRestorePending) {
+      return "restore_pending";
+    }
+    return "confirmed";
+  }
+
+  private createWaiter(predicate: (frame: Record<string, unknown>) => boolean): {
+    promise: Promise<Record<string, unknown>>;
+    entry: PendingWaiter;
+  } {
+    let entry: PendingWaiter;
+    const promise = new Promise<Record<string, unknown>>((resolve, reject) => {
+      entry = {
+        predicate,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.waiters.delete(entry);
+          reject(new Error("timeout waiting for ZenHeart frame"));
+        }, this.client.wsTimeoutMs),
+      };
+      this.waiters.add(entry);
+    });
+    return { promise, entry: entry! };
+  }
+
+  private handleFrame(frame: unknown): void {
+    if (!isRecord(frame)) return;
+    this.lastWsFrameAt = new Date().toISOString();
+    emitSessionEvent("inbound_received", {
+      frame_type: typeof frame.type === "string" ? frame.type : "unknown",
+      queue_depth: this.inboundQueue.length,
+    });
+    if (frame.type === "error" && frame.reason === "superseded") {
+      this.wsSupersededTotal++;
+    }
+
+    for (const waiter of this.waiters) {
+      if (waiter.predicate(frame)) {
+        clearTimeout(waiter.timer);
+        this.waiters.delete(waiter);
+        waiter.resolve(frame);
+        return;
+      }
+    }
+
+    if (this.dropSelfEcho(frame)) return;
+
+    if (this.shouldDropInbound(frame)) return;
+    this.enqueueInbound(frame);
+    this.notifyInboundWaiters(frame);
+    void this.notifier.enqueue(frame);
+  }
+
+  private dropSelfEcho(frame: Record<string, unknown>): boolean {
+    const isMessage = frame.type === "message";
+    const isNotifyMessage = frame.type === "social_notify" && frame.kind === "message";
+    if ((isMessage || isNotifyMessage) && frame.agent_id === this.client.agentId) {
+      this.selfEchoDroppedTotal++;
+      return true;
+    }
+    return false;
+  }
+
+  private enqueueInbound(frame: Record<string, unknown>): void {
+    if (this.inboundQueueMax === 0) return;
+    if (this.inboundQueue.length >= this.inboundQueueMax) {
+      const dropIndex = this.inboundQueue.findIndex(
+        (queuedFrame) => !isRetainedMessageFrame(queuedFrame),
+      );
+      this.inboundQueue.splice(dropIndex >= 0 ? dropIndex : 0, 1);
+      this.overflowDroppedTotal++;
+    }
+    this.inboundQueue.push(frame);
+    this.lastInboundEnqueueAt = new Date().toISOString();
+  }
+
+  private shouldDropInbound(frame: Record<string, unknown>): boolean {
+    const type = typeof frame.type === "string" ? frame.type : "unknown";
+    return this.inboundDropTypes.has(type);
+  }
+
+  private dequeue(limit: number, types?: string[], roomId?: string | null): Record<string, unknown>[] {
+    const wanted = types ? new Set(types) : null;
+    const out: Record<string, unknown>[] = [];
+    for (let i = 0; i < this.inboundQueue.length && out.length < limit; ) {
+      const frame = this.inboundQueue[i];
+      if (!frame) break;
+      const type = typeof frame.type === "string" ? frame.type : "unknown";
+      if ((!wanted || wanted.has(type)) && matchesRoomFilter(frame, roomId)) {
+        out.push(frame);
+        this.inboundQueue.splice(i, 1);
+      } else {
+        i++;
+      }
+    }
+    return out;
+  }
+
+  private recordAndReturnDequeue(
+    tool: string,
+    limit: number,
+    types?: string[],
+    roomId?: string | null,
+  ): Record<string, unknown>[] {
+    const frames = this.dequeue(limit, types, roomId);
+    this.recordInboundDequeue(tool, frames.length);
+    return frames;
+  }
+
+  private recordInboundDequeue(tool: string, count: number): void {
+    this.lastInboundDequeueAt = new Date().toISOString();
+    this.lastInboundDequeueCount = count;
+    this.lastInboundDequeueTool = tool;
+  }
+
+  private clearInbound(): void {
+    this.inboundQueue.length = 0;
+    this.overflowDroppedTotal = 0;
+  }
+
+  private waitForInbound(
+    types: string[] | undefined,
+    timeoutMs: number,
+    roomId?: string | null,
+  ): Promise<"frame" | "timeout" | "closed"> {
+    return new Promise((resolve) => {
+      const waiter: PendingInboundWaiter = {
+        types: types ? new Set(types) : null,
+        roomId,
+        resolve: (result) => {
+          clearTimeout(waiter.timer);
+          this.inboundWaiters.delete(waiter);
+          resolve(result);
+        },
+        timer: setTimeout(() => {
+          this.inboundWaiters.delete(waiter);
+          resolve("timeout");
+        }, timeoutMs),
+      };
+      this.inboundWaiters.add(waiter);
+    });
+  }
+
+  private notifyInboundWaiters(frame: Record<string, unknown>): void {
+    const type = typeof frame.type === "string" ? frame.type : "unknown";
+    for (const waiter of [...this.inboundWaiters]) {
+      if ((!waiter.types || waiter.types.has(type)) && matchesRoomFilter(frame, waiter.roomId)) {
+        waiter.resolve("frame");
       }
     }
   }
+
+  private shouldBackfillOnTimeout(options: { backfillOnTimeout?: boolean }): boolean {
+    if (options.backfillOnTimeout !== undefined) return options.backfillOnTimeout;
+    const raw = process.env.ZENLINK_MCP_INBOUND_BACKFILL_ON_TIMEOUT?.trim().toLowerCase();
+    if (!raw) return true;
+    return !(raw === "0" || raw === "false" || raw === "no" || raw === "off");
+  }
+
+  private async backfillRoom(roomId: string | null, limit: number): Promise<Record<string, unknown> | null> {
+    if (!roomId) return null;
+    try {
+      const result = await fetchSocialRoomMessages(
+        { baseUrl: this.client.httpBaseUrl },
+        roomId,
+        { limit },
+      );
+      this.lastBackfillAt = new Date().toISOString();
+      this.lastBackfillError = null;
+      return {
+        source: "http_backfill",
+        reason: "ws_wait_timeout",
+        room_id: roomId,
+        result,
+      };
+    } catch (error) {
+      this.lastBackfillAt = new Date().toISOString();
+      this.lastBackfillError = error instanceof Error ? error.message : String(error);
+      return {
+        source: "http_backfill",
+        reason: "ws_wait_timeout",
+        room_id: roomId,
+        error: this.lastBackfillError,
+      };
+    }
+  }
+
+  private resolveInboundRoomFilter(options: InboundFilterOptions): string | null | undefined {
+    if (options.roomId) return options.roomId;
+    if (options.currentRoomOnly) return this.currentRoomId;
+    return undefined;
+  }
+}
+
+function parseQueueMax(): number {
+  const raw = process.env.ZENLINK_MCP_INBOUND_QUEUE_MAX?.trim();
+  if (!raw) return 500;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("ZENLINK_MCP_INBOUND_QUEUE_MAX must be a non-negative integer");
+  }
+  return value;
+}
+
+function parseInboundDropTypes(): Set<string> {
+  const raw = process.env.ZENLINK_MCP_INBOUND_DROP_TYPES?.trim();
+  const values = raw ? raw.split(",") : ["ping", "pong"];
+  return new Set(
+    values
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0),
+  );
+}
+
+function normalizePredicates(predicates: FramePredicate | FramePredicate[]): (frame: Record<string, unknown>) => boolean {
+  const list = Array.isArray(predicates) ? predicates : [predicates];
+  return (frame) =>
+    list.some((predicate) => {
+      if (typeof predicate === "string") return frame.type === predicate;
+      return predicate(frame);
+    });
+}
+
+function isJoinRoomSuccess(frame: Record<string, unknown>, roomId: string): boolean {
+  if (frame.type === "room_joined") {
+    return frame.room_id === undefined || frame.room_id === roomId;
+  }
+  if (frame.type !== "error" || frame.reason !== "already_in_room") {
+    return false;
+  }
+  return frame.room_id === undefined || frame.room_id === roomId;
+}
+
+function normalizeJoinRoomSuccess(frame: Record<string, unknown>, roomId: string): Record<string, unknown> {
+  if (frame.type !== "error" || frame.reason !== "already_in_room") {
+    return frame;
+  }
+  return {
+    ok: true,
+    type: "room_joined",
+    room_id: roomId,
+    already_in_room: true,
+    server_frame: frame,
+  };
+}
+
+function matchesRoomFilter(frame: Record<string, unknown>, roomId?: string | null): boolean {
+  if (roomId === undefined) return true;
+  if (roomId === null) return false;
+  return frame.room_id === roomId;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRetainedMessageFrame(frame: Record<string, unknown>): boolean {
+  return (
+    frame.type === "message" ||
+    frame.type === "msgbox_notify" ||
+    (frame.type === "social_notify" && frame.kind === "message")
+  );
+}
+
+function emitSessionEvent(event: string, fields: Record<string, unknown>): void {
+  console.error(JSON.stringify({ component: "zenlink_session", event, ...fields }));
 }

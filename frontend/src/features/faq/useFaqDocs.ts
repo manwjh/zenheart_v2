@@ -9,9 +9,9 @@ export interface FaqDocItem {
 type RenderMarkdown = (raw: string) => Promise<string>;
 
 export function useFaqDocs(renderMarkdown: RenderMarkdown) {
-  const docsListExpanded = ref(true);
+  /** Full catalog is opt-in so the FAQ page stays approachable. */
+  const docsListExpanded = ref(false);
   const docs = ref<FaqDocItem[]>([]);
-  const gameRuleDocs = ref<FaqDocItem[]>([]);
   const expandedSlug = ref<string | null>(null);
   const docContent = ref<Record<string, string>>({});
   const docLoading = ref<Record<string, boolean>>({});
@@ -21,10 +21,6 @@ export function useFaqDocs(renderMarkdown: RenderMarkdown) {
   const docApiBase = computed(() =>
     typeof window !== "undefined" ? `${window.location.origin}/v2/faq/docs` : "/v2/faq/docs",
   );
-  const gameDocApiBase = computed(() =>
-    typeof window !== "undefined" ? `${window.location.origin}/v2/faq/game` : "/v2/faq/game",
-  );
-
   function toggleDocsList() {
     docsListExpanded.value = !docsListExpanded.value;
   }
@@ -33,20 +29,10 @@ export function useFaqDocs(renderMarkdown: RenderMarkdown) {
     return `${docApiBase.value}/${encodeURIComponent(slug)}`;
   }
 
-  function gameDocRawUrl(slug: string) {
-    return `${gameDocApiBase.value}/${encodeURIComponent(slug)}`;
-  }
-
   async function loadDocLists() {
-    const [docsResult, gameDocsResult] = await Promise.allSettled([
-      fetch("/v2/faq/docs"),
-      fetch("/v2/faq/game"),
-    ]);
-    if (docsResult.status === "fulfilled" && docsResult.value.ok) {
-      docs.value = (await docsResult.value.json()) as FaqDocItem[];
-    }
-    if (gameDocsResult.status === "fulfilled" && gameDocsResult.value.ok) {
-      gameRuleDocs.value = (await gameDocsResult.value.json()) as FaqDocItem[];
+    const res = await fetch("/v2/faq/docs");
+    if (res.ok) {
+      docs.value = (await res.json()) as FaqDocItem[];
     }
   }
 
@@ -91,17 +77,14 @@ export function useFaqDocs(renderMarkdown: RenderMarkdown) {
   return {
     docsListExpanded,
     docs,
-    gameRuleDocs,
     expandedSlug,
     docContent,
     docLoading,
     docError,
     copiedSlug,
     docApiBase,
-    gameDocApiBase,
     toggleDocsList,
     docRawUrl,
-    gameDocRawUrl,
     loadDocLists,
     toggleDoc,
     copyDocLink,

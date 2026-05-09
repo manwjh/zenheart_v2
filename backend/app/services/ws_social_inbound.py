@@ -7,7 +7,6 @@ disconnect calls `cleanup_social_room_on_disconnect`.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -18,14 +17,13 @@ from sqlalchemy import select
 from app.config import Settings
 from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
-from app.services.msgbox import push_message
-from app.services.msgbox_notify import push_msgbox_notify_to_agent
 from app.services.permission_service import check_permission, get_limit_value
 from app.services.points_service import award_points
 from app.services.image_check import is_trusted_media_url
 from app.domains.social.persistence.social_repository import (
     count_rooms_today,
     create_room_record,
+    update_room_metadata as db_update_room_metadata,
     update_room_access_lists as db_update_room_access_lists,
     fetch_and_pop_topic_suggestions_for_creator,
     get_room_messages,
@@ -120,6 +118,33 @@ def _room_join_payload(
     if room.denylist_agent_ids:
         payload["denied_agent_ids"] = sorted(room.denylist_agent_ids)
     return payload
+
+
+async def _send_pending_topic_suggestions_if_owner(
+    ws: WebSocket,
+    session_factory: object,
+    room: ChatRoom,
+    agent_id: str,
+) -> None:
+    if agent_id != room.creator_id:
+        return
+    pending_topics = await list_pending_topic_suggestions(session_factory, room.room_id)
+    await ws.send_text(_jdump({
+        "type": "topic_suggestions_pending",
+        "room_id": room.room_id,
+        "topics": pending_topics,
+    }))
+
+
+def _message_notify_recipient_ids(room: ChatRoom, sender_agent_id: str) -> list[str]:
+    recipient_ids = [agent_id for agent_id in room.members if agent_id != sender_agent_id]
+    if (
+        room.creator_id != "system"
+        and room.creator_id != sender_agent_id
+        and room.creator_id not in room.members
+    ):
+        recipient_ids.append(room.creator_id)
+    return recipient_ids
 
 
 _DEFAULT_ROOMS_PER_DAY = 10
@@ -336,6 +361,27 @@ async def _handle_join_room(
         }))
         return
 
+    live_room = await social.confirm_live_room(
+        room_id=room_id, agent_id=agent_id, agent_name=agent_name, ws=ws
+    )
+    if live_room is not None:
+        recent_messages = await get_room_messages(session_factory, live_room.room_id)
+        payload = _room_join_payload(live_room, recent_messages, social.idle_after)
+        payload["already_in_room"] = True
+        payload["room_online"] = True
+        payload["join_idempotent"] = True
+        await ws.send_text(_jdump(payload))
+        await _send_pending_topic_suggestions_if_owner(
+            ws, session_factory, live_room, agent_id
+        )
+        await record_agent_event(
+            session_factory,
+            event="a2a_room_join_idempotent",
+            agent_id=agent_id,
+            detail={"room_id": live_room.room_id, "name": live_room.name},
+        )
+        return
+
     result = await social.join_room(
         room_id=room_id, agent_id=agent_id, agent_name=agent_name, ws=ws
     )
@@ -359,12 +405,7 @@ async def _handle_join_room(
     recent_messages = await get_room_messages(session_factory, room.room_id)
     await ws.send_text(_jdump(_room_join_payload(room, recent_messages, social.idle_after)))
 
-    pending_topics = await list_pending_topic_suggestions(session_factory, room.room_id)
-    await ws.send_text(_jdump({
-        "type": "topic_suggestions_pending",
-        "room_id": room.room_id,
-        "topics": pending_topics,
-    }))
+    await _send_pending_topic_suggestions_if_owner(ws, session_factory, room, agent_id)
 
     broadcast_frame = {
         "type": "member_joined",
@@ -617,6 +658,9 @@ async def _handle_send_message(
     }
     if mentions:
         frame["mentions"] = mentions
+    if out_of_room_mentions:
+        frame["dropped_mention_agent_ids"] = out_of_room_mentions
+        frame["out_of_room_mention_count"] = len(out_of_room_mentions)
 
     await social.broadcast_to_room(room_id, frame)
     await record_social_message(
@@ -658,7 +702,7 @@ async def _handle_send_message(
 
     room_obj = await social.get_room(room_id)
     if room_obj:
-        recipient_ids = [k for k in room_obj.members if k != agent_id]
+        recipient_ids = _message_notify_recipient_ids(room_obj, agent_id)
         if recipient_ids:
             ws_body, hook_payload = build_message_notify(
                 room_id=room_id,
@@ -680,27 +724,18 @@ async def _handle_send_message(
                 webhook_payload=hook_payload,
             )
     if out_of_room_mentions:
-        await _deliver_room_mentions_to_msgbox(
-            session_factory=session_factory,
-            registry=registry,
-            sender_agent_id=agent_id,
-            sender_agent_name=agent_name,
-            room_id=room_id,
-            room_name=(room_obj.name if room_obj else room_id),
-            text=text,
-            sent_at=sent_at,
-            mention_agent_ids=out_of_room_mentions,
-        )
         await record_agent_event(
             session_factory,
-            event="a2a_room_mention_enqueued",
+            event="a2a_room_mention_dropped",
             agent_id=agent_id,
             detail={
                 "room_id": room_id,
                 "target_count": len(out_of_room_mentions),
-                "payload_authority": "msgbox_room_mention",
+                "dropped_mention_agent_ids": out_of_room_mentions,
+                "payload_authority": "message",
                 "routing_mode": "explicit",
-                "delivery_route": "msgbox_room_mention",
+                "delivery_route": "room_message",
+                "drop_reason": "not_live_room_member",
             },
         )
 
@@ -831,6 +866,123 @@ async def _handle_update_room_access_lists(
     }))
 
 
+async def _handle_update_room_metadata(
+    ws: WebSocket,
+    social: SocialRoomRegistry,
+    session_factory: object,
+    agent_id: str,
+    data: dict,
+) -> None:
+    room_id = data.get("room_id", "")
+    if not isinstance(room_id, str) or not room_id:
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_update_room_metadata_payload",
+            "detail": "room_id required",
+        }))
+        return
+
+    updates_seen = {"name", "topic", "rules"}.intersection(data.keys())
+    if not updates_seen:
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_update_room_metadata_payload",
+            "detail": "at least one of name, topic, rules is required",
+        }))
+        return
+
+    name: str | None = None
+    topic: str | None = None
+    rules: str | None = None
+    if "name" in data:
+        raw_name = data.get("name")
+        if not isinstance(raw_name, str) or not (1 <= len(raw_name.strip()) <= 80):
+            await ws.send_text(_jdump({
+                "type": "error",
+                "reason": "invalid_update_room_metadata_payload",
+                "detail": "name must be 1-80 chars",
+            }))
+            return
+        name = raw_name.strip()
+    if "topic" in data:
+        raw_topic = data.get("topic")
+        if not isinstance(raw_topic, str) or not (1 <= len(raw_topic.strip()) <= 300):
+            await ws.send_text(_jdump({
+                "type": "error",
+                "reason": "invalid_update_room_metadata_payload",
+                "detail": "topic must be 1-300 chars",
+            }))
+            return
+        topic = raw_topic.strip()
+    if "rules" in data:
+        raw_rules = data.get("rules")
+        if not isinstance(raw_rules, str) or len(raw_rules.strip()) > 2000:
+            await ws.send_text(_jdump({
+                "type": "error",
+                "reason": "invalid_update_room_metadata_payload",
+                "detail": "rules must be a string ≤2000 chars",
+            }))
+            return
+        rules = raw_rules.strip()
+
+    validation_error = await social.validate_room_metadata_update(
+        room_id,
+        agent_id,
+        name=name,
+    )
+    if validation_error:
+        await ws.send_text(_jdump({"type": "error", "reason": validation_error}))
+        return
+
+    if not await db_update_room_metadata(
+        session_factory,
+        room_id,
+        name=name,
+        topic=topic,
+        rules=rules,
+    ):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "persistence_failed",
+            "detail": "Could not update room metadata.",
+        }))
+        return
+
+    updated = await social.apply_room_metadata_after_persist(
+        room_id,
+        agent_id,
+        name=name,
+        topic=topic,
+        rules=rules,
+    )
+    if isinstance(updated, str):
+        await ws.send_text(_jdump({"type": "error", "reason": updated}))
+        return
+
+    frame = {
+        "type": "room_metadata_updated",
+        "room_id": updated.room_id,
+        "name": updated.name,
+        "topic": updated.topic,
+        "rules": updated.rules,
+        "creator_agent_id": updated.creator_id,
+        "creator_agent_name": updated.creator_name,
+        "updated_fields": sorted(updates_seen),
+    }
+    await ws.send_text(_jdump(frame))
+    await social.broadcast_to_room(room_id, frame, exclude_agent=agent_id)
+    await record_agent_event(
+        session_factory,
+        event="a2a_room_metadata_updated",
+        agent_id=agent_id,
+        detail={
+            "room_id": updated.room_id,
+            "name": updated.name,
+            "updated_fields": sorted(updates_seen),
+        },
+    )
+
+
 async def _handle_list_room_members(
     ws: WebSocket,
     social: SocialRoomRegistry,
@@ -914,64 +1066,6 @@ async def _find_unknown_agent_ids(
     return [x for x in agent_ids if x not in valid_ids]
 
 
-async def _deliver_room_mentions_to_msgbox(
-    *,
-    session_factory: object,
-    registry: AgentConnectionRegistry,
-    sender_agent_id: str,
-    sender_agent_name: str,
-    room_id: str,
-    room_name: str,
-    text: str,
-    sent_at: str,
-    mention_agent_ids: list[str],
-) -> None:
-    preview = text.strip()
-    if len(preview) > 100:
-        preview = preview[:100] + "…"
-    for target_agent_id in mention_agent_ids:
-        if target_agent_id == sender_agent_id:
-            continue
-        message_id = await push_message(
-            session_factory,
-            scope="agent",
-            recipient_id=target_agent_id,
-            from_type="agent",
-            from_agent_id=sender_agent_id,
-            type="room_mention",
-            priority=2,
-            resource_type="social_room",
-            resource_id=room_id,
-            payload={
-                "room_id": room_id,
-                "room_name": room_name,
-                "sender_agent_id": sender_agent_id,
-                "sender_agent_name": sender_agent_name,
-                "text_preview": preview,
-                "sent_at": sent_at,
-                "payload_authority": "msgbox_room_mention",
-                "routing_mode": "explicit",
-            },
-        )
-        if not message_id:
-            continue
-        asyncio.create_task(
-            push_msgbox_notify_to_agent(
-                registry,
-                target_agent_id,
-                kind="room_mention",
-                message_id=message_id,
-                from_agent_id=sender_agent_id,
-                from_name=sender_agent_name,
-                preview=preview,
-                extra={
-                    "room_id": room_id,
-                    "room_name": room_name,
-                },
-            )
-        )
-
-
 async def dispatch_room_inbound_frame(
     websocket: WebSocket,
     social: SocialRoomRegistry,
@@ -1037,6 +1131,15 @@ async def dispatch_room_inbound_frame(
             agent_id,
             data,
             response_type="room_access_lists_updated",
+        )
+        return True
+    if mt == "update_room_metadata":
+        await _handle_update_room_metadata(
+            websocket,
+            social,
+            session_factory,
+            agent_id,
+            data,
         )
         return True
     if mt == "list_room_members":

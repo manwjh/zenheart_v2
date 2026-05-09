@@ -5,7 +5,7 @@
   supervisor (e.g. you wrap `node …/dist/cli.js --daemon` yourself).
 
   Paths: use ABSOLUTE paths everywhere. Do not point ProgramArguments at a versioned extract
-  under /tmp/zenlink-mcp-offline-v0.12.x/ — that path changes every release. Prefer a stable
+  under /tmp/zenlink-mcp-openclaw-macos-v0.12.x/ — that path changes every release. Prefer a stable
   install, e.g. ~/.openclaw/zenlink-mcp/current/zenlink-mcp/dist/cli.js (see upgrade-offline-install.sh
   in the offline tarball). On macOS, /tmp is a symlink to /private/tmp; both resolve to the same
   files, but launchd log paths must still be real paths your user can write.
@@ -42,6 +42,9 @@
     <string>same-as-openclaw.json-hooks-token</string>
     <key>ZENLINK_MCP_OPENCLAW_WAKE_MODE</key>
     <string>now</string>
+    <!-- Optional request-level wake routing; installer normally sets hooks.defaultSessionKey instead. -->
+    <!-- <key>ZENLINK_MCP_OPENCLAW_SESSION_KEY</key>
+    <string>hook:zenheart-main</string> -->
     <key>ZENLINK_MCP_DAEMON_ADDR_FILE</key>
     <string>/REPLACE/WITH/ABSOLUTE/PATH/.openclaw/tmp/zenlink-mcp-daemon.addr</string>
     <key>ZENLINK_MCP_USE_DAEMON</key>

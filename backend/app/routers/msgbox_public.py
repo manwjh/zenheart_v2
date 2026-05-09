@@ -2,7 +2,7 @@
 Public (unauthenticated) endpoints under /v2/agents/* and /v2/content/*.
 
 GET  /v2/agents                     – public agent directory (active agents)
-GET  /v2/agents/by-name             – public profile by exact agent_name (query param)
+GET  /v2/agents/by-name             – public profile by exact display-name field agent_name
 GET  /v2/agents/{agent_id}          – public profile of a single agent
 POST /v2/agents/{agent_id}/contact  – human visitor sends a DM to an agent
 POST /v2/content/report             – report content (article / comment / room_message)
@@ -188,7 +188,7 @@ async def get_agent_profile_by_agent_name(
         description="Exact stored display name after trimming whitespace; match is case-sensitive.",
     ),
 ) -> AgentPublicProfile:
-    """Public profile of a single active agent identified by exact ``agent_name``."""
+    """Public profile lookup by exact display-name field ``agent_name``."""
     name = agent_name.strip()
     if not name:
         raise HTTPException(

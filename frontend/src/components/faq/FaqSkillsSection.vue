@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { faqUiByLocale } from "@/features/faq/faqCopy";
+import { siteLocale } from "@/features/locale/siteLocale";
+
 type SkillItem = {
   slug: string;
   title: string;
@@ -22,24 +26,34 @@ const emit = defineEmits<{
   toggleSkill: [slug: string];
   copySkillLink: [slug: string];
 }>();
+
+const ui = computed(() => faqUiByLocale[siteLocale.value]);
+
+const skillsDescParts = computed(() => {
+  const s = ui.value.skillsDesc;
+  const sep = "<slug>.md";
+  const i = s.indexOf(sep);
+  if (i < 0) return { before: s, after: "" };
+  return { before: s.slice(0, i), after: s.slice(i + sep.length) };
+});
+
+function curlTitle(slug: string) {
+  return ui.value.skillsCurlTitle.replace(/\{slug\}/g, slug);
+}
 </script>
 
 <template>
   <section id="skills" class="card">
     <header class="card-header">
-      <h2 class="card-title">Shared skills</h2>
+      <h2 class="card-title">{{ ui.skillsTitle }}</h2>
       <p class="card-desc">
-        OpenClaw-style bundles for redistribution: install from
-        <a href="https://clawhub.ai/" rel="noopener noreferrer" target="_blank">ClawHub</a>
-        or use <strong>Copy</strong> — pastes a one-liner that saves raw Markdown as
-        <code>&lt;slug&gt;.md</code> in your current directory (needs <code>curl</code>). Agents
-        can still <code>fetch</code> the same URL.
+        {{ skillsDescParts.before }}<code>&lt;slug&gt;.md</code>{{ skillsDescParts.after }}
       </p>
     </header>
 
     <div v-if="skills.length === 0" class="doc-empty">
       <svg class="doc-empty-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 9l9-5 9 5v11a1 1 0 01-1 1H4a1 1 0 01-1-1V9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 22V12h6v10" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-      <span>No shared skills published yet.</span>
+      <span>{{ ui.skillsEmpty }}</span>
     </div>
 
     <ul v-else class="doc-list" role="list">
@@ -67,35 +81,31 @@ const emit = defineEmits<{
               :href="clawhubSkillUrl(skill.slug)"
               rel="noopener noreferrer"
               target="_blank"
-              title="Open on ClawHub"
+              :title="ui.skillsClawHubOpen"
             >
               ClawHub
             </a>
             <button
               class="action-btn copy-btn"
               :class="{ copied: copiedSkillSlug === skill.slug }"
-              :title="
-                copiedSkillSlug === skill.slug
-                  ? 'Copied!'
-                  : 'curl one-liner — paste in terminal to save as ' + skill.slug + '.md'
-              "
+              :title="copiedSkillSlug === skill.slug ? ui.skillsCopied : curlTitle(skill.slug)"
               @click="emit('copySkillLink', skill.slug)"
             >
-              {{ copiedSkillSlug === skill.slug ? "Copied!" : "Copy" }}
+              {{ copiedSkillSlug === skill.slug ? ui.skillsCopied : ui.skillsCopy }}
             </button>
             <button
               class="action-btn read-btn"
               :class="{ active: expandedSkillSlug === skill.slug }"
-              :title="expandedSkillSlug === skill.slug ? 'Collapse' : 'Read inline'"
+              :title="expandedSkillSlug === skill.slug ? ui.skillsCollapse : ui.skillsReadOpen"
               @click="emit('toggleSkill', skill.slug)"
             >
-              {{ expandedSkillSlug === skill.slug ? "Close ▲" : "Read ▼" }}
+              {{ expandedSkillSlug === skill.slug ? ui.skillsReadClose : ui.skillsReadOpen }}
             </button>
           </div>
         </div>
 
         <div v-if="expandedSkillSlug === skill.slug" class="doc-reader">
-          <div v-if="skillLoading[skill.slug]" class="reader-status">Loading…</div>
+          <div v-if="skillLoading[skill.slug]" class="reader-status">{{ ui.skillsLoading }}</div>
           <div v-else-if="skillError[skill.slug]" class="reader-status err">{{ skillError[skill.slug] }}</div>
           <div v-else class="markdown-body" v-html="skillContent[skill.slug]" />
         </div>

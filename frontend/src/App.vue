@@ -3,27 +3,27 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 
 const route = useRoute();
-const labSectionActive = computed(
-  () => route.path === "/wall" || route.path === "/game"
+const zenSectionActive = computed(
+  () => route.path === "/faq" || route.path.startsWith("/lab")
 );
 
-const labOpen = ref(false);
-const labRoot = ref<HTMLElement | null>(null);
+const zenOpen = ref(false);
+const zenRoot = ref<HTMLElement | null>(null);
 
-function closeLab() {
-  labOpen.value = false;
+function closeZen() {
+  zenOpen.value = false;
 }
 
 function onDocumentClick(e: MouseEvent) {
-  if (!labOpen.value) return;
-  const el = labRoot.value;
+  if (!zenOpen.value) return;
+  const el = zenRoot.value;
   if (el && e.target instanceof Node && !el.contains(e.target)) {
-    closeLab();
+    closeZen();
   }
 }
 
 function onDocumentKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") closeLab();
+  if (e.key === "Escape") closeZen();
 }
 
 onMounted(() => {
@@ -35,7 +35,7 @@ onUnmounted(() => {
   document.removeEventListener("keydown", onDocumentKeydown);
 });
 
-watch(() => route.path, closeLab);
+watch(() => route.path, closeZen);
 </script>
 
 <template>
@@ -45,47 +45,47 @@ watch(() => route.path, closeLab);
       <nav class="links">
         <RouterLink to="/">Home</RouterLink>
         <RouterLink to="/news">News</RouterLink>
+        <RouterLink to="/gallery">Gallery</RouterLink>
         <RouterLink to="/social">Social</RouterLink>
-        <div ref="labRoot" class="nav-lab">
+        <RouterLink to="/ai-visitors">AI Agents</RouterLink>
+        <div ref="zenRoot" class="nav-zen">
           <button
             type="button"
-            class="nav-lab__trigger"
-            :class="{ 'nav-lab__trigger--on': labSectionActive || labOpen }"
-            :aria-expanded="labOpen"
+            class="nav-zen__trigger"
+            :class="{ 'nav-zen__trigger--on': zenSectionActive || zenOpen }"
+            :aria-expanded="zenOpen"
             aria-haspopup="true"
-            aria-controls="nav-lab-menu"
-            @click.stop="labOpen = !labOpen"
+            aria-controls="nav-zen-menu"
+            @click.stop="zenOpen = !zenOpen"
           >
-            Lab
-            <span class="nav-lab__chevron" aria-hidden="true">▾</span>
+            Zen
+            <span class="nav-zen__chevron" aria-hidden="true">▾</span>
           </button>
           <div
-            v-show="labOpen"
-            id="nav-lab-menu"
-            class="nav-lab__panel"
+            v-show="zenOpen"
+            id="nav-zen-menu"
+            class="nav-zen__panel"
             role="menu"
-            aria-label="Lab"
+            aria-label="Zen"
           >
             <RouterLink
-              to="/wall"
-              class="nav-lab__item"
+              to="/faq"
+              class="nav-zen__item"
               role="menuitem"
-              @click="closeLab"
+              @click="closeZen"
             >
-              Wall
+              FAQ
             </RouterLink>
             <RouterLink
-              to="/game"
-              class="nav-lab__item"
+              to="/lab"
+              class="nav-zen__item"
               role="menuitem"
-              @click="closeLab"
+              @click="closeZen"
             >
-              Game
+              Lab
             </RouterLink>
           </div>
         </div>
-        <RouterLink to="/ai-visitors">AI Agents</RouterLink>
-        <RouterLink to="/faq">FAQ</RouterLink>
       </nav>
     </header>
     <main class="main">
@@ -159,8 +159,8 @@ body {
 .nav {
   position: sticky;
   top: 0;
-  /* Stay above in-page stacking (sticky toolbars, maps, transforms); keep below app modals (e.g. z-index 50). */
-  z-index: 40;
+  /* Keep route navigation clickable above in-page overlays and preview dialogs. */
+  z-index: 120;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -231,13 +231,13 @@ body {
   font-weight: 600;
 }
 
-/* Lab: single top-level control; Wall / Game only in the panel */
-.nav-lab {
+/* Zen: FAQ + Lab under one flyout; Lab page hosts Wall / Game */
+.nav-zen {
   position: relative;
   display: inline-block;
 }
 
-.nav-lab__trigger {
+.nav-zen__trigger {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -252,34 +252,33 @@ body {
   white-space: nowrap;
 }
 
-.nav-lab__trigger--on,
-.nav-lab__trigger:hover {
+.nav-zen__trigger--on,
+.nav-zen__trigger:hover {
   color: var(--brand-accent);
 }
 
-.nav-lab__trigger[aria-expanded="true"] {
+.nav-zen__trigger[aria-expanded="true"] {
   color: var(--brand-accent);
   font-weight: 600;
 }
 
-.nav-lab__chevron {
+.nav-zen__chevron {
   display: inline-block;
   font-size: 0.65em;
   opacity: 0.85;
   transform: translateY(0.05em);
 }
 
-.nav-lab__trigger[aria-expanded="true"] .nav-lab__chevron {
+.nav-zen__trigger[aria-expanded="true"] .nav-zen__chevron {
   transform: rotate(180deg) translateY(-0.05em);
 }
 
-.nav-lab__panel {
+.nav-zen__panel {
   position: absolute;
-  left: 0;
-  right: auto;
+  right: 0;
+  left: auto;
   top: calc(100% + 0.35rem);
   z-index: 200;
-  /* Align with trigger’s start edge; avoid a wide box hanging left of “Lab” */
   min-width: max(9rem, 100%);
   padding: 0.35rem 0;
   border-radius: var(--radius-md);
@@ -293,13 +292,13 @@ body {
 }
 
 @media (prefers-color-scheme: dark) {
-  .nav-lab__panel {
+  .nav-zen__panel {
     box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55),
       0 0 0 1px rgba(var(--brand-rgb), 0.12);
   }
 }
 
-.nav-lab__item {
+.nav-zen__item {
   padding: 0.45rem 0.9rem;
   color: var(--muted);
   text-decoration: none;
@@ -308,13 +307,13 @@ body {
   transition: background 0.12s;
 }
 
-.nav-lab__item:hover,
-.nav-lab__item:focus-visible {
+.nav-zen__item:hover,
+.nav-zen__item:focus-visible {
   background: rgba(127, 127, 127, 0.1);
   outline: none;
 }
 
-.nav-lab__item.router-link-active {
+.nav-zen__item.router-link-active {
   color: var(--brand-accent);
   font-weight: 600;
   background: rgba(var(--brand-rgb), 0.1);
@@ -322,6 +321,8 @@ body {
 
 .main {
   flex: 1;
+  /* Allow this flex child to shrink so routed views get a bounded height (room chat composer stays in view). */
+  min-height: 0;
   padding: var(--layout-page-pad-y) max(var(--layout-page-pad-x), env(safe-area-inset-right, 0px))
     var(--layout-page-pad-y) max(var(--layout-page-pad-x), env(safe-area-inset-left, 0px));
   padding-bottom: max(

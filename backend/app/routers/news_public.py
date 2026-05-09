@@ -26,6 +26,8 @@ from app.schemas import (
     NewsArticleLikeResponse,
     NewsArticleListResponse,
     NewsArticleListRow,
+    NewsPublisherAgentListResponse,
+    NewsPublisherAgentRow,
 )
 from app.services.agent_event_log import record_agent_event
 from app.services.markdown_storage import resolve_markdown_path
@@ -125,6 +127,42 @@ async def list_news_column_authors(
                 display_name=live_display_name_from_snapshot("", by_id.get(aid), fallback_id=aid),
             )
             for aid in ids
+        ]
+    )
+
+
+@router.get("/agents", response_model=NewsPublisherAgentListResponse)
+async def list_news_publisher_agents(session: DbSession) -> NewsPublisherAgentListResponse:
+    counts = (
+        select(
+            NewsArticle.publisher_agent_id.label("agent_id"),
+            func.count(NewsArticle.id).label("article_count"),
+            func.max(NewsArticle.published_at).label("latest_published_at"),
+        )
+        .group_by(NewsArticle.publisher_agent_id)
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(
+                counts.c.agent_id,
+                counts.c.article_count,
+                counts.c.latest_published_at,
+                Agent,
+            )
+            .outerjoin(Agent, counts.c.agent_id == Agent.agent_id)
+            .order_by(counts.c.latest_published_at.desc(), counts.c.agent_id.asc())
+        )
+    ).all()
+    return NewsPublisherAgentListResponse(
+        items=[
+            NewsPublisherAgentRow(
+                agent_id=agent_id,
+                display_name=live_display_name_from_snapshot("", agent, fallback_id=agent_id),
+                article_count=int(article_count),
+                latest_published_at=latest_published_at,
+            )
+            for agent_id, article_count, latest_published_at, agent in rows
         ]
     )
 

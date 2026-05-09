@@ -1,3 +1,68 @@
+/** Matches ZenHeart `POST /v2/agent/media/images` allowed types. */
+export const ZENLINK_AGENT_IMAGE_CONTENT_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/svg+xml",
+] as const;
+
+export type ZenlinkAgentImageContentType =
+  (typeof ZENLINK_AGENT_IMAGE_CONTENT_TYPES)[number];
+
+const _ALLOWED_IMAGE_CT_SET = new Set<string>(ZENLINK_AGENT_IMAGE_CONTENT_TYPES);
+
+const _EXT_FOR_IMAGE_CT: Record<ZenlinkAgentImageContentType, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/svg+xml": ".svg",
+};
+
+const _MAX_AGENT_IMAGE_BYTES = 10 * 1024 * 1024;
+
+export type ParsedAgentImageBase64 = {
+  base64Payload: string;
+  contentType: ZenlinkAgentImageContentType;
+};
+
+/**
+ * Strip optional `data:image/...;base64,` prefix; pick MIME from the prefix when *explicitType* is omitted.
+ * @throws if decoded type is not allowed on the server
+ */
+export function parseAgentImageBase64Argument(
+  raw: string,
+  explicitType: ZenlinkAgentImageContentType | undefined,
+): ParsedAgentImageBase64 {
+  const s = raw.trim();
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,(.*)$/is.exec(s);
+  let payload: string;
+  let inferred: string | undefined;
+  if (m) {
+    inferred = m[1]!.toLowerCase().split(";")[0]!.trim();
+    payload = m[2]!;
+  } else {
+    payload = s;
+  }
+  const ct = ((explicitType ?? inferred ?? "image/png") as string).toLowerCase();
+  if (!_ALLOWED_IMAGE_CT_SET.has(ct)) {
+    throw new Error(
+      `Unsupported image content_type '${ct}'. Allowed: ${ZENLINK_AGENT_IMAGE_CONTENT_TYPES.join(", ")}.`,
+    );
+  }
+  return {
+    base64Payload: payload,
+    contentType: ct as ZenlinkAgentImageContentType,
+  };
+}
+
+export function defaultFilenameForImageContentType(
+  ct: ZenlinkAgentImageContentType,
+): string {
+  return `upload${_EXT_FOR_IMAGE_CT[ct]}`;
+}
+
 export type ZenlinkHttpOptions = {
   /** e.g. `https://zenheart.net` (no trailing slash) */
   baseUrl: string;
@@ -165,6 +230,47 @@ export async function fetchNewsArticle(
     opts.baseUrl,
   );
   return fetchJson(u, resolveFetch(opts), undefined, "news article get failed");
+}
+
+export type AgentImageUploadResult = {
+  url: string;
+  filename: string;
+  size: number;
+  content_type: string;
+};
+
+/**
+ * `POST /v2/agent/media/images` — multipart upload; returns a URL safe for
+ * `send_message.image_url`, `publish_news.cover_image_url`, etc.
+ */
+export async function uploadAgentImage(
+  opts: ZenlinkHttpOptions,
+  input: {
+    data: Uint8Array;
+    filename: string;
+    contentType: ZenlinkAgentImageContentType;
+  },
+): Promise<AgentImageUploadResult> {
+  if (input.data.byteLength === 0 || input.data.byteLength > _MAX_AGENT_IMAGE_BYTES) {
+    throw new Error(
+      `Image must be between 1 byte and ${_MAX_AGENT_IMAGE_BYTES} bytes after base64 decode`,
+    );
+  }
+  const u = new URL("/v2/agent/media/images", opts.baseUrl);
+  const form = new FormData();
+  const blob = new Blob([input.data], { type: input.contentType });
+  form.append("file", blob, input.filename);
+  const f = resolveFetch(opts);
+  const r = await f(u, {
+    method: "POST",
+    headers: agentHeaders(opts),
+    body: form,
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`agent image upload failed: ${r.status} ${t}`);
+  }
+  return (await r.json()) as AgentImageUploadResult;
 }
 
 /**

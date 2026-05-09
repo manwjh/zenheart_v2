@@ -57,7 +57,6 @@ const {
   observePendingTopics,
   observeTopicQueueExpanded,
   observeManualRetrySuggested,
-  observeMessagesToday,
   observeMessages,
   startObserve,
   stopObserve,
@@ -201,7 +200,10 @@ onUnmounted(() => {
         <span>Social</span>
       </RouterLink>
 
-      <span class="social-room-toolbar-title" :title="toolbarTitle">{{ toolbarTitle }}</span>
+      <div class="social-room-toolbar-title" :title="toolbarTitle">
+        <span class="social-room-toolbar-eyebrow">Agent room</span>
+        <span class="social-room-toolbar-name">{{ toolbarTitle }}</span>
+      </div>
 
       <div class="toolbar-actions">
         <button
@@ -241,26 +243,26 @@ onUnmounted(() => {
       <p v-else-if="roomListError" class="social-room-state social-room-state--error">{{ roomListError }}</p>
 
       <SocialObservePanel
-      v-if="!listLoading && !roomListError && observingRoom"
-      :observing-room="observingRoom"
-      :observe-connected="observeConnected"
-      :observe-members="observeMembers"
-      :observe-error="observeError"
-      :show-observe-retry="observeManualRetrySuggested"
-      :observe-pending-topics="observePendingTopics"
-      :observe-topic-queue-expanded="observeTopicQueueExpanded"
-      :observe-messages-today="observeMessagesToday"
-      :observe-messages-count="observeMessages.length"
-      :topic-draft="topicDraft"
-      :sending-topic-submission="sendingTopicSubmission"
-      :format-time="formatTime"
-      :message-mention-html="messageMentionHtml"
-      @update:queue-expanded="observeTopicQueueExpanded = $event"
-      @update:topic-draft="topicDraft = $event"
-      @submit-topic="submitVisitorTopicSuggestion"
-      @topic-keydown="onTopicComposerKeydown"
-      @retry-connection="retryObserveConnection"
-    />
+        v-if="!listLoading && !roomListError && observingRoom"
+        :observing-room="observingRoom"
+        :observe-connected="observeConnected"
+        :observe-members="observeMembers"
+        :observe-error="observeError"
+        :show-observe-retry="observeManualRetrySuggested"
+        :observe-pending-topics="observePendingTopics"
+        :observe-topic-queue-expanded="observeTopicQueueExpanded"
+        :observe-messages="observeMessages"
+        :observe-messages-count="observeMessages.length"
+        :topic-draft="topicDraft"
+        :sending-topic-submission="sendingTopicSubmission"
+        :format-time="formatTime"
+        :message-mention-html="messageMentionHtml"
+        @update:queue-expanded="observeTopicQueueExpanded = $event"
+        @update:topic-draft="topicDraft = $event"
+        @submit-topic="submitVisitorTopicSuggestion"
+        @topic-keydown="onTopicComposerKeydown"
+        @retry-connection="retryObserveConnection"
+      />
     </div>
   </section>
 </template>
@@ -271,17 +273,22 @@ onUnmounted(() => {
   max-width: 100%;
   min-width: 0;
   margin: 0 auto;
-  align-self: start;
+  /* Fill grid row below the global nav — avoid min-height: 100vh, which exceeds the visible column and clips the composer. */
+  align-self: stretch;
   justify-self: center;
-  min-height: 100dvh;
-  min-height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  background: var(--bg);
-  box-shadow: 0 0 0 1px rgba(var(--brand-rgb), 0.04);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(var(--brand-rgb), 0.1), transparent 28rem),
+    linear-gradient(180deg, rgba(var(--brand-rgb), 0.035), transparent 12rem),
+    var(--bg);
+  box-shadow:
+    0 1.5rem 4rem rgba(15, 23, 42, 0.08),
+    0 0 0 1px rgba(var(--brand-rgb), 0.04);
   overflow-x: clip;
   padding-top: env(safe-area-inset-top, 0px);
 }
@@ -290,38 +297,61 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 10;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(2.35rem, 1fr) minmax(0, 2fr) minmax(2.35rem, 1fr);
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
   padding: 0.75rem max(var(--layout-chrome-pad-x), env(safe-area-inset-left, 0px))
     0.75rem max(var(--layout-chrome-pad-x), env(safe-area-inset-right, 0px));
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
   backdrop-filter: blur(10px) saturate(150%);
   border-bottom: 1px solid var(--border);
   border-radius: var(--radius-card) var(--radius-card) 0 0;
 }
 
 .social-room-toolbar-title {
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-self: center;
   min-width: 0;
+  max-width: 100%;
+  gap: 0.08rem;
+  color: var(--fg);
+  text-align: center;
+}
+
+.social-room-toolbar-eyebrow {
+  font-size: var(--text-caption);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1.1;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.social-room-toolbar-name {
+  max-width: 100%;
   font-size: var(--text-ui);
   font-weight: 600;
-  color: var(--fg);
+  line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-align: center;
 }
 
 .btn-nav {
   display: inline-flex;
+  justify-content: center;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.35rem 0.65rem;
+  min-width: 2.35rem;
+  min-height: 2.35rem;
+  padding: 0.35rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: transparent;
+  background: rgba(var(--brand-rgb), 0.04);
   color: inherit;
   font-size: var(--text-compact);
   font-weight: 500;
@@ -350,7 +380,7 @@ onUnmounted(() => {
 }
 
 .toolbar-actions {
-  margin-left: auto;
+  justify-self: end;
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -361,6 +391,14 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+}
+
+.btn-back {
+  justify-self: start;
+}
+
+.btn-nav span {
+  display: none;
 }
 
 .social-room-toast {
@@ -387,9 +425,7 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 0 max(var(--layout-page-pad-x), env(safe-area-inset-right, 0px))
-    calc(var(--layout-room-inner-pad-bottom) + env(safe-area-inset-bottom, 0px))
-    max(var(--layout-page-pad-x), env(safe-area-inset-left, 0px));
+  padding: 0;
 }
 
 .social-room-state {
@@ -419,20 +455,17 @@ onUnmounted(() => {
   }
 
   .social-room-inner {
-    padding: 0
-      max(0.85rem, var(--layout-chrome-pad-x), env(safe-area-inset-right, 0px))
-      calc(var(--layout-room-inner-pad-bottom-sm) + env(safe-area-inset-bottom, 0px))
-      max(0.85rem, var(--layout-chrome-pad-x), env(safe-area-inset-left, 0px));
+    padding: 0;
   }
 }
 
 @media (max-width: 640px) {
-  .btn-nav span {
-    display: none;
+  .social-room-toolbar {
+    grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem;
   }
 
-  .btn-nav {
-    padding: 0.35rem 0.5rem;
+  .social-room-toolbar-eyebrow {
+    display: none;
   }
 }
 </style>

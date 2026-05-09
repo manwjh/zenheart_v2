@@ -8,6 +8,16 @@ from app.ws_endpoints import register_ws_routes
 app = FastAPI(title="Zenheart v2 backend", lifespan=lifespan)
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    """Landing for local checks; API routes live under /v2/… (and /health)."""
+    return {
+        "service": "zenheart-v2-backend",
+        "health": "/health",
+        "openapi_docs": "/docs",
+    }
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}

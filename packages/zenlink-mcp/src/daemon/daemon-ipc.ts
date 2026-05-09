@@ -1,212 +1,142 @@
-import { randomUUID } from "node:crypto";
-import * as net from "node:net";
-import * as readline from "node:readline";
+import { Socket } from "node:net";
+import { readFileSync } from "node:fs";
+import {
+  daemonInvokeTimeoutMs,
+  defaultDaemonTokenFile,
+} from "./daemon-env.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { readDaemonInvokeTimeoutMs } from "./daemon-env.js";
 
-type Pending = {
+export interface DaemonAddr {
+  host: string;
+  port: number;
+}
+
+interface PendingRequest {
   resolve: (value: CallToolResult) => void;
-  reject: (reason?: unknown) => void;
-};
-
-type DaemonRpcResponse = {
-  v: 1;
-  reqId: string;
-  ok: boolean;
-  result?: CallToolResult;
-  message?: string;
-};
-
-export class DaemonRpcClient {
-  private readonly host: string;
-  private readonly port: number;
-  private sock: net.Socket | null = null;
-  private rl: readline.Interface | null = null;
-  private readonly pending = new Map<string, Pending>();
-
-  constructor(host: string, port: number) {
-    this.host = host;
-    this.port = port;
-  }
-
-  /** Drop TCP + pending RPCs (e.g. daemon restarted with a new port in the addr file). */
-  destroy(): void {
-    if (this.rl) {
-      this.rl.close();
-      this.rl = null;
-    }
-    if (this.sock) {
-      this.sock.destroy();
-      this.sock = null;
-    }
-    const err = new Error("zenlink-mcp: daemon IPC client destroyed");
-    for (const [, p] of this.pending) {
-      p.reject(err);
-    }
-    this.pending.clear();
-  }
-
-  async connect(): Promise<void> {
-    if (this.sock) {
-      return;
-    }
-    await new Promise<void>((resolve, reject) => {
-      const s = net.connect({ host: this.host, port: this.port }, () => {
-        this.sock = s;
-        this.rl = readline.createInterface({ input: s });
-        this.rl.on("line", (line) => this.onLine(line));
-        s.on("error", (e) => this.onSocketError(e));
-        s.on("close", () => this.onSocketClose());
-        resolve();
-      });
-      s.once("error", reject);
-    });
-  }
-
-  private onSocketError(e: Error): void {
-    for (const [, p] of this.pending) {
-      p.reject(e);
-    }
-    this.pending.clear();
-  }
-
-  private onSocketClose(): void {
-    const err = new Error("zenlink-mcp: daemon connection closed");
-    for (const [, p] of this.pending) {
-      p.reject(err);
-    }
-    this.pending.clear();
-    this.sock = null;
-    if (this.rl) {
-      this.rl.close();
-      this.rl = null;
-    }
-  }
-
-  private onLine(line: string): void {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      return;
-    }
-    let msg: DaemonRpcResponse;
-    try {
-      msg = JSON.parse(trimmed) as DaemonRpcResponse;
-    } catch {
-      return;
-    }
-    if (
-      typeof msg !== "object" ||
-      msg === null ||
-      msg.v !== 1 ||
-      typeof msg.reqId !== "string"
-    ) {
-      return;
-    }
-    const pend = this.pending.get(msg.reqId);
-    if (!pend) {
-      return;
-    }
-    this.pending.delete(msg.reqId);
-    if (msg.ok === false) {
-      pend.reject(
-        new Error(
-          typeof msg.message === "string"
-            ? msg.message
-            : "daemon invoke failed",
-        ),
-      );
-      return;
-    }
-    pend.resolve(msg.result as CallToolResult);
-  }
-
-  invoke(tool: string, args: unknown): Promise<CallToolResult> {
-    const sock = this.sock;
-    if (!sock || sock.writableEnded) {
-      return Promise.reject(
-        new Error("zenlink-mcp: daemon IPC not connected (start --daemon?)"),
-      );
-    }
-    const reqId = randomUUID();
-    const req = {
-      v: 1,
-      cmd: "invoke",
-      reqId,
-      tool,
-      args: args === undefined ? {} : args,
-    };
-    const invokePromise = new Promise<CallToolResult>((resolve, reject) => {
-      this.pending.set(reqId, { resolve, reject });
-      try {
-        sock.write(`${JSON.stringify(req)}\n`);
-      } catch (e) {
-        this.pending.delete(reqId);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      }
-    });
-    const ms = readDaemonInvokeTimeoutMs();
-    if (ms <= 0) {
-      return invokePromise;
-    }
-    return new Promise<CallToolResult>((resolve, reject) => {
-      const tid = setTimeout(() => {
-        if (this.pending.delete(reqId)) {
-          reject(
-            new Error(
-              `zenlink-mcp daemon IPC invoke timed out after ${ms}ms (set ZENLINK_MCP_DAEMON_INVOKE_TIMEOUT_MS=0 to disable).`,
-            ),
-          );
-        }
-      }, ms);
-      invokePromise.then(
-        (r) => {
-          clearTimeout(tid);
-          resolve(r);
-        },
-        (err) => {
-          clearTimeout(tid);
-          reject(err);
-        },
-      );
-    });
-  }
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout | null;
 }
 
-export function tcpProbeAccept(
-  host: string,
-  port: number,
-  opts?: { timeoutMs?: number },
-): Promise<boolean> {
-  const timeoutMs = opts?.timeoutMs ?? 2500;
-  return new Promise((resolve) => {
-    let done = false;
-    const sock = net.connect({ host, port });
-    function cleanup(ok: boolean): void {
-      if (done) {
-        return;
-      }
-      done = true;
-      clearTimeout(timer);
-      sock.removeAllListeners();
-      sock.destroy();
-      resolve(ok);
-    }
-    const timer = setTimeout(() => cleanup(false), timeoutMs);
-    sock.once("connect", () => cleanup(true));
-    sock.once("error", () => cleanup(false));
-  });
-}
-
-export function parseAddrFileLine(line: string): { host: string; port: number } {
-  const s = line.trim();
-  const lastColon = s.lastIndexOf(":");
-  if (lastColon <= 0) {
-    throw new Error(`zenlink-mcp: invalid daemon addr line: ${line}`);
-  }
-  const host = s.slice(0, lastColon).trim();
-  const port = Number.parseInt(s.slice(lastColon + 1).trim(), 10);
-  if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) {
-    throw new Error(`zenlink-mcp: invalid daemon addr: ${line}`);
+export function parseAddrFileLine(line: string): DaemonAddr {
+  const trimmed = line.trim();
+  const [host, portRaw] = trimmed.split(":");
+  const port = Number(portRaw);
+  if (!host || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`invalid daemon addr line: ${trimmed}`);
   }
   return { host, port };
+}
+
+export function readDaemonTokenFile(addrFile: string): string {
+  const tokenFile = defaultDaemonTokenFile(addrFile);
+  const token = readFileSync(tokenFile, "utf8").trim();
+  if (!token) {
+    throw new Error(`empty daemon token file: ${tokenFile}`);
+  }
+  return token;
+}
+
+export class DaemonRpcClient {
+  private socket: Socket | null = null;
+  private nextId = 1;
+  private buffer = "";
+  private readonly pending = new Map<number, PendingRequest>();
+
+  constructor(
+    private readonly host: string,
+    private readonly port: number,
+    private readonly token: string,
+  ) {}
+
+  async connect(): Promise<void> {
+    if (this.socket && !this.socket.destroyed) return;
+    const socket = new Socket();
+    this.socket = socket;
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => this.onData(chunk.toString()));
+    socket.on("error", (error) => this.rejectAll(error));
+    socket.on("close", () => this.rejectAll(new Error("connection closed")));
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+      socket.connect(this.port, this.host);
+    });
+  }
+
+  destroy(): void {
+    this.rejectAll(new Error("connection destroyed"));
+    this.socket?.destroy();
+    this.socket = null;
+  }
+
+  async invoke(tool: string, rawArgs: unknown): Promise<CallToolResult> {
+    if (!this.socket || this.socket.destroyed) {
+      throw new Error("not connected");
+    }
+    const id = this.nextId++;
+    const timeoutMs = daemonInvokeTimeoutMs();
+    const payload =
+      JSON.stringify({ id, token: this.token, tool, args: rawArgs }) + "\n";
+    const promise = new Promise<CallToolResult>((resolve, reject) => {
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              this.pending.delete(id);
+              reject(new Error("daemon invoke timeout"));
+            }, timeoutMs)
+          : null;
+      this.pending.set(id, { resolve, reject, timer });
+    });
+    this.socket.write(payload);
+    return promise;
+  }
+
+  private onData(chunk: string): void {
+    this.buffer += chunk;
+    for (;;) {
+      const idx = this.buffer.indexOf("\n");
+      if (idx < 0) return;
+      const line = this.buffer.slice(0, idx).trim();
+      this.buffer = this.buffer.slice(idx + 1);
+      if (!line) continue;
+      let msg: {
+        id?: number;
+        result?: CallToolResult;
+        error?: string;
+      };
+      try {
+        msg = JSON.parse(line) as typeof msg;
+      } catch (error) {
+        this.rejectAll(
+          new Error(
+            `invalid daemon response JSON: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        continue;
+      }
+      if (typeof msg.id !== "number") {
+        this.rejectAll(new Error("daemon response missing id"));
+        continue;
+      }
+      const pending = this.pending.get(msg.id);
+      if (!pending) continue;
+      this.pending.delete(msg.id);
+      if (pending.timer) clearTimeout(pending.timer);
+      if (msg.error) {
+        pending.reject(new Error(msg.error));
+      } else if (msg.result) {
+        pending.resolve(msg.result);
+      } else {
+        pending.reject(new Error("daemon response missing result"));
+      }
+    }
+  }
+
+  private rejectAll(error: Error): void {
+    for (const [id, pending] of this.pending) {
+      this.pending.delete(id);
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+  }
 }

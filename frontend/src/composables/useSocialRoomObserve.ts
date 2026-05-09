@@ -1,12 +1,6 @@
-import { computed, onUnmounted, ref } from "vue";
+import { onUnmounted, ref } from "vue";
 import { createWebSocketChannel } from "@/composables/useWebSocketChannel";
-import { useDayTicker } from "@/composables/useDayTicker";
-import {
-  isChatMessageInViewerLocalToday,
-  localCalendarDayStartIso,
-  normalizePendingTopicSuggestions,
-  type PendingTopicSuggestion,
-} from "@/features/social/socialHelpers";
+import { normalizePendingTopicSuggestions, type PendingTopicSuggestion } from "@/features/social/socialHelpers";
 import {
   formatTextWithMentionSpansWithHints,
   type MentionHint,
@@ -69,22 +63,19 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
   let observeChannel: ReturnType<typeof createWebSocketChannel> | null = null;
   let msgSeq = 0;
 
-  const { tick: observeLocalDayTick, start: startDayTicker, stop: stopDayTicker } = useDayTicker();
+  /** Match server `get_room_messages` default; keep UI list bounded during long observe sessions. */
+  const OBSERVE_FEED_MAX_MESSAGES = 50;
 
-  const observeMessagesToday = computed(() => {
-    void observeLocalDayTick.value;
-    const refDate = new Date();
-    return observeMessages.value.filter((m) => {
-      if (m.system) return true;
-      return isChatMessageInViewerLocalToday(m.sent_at, refDate);
-    });
-  });
+  function capObserveMessages() {
+    if (observeMessages.value.length > OBSERVE_FEED_MAX_MESSAGES) {
+      observeMessages.value = observeMessages.value.slice(-OBSERVE_FEED_MAX_MESSAGES);
+    }
+  }
 
   function observeSubscribePayload(roomId: string): Record<string, string> {
     return {
       type: "subscribe",
       room_id: roomId,
-      messages_since: localCalendarDayStartIso(),
     };
   }
 
@@ -198,6 +189,7 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
       sent_at: new Date().toISOString(),
       system: true,
     });
+    capObserveMessages();
     scrollToBottom();
   }
 
@@ -261,6 +253,7 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
           sent_at: m.sent_at as string,
           mentions: (m.mentions as string[]) ?? [],
         }));
+        capObserveMessages();
         scrollToBottom();
       }
       observePendingTopics.value = normalizePendingTopicSuggestions(frame.pending_topic_suggestions);
@@ -280,6 +273,7 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
         sent_at: frame.sent_at as string,
         mentions: (frame.mentions as string[]) ?? [],
       });
+      capObserveMessages();
       scrollToBottom();
     } else if (type === "member_joined") {
       const m = {
@@ -292,6 +286,15 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
       observeMembers.value = observeMembers.value.filter(
         (m) => m.agent_id !== (frame.agent_id as string),
       );
+    } else if (type === "room_metadata_updated") {
+      if (observingRoom.value) {
+        observingRoom.value = {
+          ...observingRoom.value,
+          name: (frame.name as string | undefined) ?? observingRoom.value.name,
+          topic: (frame.topic as string | undefined) ?? observingRoom.value.topic,
+          rules: (frame.rules as string | undefined) ?? observingRoom.value.rules,
+        };
+      }
     } else if (type === "room_dissolved") {
       const reason = frame.reason as string | undefined;
       pushSystemMessage(
@@ -327,13 +330,11 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
     observeError.value = null;
     observeManualRetrySuggested.value = false;
     topicDraft.value = "";
-    startDayTicker();
     connectObserver(room.room_id);
   }
 
   function stopObserve() {
     cancelPendingScrollToBottom();
-    stopDayTicker();
     disconnectObserver();
     observingRoom.value = null;
     topicDraft.value = "";
@@ -446,7 +447,6 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
     observePendingTopics,
     observeTopicQueueExpanded,
     observeManualRetrySuggested,
-    observeMessagesToday,
     startObserve,
     stopObserve,
     retryObserveConnection,

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
+from app.deps import AgentDep
 from app.model_defs import Agent, SocialRoom
 from app.services.display_name_resolve import (
     enrich_social_lobby_snapshots,
@@ -101,6 +102,7 @@ async def list_social_rooms_history(request: Request) -> JSONResponse:
 async def get_room_message_history(
     room_id: str,
     request: Request,
+    agent: AgentDep,
     limit: int = Query(default=50, ge=1, le=200),
     since: str | None = Query(
         default=None,
@@ -109,6 +111,11 @@ async def get_room_message_history(
 ) -> JSONResponse:
     social = request.app.state.social_registry
     session_factory = request.app.state.session_factory
+    if not await social.is_live_member(agent.agent_id, room_id):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "not_in_room", "room_id": room_id},
+        )
     room_live = await social.get_room(room_id)
     if room_live is not None:
         if not room_live.observable:

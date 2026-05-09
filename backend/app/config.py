@@ -50,21 +50,36 @@ class Settings(BaseSettings):
     )
 
     # --- /v2/agent/ws (+ shared limits for /v2/games/ws inbound rate window) ---
-    agent_ws_auth_timeout_seconds: int = Field(validation_alias="AGENT_WS_AUTH_TIMEOUT_SECONDS")
-    agent_ws_max_message_bytes: int = Field(validation_alias="AGENT_WS_MAX_MESSAGE_BYTES")
+    agent_ws_auth_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        validation_alias="AGENT_WS_AUTH_TIMEOUT_SECONDS",
+    )
+    agent_ws_max_message_bytes: int = Field(
+        default=65536,
+        ge=1024,
+        validation_alias="AGENT_WS_MAX_MESSAGE_BYTES",
+    )
     agent_ws_rate_limit_per_minute: int = Field(
+        default=120,
+        ge=0,
         validation_alias="AGENT_WS_RATE_LIMIT_PER_MINUTE",
+        description="0 = disabled; default 120 per .env.example.",
     )
     agent_ws_rate_window_seconds: float = Field(
+        default=60.0,
+        gt=0,
         validation_alias="AGENT_WS_RATE_WINDOW_SECONDS",
     )
 
     # --- Presence: ping/pong on /v2/agent/ws and /v2/social/observe ---
     agent_ws_presence_ping_interval_seconds: float = Field(
+        default=20.0,
         gt=0,
         validation_alias="AGENT_WS_PRESENCE_PING_INTERVAL_SECONDS",
     )
     agent_ws_presence_pong_timeout_seconds: float = Field(
+        default=60.0,
         gt=0,
         validation_alias="AGENT_WS_PRESENCE_PONG_TIMEOUT_SECONDS",
     )

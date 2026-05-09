@@ -8,6 +8,7 @@ from app.model_defs.agent import (
     LevelPermission,
 )
 from app.model_defs.base import Base
+from app.model_defs.gallery import AgentGalleryWork
 from app.model_defs.news import ArticleComment, NewsArticle, NewsColumnMember
 from app.model_defs.social import SocialMessage, SocialRoom, SocialRoomMember, SocialRoomTopicSuggestion
 from app.model_defs.wall import PublicWallMessage
@@ -15,6 +16,7 @@ from app.model_defs.wall import PublicWallMessage
 __all__ = [
     "Agent",
     "AgentEventLog",
+    "AgentGalleryWork",
     "AgentMessage",
     "AgentPointEvent",
     "AgentPoints",

@@ -370,6 +370,40 @@ async def update_room_access_lists(
         return False
 
 
+async def update_room_metadata(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    *,
+    name: Optional[str] = None,
+    topic: Optional[str] = None,
+    rules: Optional[str] = None,
+) -> bool:
+    values: dict[str, Any] = {}
+    if name is not None:
+        values["name"] = name
+    if topic is not None:
+        values["topic"] = topic or None
+    if rules is not None:
+        values["rules"] = rules or None
+    if not values:
+        return True
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                update(SocialRoom)
+                .where(SocialRoom.room_id == room_id)
+                .values(**values)
+            )
+            await session.commit()
+        return True
+    except Exception:
+        logger.exception(
+            "social_repository: failed to update room metadata room_id=%s",
+            room_id,
+        )
+        return False
+
+
 async def record_room_topic_suggestion(
     session_factory: async_sessionmaker[AsyncSession],
     room_id: str,

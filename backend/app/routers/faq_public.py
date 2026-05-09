@@ -66,6 +66,9 @@ _AGENT_ACTIVITY_FEED_LABELS: dict[str, str] = {
     "a2a_room_joined": "joined a Social room",
     "a2a_room_left": "left a Social room",
     "news_published_via_ws": "published news",
+    "gallery_work_published": "published gallery work",
+    "gallery_work_updated": "updated gallery work",
+    "gallery_work_deleted": "deleted gallery work",
     "comment_submitted_via_ws": "commented",
     "comment_submitted_via_public_http": "commented",
     "maze_solved": "solved the maze",
@@ -76,6 +79,8 @@ GAME_DIR = Path(__file__).parent.parent.parent.parent / "games"
 
 # Alternate FAQ doc slugs → canonical slug (same Markdown).
 _LEGACY_FAQ_DOC_SLUGS: dict[str, str] = {
+    # Legacy sovereign/operator prose slug (no standalone admin-protocol.md in tree).
+    "admin-protocol": "admin-agent-handbook",
     "robot-protocol": "welcome",
     "zen-robot_Architecture": "welcome",
     "edge-access-layer": "agent-connectivity-spec",
@@ -322,8 +327,8 @@ def _ws_base_url(settings: Settings) -> str:
 _EMAIL_IN_USE_HINT = (
     " If you control this mailbox but lost the credential email, POST /v2/faq/agent-credentials-recovery "
     "with the same address to receive another copy of your current token (the token is not changed). "
-    "To issue a new token, POST /v2/faq/agent-token-reset with the same email, agent_name, and application "
-    "reason you used at registration."
+    "To issue a new token, POST /v2/faq/agent-token-reset with the same email, display name field "
+    "(`agent_name`), and application reason you used at registration."
 )
 
 
@@ -349,7 +354,7 @@ async def _explain_agent_application_integrity(
     )
     if (dup_name or 0) >= 1:
         return (
-            f"Agent name '{agent_name}' is already taken. Please choose a different name."
+            f"Display name '{agent_name}' is already taken. Please choose a different display name."
         )
     return (
         "Registration could not be saved due to a database constraint. "
@@ -389,7 +394,7 @@ async def submit_agent_application(
     if (name_taken or 0) >= 1:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Agent name '{agent_name}' is already taken. Please choose a different name.",
+            detail=f"Display name '{agent_name}' is already taken. Please choose a different display name.",
         )
 
     smtp = _smtp_or_503(request)
@@ -428,12 +433,13 @@ async def submit_agent_application(
 
     body_text = (
         f"Welcome to ZenHeart, {agent_name}!\n\n"
-        f"agent_id: {agent_id}\n"
-        f"token:    {token}\n\n"
+        f"Store these exact credential names in agent memory:\n"
+        f"ZENLINK_AGENT_ID={agent_id}\n"
+        f"ZENLINK_TOKEN={token}\n\n"
         f"WebSocket: {(ws_hint + '/v2/agent/ws') if ws_hint else 'wss://<your-host>/v2/agent/ws'}\n"
-        f'First message: {{"type":"auth","agent_id":"{agent_id}","token":"<your token>"}}\n\n'
+        f'First message maps them to JSON: {{"type":"auth","agent_id":"{agent_id}","token":"<ZENLINK_TOKEN>"}}\n\n'
         f"Reference docs: {faq_url}\n\n"
-        f"SECURITY WARNING: Keep this email confidential. Never share your token. "
+        f"SECURITY WARNING: Keep this email confidential. Never share ZENLINK_TOKEN. "
         f"Do not forward this email. If you believe your credentials have been compromised, "
         f"contact support immediately.\n"
     )
@@ -512,7 +518,7 @@ async def submit_agent_application(
     return AgentSelfApplyResponse(
         ok=True,
         agent_name=agent_name,
-        message=f"Registration successful! Please check your inbox — we're looking forward to {agent_name}'s first connection.",
+        message=f"Registration successful! Please check your email — we're looking forward to {agent_name}'s first connection.",
     )
 
 
@@ -549,8 +555,8 @@ async def agent_credentials_recovery(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "No stored credential copy is available for this account. "
-                "Use POST /v2/faq/agent-token-reset with the same email, agent_name, and "
-                "application reason you used at registration to issue a new token."
+                "Use POST /v2/faq/agent-token-reset with the same email, display name field "
+                "(agent_name), and application reason you used at registration to issue a new token."
             ),
         )
 
@@ -605,12 +611,13 @@ async def agent_credentials_recovery(
     body_text = (
         f"Hello {agent.agent_name},\n\n"
         f"This is another copy of your ZenHeart agent credentials. Your token has NOT been changed.\n\n"
-        f"agent_id: {agent.agent_id}\n"
-        f"token:    {token}\n\n"
+        f"Store these exact credential names in agent memory:\n"
+        f"ZENLINK_AGENT_ID={agent.agent_id}\n"
+        f"ZENLINK_TOKEN={token}\n\n"
         f"WebSocket: {(ws_hint + '/v2/agent/ws') if ws_hint else 'wss://<your-host>/v2/agent/ws'}\n"
-        f'First message: {{"type":"auth","agent_id":"{agent.agent_id}","token":"<your token>"}}\n\n'
+        f'First message maps them to JSON: {{"type":"auth","agent_id":"{agent.agent_id}","token":"<ZENLINK_TOKEN>"}}\n\n'
         f"Reference docs: {faq_url}\n\n"
-        f"SECURITY WARNING: Keep this email confidential. Never share your token.\n"
+        f"SECURITY WARNING: Keep this email confidential. Never share ZENLINK_TOKEN.\n"
     )
 
     ok, msg, _mid = await smtp.send_email(
@@ -642,7 +649,7 @@ async def agent_credentials_recovery(
         ok=True,
         message=(
             "Credential email has been sent to this address with your current token "
-            "(unchanged). Check inbox and spam."
+            "(unchanged). Check your email, including spam."
         ),
     )
 
@@ -654,7 +661,7 @@ async def agent_token_reset(
     session: DbSession,
     settings: SettingsDep,
 ) -> AgentTokenResetResponse:
-    """Issue a new token when email + agent_name + reason all match an active agent."""
+    """Issue a new token when email + display name + reason all match an active agent."""
     email_norm = str(body.email).strip().lower()
     agent_name = body.agent_name.strip()
     reason_norm = body.reason.strip()
@@ -673,7 +680,7 @@ async def agent_token_reset(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
-                "No active agent matches the combination of email, agent name, and application reason. "
+                "No active agent matches the combination of email, display name, and application reason. "
                 "Values must match your self-service registration exactly (including the reason text)."
             ),
         )
@@ -705,7 +712,7 @@ async def agent_token_reset(
         ensure_ascii=False,
     )
     faq_url = (settings.public_site_base_url or "https://zenheart.net").rstrip("/") + "/#/faq"
-    subject = f"[ZenHeart] {agent.agent_name} — new agent token"
+    subject = f"[ZenHeart] {agent.agent_name} — new token"
     try:
         body_html = tmpl.render_template(
             "agent_credentials.html",
@@ -731,12 +738,13 @@ async def agent_token_reset(
         f"Hello {agent.agent_name},\n\n"
         f"A new token was issued after verifying your registration details. "
         f"Your previous token is no longer valid.\n\n"
-        f"agent_id: {agent.agent_id}\n"
-        f"token:    {new_token}\n\n"
+        f"Store these exact credential names in agent memory:\n"
+        f"ZENLINK_AGENT_ID={agent.agent_id}\n"
+        f"ZENLINK_TOKEN={new_token}\n\n"
         f"WebSocket: {(ws_hint + '/v2/agent/ws') if ws_hint else 'wss://<your-host>/v2/agent/ws'}\n"
-        f'First message: {{"type":"auth","agent_id":"{agent.agent_id}","token":"<your token>"}}\n\n'
+        f'First message maps them to JSON: {{"type":"auth","agent_id":"{agent.agent_id}","token":"<ZENLINK_TOKEN>"}}\n\n'
         f"Reference docs: {faq_url}\n\n"
-        f"SECURITY WARNING: Keep this email confidential. Never share your token.\n"
+        f"SECURITY WARNING: Keep this email confidential. Never share ZENLINK_TOKEN.\n"
     )
 
     ok, msg, _mid = await smtp.send_email(
@@ -775,12 +783,12 @@ async def agent_token_reset(
         )
 
     if not ok:
-        logger.error("Agent token reset email failed for %s: %s", email_norm, msg)
+        logger.error("Token reset email failed for %s: %s", email_norm, msg)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
                 "A new token is already active in the database but the email could not be sent. "
-                "Contact support with this email and agent name."
+                "Contact support with this email and display name."
             ),
         )
 

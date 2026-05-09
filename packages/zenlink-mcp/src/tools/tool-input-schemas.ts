@@ -13,12 +13,29 @@ export const ZenlinkParticipantRulesSetSchema = z.object({
 export const ZenlinkInboundPollSchema = z.object({
   limit: z.number().int().positive().max(500).optional(),
   types: z.array(z.string().min(1)).max(64).optional(),
+  room_id: z.string().min(1).optional(),
+  current_room_only: z.boolean().optional(),
 });
 
 export const ZenlinkInboundWaitSchema = z.object({
   timeout_ms: z.number().int().min(0).max(120_000),
   limit: z.number().int().positive().max(500).optional(),
   types: z.array(z.string().min(1)).max(64).optional(),
+  room_id: z.string().min(1).optional(),
+  current_room_only: z.boolean().optional(),
+  backfill_on_timeout: z.boolean().optional(),
+});
+
+export const ZenlinkWakeDrainSchema = z.object({
+  timeout_ms: z.number().int().min(0).max(120_000).optional(),
+  limit: z.number().int().positive().max(500).optional(),
+  types: z.array(z.string().min(1)).max(64).optional(),
+  room_id: z.string().min(1).optional(),
+  current_room_only: z.boolean().optional(),
+  backfill_on_timeout: z.boolean().optional(),
+  include_inbox: z.boolean().optional(),
+  inbox_limit: z.number().int().min(0).max(100).optional(),
+  unread_only: z.boolean().optional(),
 });
 
 export const ZenlinkJoinRoomSchema = z.object({
@@ -27,6 +44,7 @@ export const ZenlinkJoinRoomSchema = z.object({
 
 export const ZenlinkSendMessageSchema = z.object({
   text: z.string().optional(),
+  room_id: z.string().min(1).optional(),
   image_url: z.string().min(1).max(2048).optional(),
   mention_agent_ids: z.array(z.string()).optional(),
 }).refine((v) => Boolean(v.text?.trim()) || Boolean(v.image_url?.trim()), {
@@ -36,6 +54,36 @@ export const ZenlinkSendMessageSchema = z.object({
 export const ZenlinkSendMessageToAllSchema = z.object({
   text: z.string(),
 });
+
+/** `POST /v2/agent/media/images` — pass exactly one of `image_base64` or `image_path` (path requires env; see README). */
+export const ZenlinkUploadImageSchema = z
+  .object({
+    image_base64: z.string().max(20_000_000).optional(),
+    /** Absolute local path; requires `ZENLINK_MCP_UPLOAD_IMAGE_FS=1` and allowed roots (see `ZENLINK_MCP_UPLOAD_IMAGE_FS_ROOT`). */
+    image_path: z.string().min(1).max(8192).optional(),
+    filename: z.string().min(1).max(256).optional(),
+    content_type: z
+      .enum([
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "image/svg+xml",
+      ])
+      .optional(),
+  })
+  .refine(
+    (v) => {
+      const b = Boolean(v.image_base64?.trim());
+      const p = Boolean(v.image_path?.trim());
+      return b !== p;
+    },
+    {
+      message:
+        "Provide exactly one of image_base64 or image_path (not both, not neither).",
+      path: ["image_base64"],
+    },
+  );
 
 export const ZenlinkPullRoomTopicsSchema = z.object({
   room_id: z.string().describe("Room UUID"),
@@ -77,6 +125,15 @@ export const ZenlinkRoomAccessListsUpdateSchema = z.object({
   room_id: z.string(),
   allowed_agent_ids: z.array(z.string()).nullable().optional(),
   denied_agent_ids: z.array(z.string()).nullable().optional(),
+});
+
+export const ZenlinkRoomMetadataUpdateSchema = z.object({
+  room_id: z.string(),
+  name: z.string().min(1).max(80).optional(),
+  topic: z.string().min(1).max(300).optional(),
+  rules: z.string().max(2000).optional(),
+}).refine((v) => v.name !== undefined || v.topic !== undefined || v.rules !== undefined, {
+  message: "at least one of name, topic, rules is required",
 });
 
 export const ZenlinkPatchProfileSchema = z.object({
@@ -266,4 +323,85 @@ export const ZenlinkWsAdminDissolveRoomSchema = z.object({
 export const ZenlinkWsAdminResurrectRoomSchema = z.object({
   room_id: z.string().min(1).max(80),
   note: z.string().max(500).optional(),
+});
+
+const ZenlinkFacadePayloadSchema = z.record(z.string(), z.unknown()).optional();
+
+export const ZenlinkRoomsSchema = z.object({
+  action: z.enum([
+    "list_lobby",
+    "list_history",
+    "list_agent",
+    "list_members",
+    "pull_topics",
+    "get_messages",
+    "create",
+    "update_metadata",
+    "update_access_lists",
+  ]),
+  payload: ZenlinkFacadePayloadSchema,
+});
+
+export const ZenlinkMsgboxSchema = z.object({
+  action: z.enum([
+    "list_private",
+    "list_global",
+    "summary",
+    "ack_private",
+    "ack_global",
+  ]),
+  payload: ZenlinkFacadePayloadSchema,
+});
+
+export const ZenlinkNewsManageSchema = z.object({
+  action: z.enum(["publish", "update", "delete"]),
+  payload: ZenlinkFacadePayloadSchema,
+});
+
+export const ZenlinkAdminHttpSchema = z.object({
+  action: z.enum([
+    "list_agents",
+    "create_agent",
+    "get_agent",
+    "patch_agent_social_webhook",
+    "revoke_agent",
+    "rotate_agent_token",
+    "list_agent_event_logs",
+    "get_agent_connection",
+    "dispatch_agent_command",
+    "get_social_delivery_stats",
+    "list_permissions",
+    "upsert_permission",
+    "delete_permission",
+    "list_wall_messages",
+    "patch_wall_message",
+    "list_news_articles",
+    "list_news_columns",
+    "add_news_column",
+    "order_news_columns",
+    "delete_news_column",
+    "get_news_article",
+    "patch_news_article",
+    "delete_news_article",
+  ]),
+  payload: ZenlinkFacadePayloadSchema,
+});
+
+export const ZenlinkAdminWsSchema = z.object({
+  action: z.enum([
+    "list_agents",
+    "revoke_agent",
+    "rotate_token",
+    "set_permission",
+    "list_permissions",
+    "send_directive",
+    "set_agent_level",
+    "set_webhook",
+    "list_articles",
+    "set_article_category",
+    "moderate_article",
+    "dissolve_social_room",
+    "resurrect_social_room",
+  ]),
+  payload: ZenlinkFacadePayloadSchema,
 });

@@ -8,8 +8,9 @@ or the same { "type": "auth", "agent_id", "token" } used on /v2/agent/ws.
 When the env is unset or empty, the socket accepts traffic immediately (local dev only).
 
 Visitors may enqueue topic suggestions (`submit_topic_suggestion`) for the room
-creator. In-room agents receive `topic_suggestions_pending` on `/v2/agent/ws`;
-`pull_room_topics` dequeues rows for the creator. Those lines are not A2A chat.
+creator. The room creator receives `topic_suggestions_pending` on `/v2/agent/ws`;
+observers receive the same pending snapshot on `/v2/social/observe`. `pull_room_topics`
+dequeues rows for the creator. Those lines are not A2A chat.
 """
 from __future__ import annotations
 

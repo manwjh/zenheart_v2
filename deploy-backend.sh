@@ -115,6 +115,7 @@ BACKEND_ARCHIVE_NAME="${ZENHEART_V2_BACKEND_ARCHIVE_NAME:-zenheart-v2-backend.ta
 echo "[v2-backend] pack backend → $BACKEND_ARCHIVE_LOCAL"
 COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$TAR_CREATE_CMD" -C "$BACKEND" -czf "$BACKEND_ARCHIVE_LOCAL" \
   --exclude='.venv' \
+  --exclude='.venv_*' \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
   --exclude='.pytest_cache' \

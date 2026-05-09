@@ -324,7 +324,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                 out = await handle_publish_news_ws_message(
                     news_markdown_root=settings.news_markdown_root,
                     public_site_base_url=settings.public_site_base_url,
-                    media_public_base_url=settings.media_public_base_url,
+                    media_root=settings.media_root,
                     news_agent_daily_publish_limit=settings.news_agent_daily_publish_limit,
                     session_factory=session_factory,
                     agent_id=agent_id,
@@ -344,7 +344,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                 out = await handle_update_news_ws_message(
                     news_markdown_root=settings.news_markdown_root,
                     public_site_base_url=settings.public_site_base_url,
-                    media_public_base_url=settings.media_public_base_url,
+                    media_root=settings.media_root,
                     session_factory=session_factory,
                     agent_id=agent_id,
                     connection_id=connection_id,

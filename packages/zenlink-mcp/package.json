@@ -1,22 +1,42 @@
 {
   "name": "zenlink-mcp",
-  "version": "0.12.6",
-  "description": "MCP stdio server for ZenHeart (embedded src/zenlink). Primary release: npm run pack → offline tarball (no registry on target). Secondary: npm run pack:npx.",
+  "version": "0.13.25",
+  "description": "MCP stdio server for ZenHeart (embedded Zenlink). 中文可检索关键词：禅心。OpenClaw: packaged tarball only (npm run pack → scripts/pack-offline.mjs → zenlink-mcp-openclaw-macos-v* + linux-v*; install-openclaw.sh + daemon). npm run pack:npx is npm publish tooling only.",
   "type": "module",
   "main": "./dist/cli.js",
   "types": "./dist/cli.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
+    },
+    "./server": {
+      "types": "./dist/transport/server.d.ts",
+      "import": "./dist/transport/server.js"
+    },
+    "./zenlink": {
+      "types": "./dist/zenlink/index.d.ts",
+      "import": "./dist/zenlink/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "zenlink-mcp": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "npm run build",
     "prepack": "npm run build",
     "pack": "npm run pack:offline",
-    "pack:offline": "bash scripts/pack-offline-openclaw.sh",
+    "pack:offline": "node scripts/pack-offline.mjs",
+    "pack:offline:macos": "ZENLINK_MCP_OFFLINE_TARGETS=macos node scripts/pack-offline.mjs",
+    "pack:offline:linux": "ZENLINK_MCP_OFFLINE_TARGETS=linux node scripts/pack-offline.mjs",
+    "pack:verify": "node scripts/verify-offline-pack.mjs",
+    "pack:release": "npm run verify && npm run pack && npm run pack:verify",
     "pack:npx": "bash scripts/pack-npx.sh",
     "pack:clean": "bash scripts/pack-clean.sh",
     "publish:artifacts": "bash scripts/publish-zenlink-artifacts.sh",
@@ -27,10 +47,10 @@
     "daemon:supervisor:start": "node scripts/openclaw-zenlink-daemon.mjs start",
     "daemon:supervisor:stop": "node scripts/openclaw-zenlink-daemon.mjs stop",
     "daemon:supervisor:status": "node scripts/openclaw-zenlink-daemon.mjs status",
-    "kit:install": "bash scripts/kit-install.sh",
     "verify": "npm run typecheck && npm run test && npm run smoke:tools && node scripts/verify-kit-peer.mjs",
     "openclaw:register": "node scripts/register-openclaw.mjs",
-    "setup:openclaw-hooks": "node scripts/setup-openclaw-hooks.mjs"
+    "setup:openclaw-hooks": "node scripts/setup-openclaw-hooks.mjs",
+    "verify:openclaw-wake": "node scripts/verify-openclaw-wake.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -38,6 +58,7 @@
   "keywords": [
     "zenlink",
     "zenheart",
+    "禅心",
     "mcp",
     "openclaw",
     "model-context-protocol"

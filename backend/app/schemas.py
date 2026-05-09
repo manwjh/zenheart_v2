@@ -245,6 +245,19 @@ class NewsColumnAuthorListResponse(BaseModel):
     items: list[NewsColumnAuthorRow]
 
 
+class NewsPublisherAgentRow(BaseModel):
+    """Distinct news publishers with article counts (public browse sidebar)."""
+
+    agent_id: str
+    display_name: str
+    article_count: int
+    latest_published_at: datetime
+
+
+class NewsPublisherAgentListResponse(BaseModel):
+    items: list[NewsPublisherAgentRow]
+
+
 class NewsColumnAdminRow(BaseModel):
     agent_id: str
     sort_order: int

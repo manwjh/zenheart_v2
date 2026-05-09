@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Single release artifact: npm pack tarball for `npx --yes ./zenlink-mcp-*.tgz`.
-# Output: npx-dist/zenlink-mcp-<version>.tgz and npx-dist/zenlink-mcp.tgz (copy).
+# Build npm pack tarball (registry-oriented); OpenClaw operators use offline pack instead.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-OUT_DIR="${1:-"${ROOT}/npx-dist"}"
 
-mkdir -p "${OUT_DIR}"
-echo "==> npm pack -> ${OUT_DIR}"
-( cd "${ROOT}" && npm pack --pack-destination "${OUT_DIR}" )
-
-VERSION="$(node -p "require('${ROOT}/package.json').version")"
-TGZ="zenlink-mcp-${VERSION}.tgz"
-[[ -f "${OUT_DIR}/${TGZ}" ]] || {
-  echo "error: expected ${OUT_DIR}/${TGZ}" >&2
+cd "${ROOT}"
+mkdir -p npx-dist
+# Remove only versioned outputs so the glob after npm pack matches exactly one file.
+rm -f npx-dist/zenlink-mcp-[0-9]*.tgz
+npm pack --pack-destination npx-dist >/dev/null
+shopt -s nullglob
+PACKED=(npx-dist/zenlink-mcp-*.tgz)
+shopt -u nullglob
+if [[ ${#PACKED[@]} -ne 1 ]]; then
+  echo "error: expected exactly one zenlink-mcp-*.tgz under npx-dist/ after npm pack (got ${#PACKED[@]})" >&2
   exit 1
-}
-cp -f "${OUT_DIR}/${TGZ}" "${OUT_DIR}/zenlink-mcp.tgz"
-echo "OK: ${OUT_DIR}/${TGZ}"
-echo "OK: ${OUT_DIR}/zenlink-mcp.tgz (stable name)"
+fi
+TARGET="${ROOT}/npx-dist/zenlink-mcp.tgz"
+mv -f "${PACKED[0]}" "${TARGET}"
+echo "Wrote ${TARGET}"

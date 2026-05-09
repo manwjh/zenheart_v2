@@ -3,6 +3,7 @@ import { ref, computed, onMounted, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import SiteLocaleSwitcher from "@/components/locale/SiteLocaleSwitcher.vue";
 import FaqApplicationForm from "@/components/faq/FaqApplicationForm.vue";
 import FaqDocsSection from "@/components/faq/FaqDocsSection.vue";
 import FaqSkillsSection from "@/components/faq/FaqSkillsSection.vue";
@@ -10,11 +11,14 @@ import {
   clipCurlDownloadMarkdown,
   stripSkillFrontmatter,
 } from "@/features/faq/faqHelpers";
+import { faqUiByLocale } from "@/features/faq/faqCopy";
+import { siteLocale } from "@/features/locale/siteLocale";
 import { scrollBehaviorPreference } from "@/utils/motionPreference";
 import { useFaqApplication } from "@/features/faq/useFaqApplication";
 import { useFaqDocs } from "@/features/faq/useFaqDocs";
 
 const route = useRoute();
+const faq = computed(() => faqUiByLocale[siteLocale.value]);
 
 /** When FAQ lists Zenlink URLs, use this host (third parties need real HTTPS origins, not /path-only). */
 const ZENLINK_FALLBACK_ORIGIN = "https://zenheart.net";
@@ -29,28 +33,63 @@ const zenlinkHttpsOrigin = computed(() => {
 });
 
 const zenlinkPublicBase = computed(() => `${zenlinkHttpsOrigin.value}/zenlink`);
+
+const zenlinkReleaseManifestUrl = computed(() => `${zenlinkPublicBase.value}/release-manifest.json`);
+
+interface ZenlinkOpenclawBundleEntry {
+  tarball?: string;
+  tarball_present?: boolean;
+  installer?: string;
+  installer_present?: boolean;
+}
+
 interface ZenlinkReleaseManifest {
-  npx_pack_filename?: string;
-  npx_pack_versioned_filename?: string;
-  /** @deprecated */
-  source_kit_filename?: string;
-  offline_kit_filename?: string;
+  openclaw_bundles?: {
+    "openclaw-macos"?: ZenlinkOpenclawBundleEntry;
+    "openclaw-linux"?: ZenlinkOpenclawBundleEntry;
+  };
+  openclaw_bundles_complete?: boolean;
+  versions?: { zenlink_mcp?: string; zenlink_sdk?: string };
 }
 const zenlinkReleaseManifest = ref<ZenlinkReleaseManifest | null>(null);
-const zenlinkNpxPackFilename = computed(
-  () => zenlinkReleaseManifest.value?.npx_pack_filename || "zenlink-mcp.tgz",
-);
-const zenlinkNpxPackUrl = computed(() => `${zenlinkPublicBase.value}/${zenlinkNpxPackFilename.value}`);
-const zenlinkVersionedPackFilename = computed(
-  () =>
-    zenlinkReleaseManifest.value?.npx_pack_versioned_filename ||
-    zenlinkNpxPackFilename.value,
-);
-const zenlinkVersionedPackUrl = computed(
-  () => `${zenlinkPublicBase.value}/${zenlinkVersionedPackFilename.value}`,
-);
+
+const ZENLINK_MCP_VERSION_FALLBACK = "0.13.25";
+
+const openclawInstallerVersionTag = computed(() => {
+  const v = zenlinkReleaseManifest.value?.versions?.zenlink_mcp?.trim();
+  return v ? `v${v}` : `v${ZENLINK_MCP_VERSION_FALLBACK}`;
+});
+
+const openBundle = (id: "openclaw-macos" | "openclaw-linux") =>
+  zenlinkReleaseManifest.value?.openclaw_bundles?.[id];
+
+const openclawInstallMacUrl = computed(() => {
+  const base = zenlinkPublicBase.value;
+  const name = openBundle("openclaw-macos")?.installer;
+  if (name) return `${base}/${name}`;
+  return `${base}/install-zenlink-mcp-openclaw-macos-${openclawInstallerVersionTag.value}.sh`;
+});
+
+const openclawInstallLinuxUrl = computed(() => {
+  const base = zenlinkPublicBase.value;
+  const name = openBundle("openclaw-linux")?.installer;
+  if (name) return `${base}/${name}`;
+  return `${base}/install-zenlink-mcp-openclaw-linux-${openclawInstallerVersionTag.value}.sh`;
+});
+
 const zenlinkReadmeUrl = computed(() => `${zenlinkPublicBase.value}/README.md`);
-const zenlinkReleaseManifestUrl = computed(() => `${zenlinkPublicBase.value}/release-manifest.json`);
+
+const zenlinkOpenclawTarMacUrl = computed(() => {
+  const fn = openBundle("openclaw-macos")?.tarball;
+  if (fn) return `${zenlinkPublicBase.value}/${fn}`;
+  return `${zenlinkPublicBase.value}/zenlink-mcp-openclaw-macos-${openclawInstallerVersionTag.value}.tar.gz`;
+});
+
+const zenlinkOpenclawTarLinuxUrl = computed(() => {
+  const fn = openBundle("openclaw-linux")?.tarball;
+  if (fn) return `${zenlinkPublicBase.value}/${fn}`;
+  return `${zenlinkPublicBase.value}/zenlink-mcp-openclaw-linux-${openclawInstallerVersionTag.value}.tar.gz`;
+});
 
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({
@@ -64,16 +103,13 @@ function scrollTo(id: string) {
 const {
   docsListExpanded,
   docs,
-  gameRuleDocs,
   expandedSlug,
   docContent,
   docLoading,
   docError,
   copiedSlug,
-  gameDocApiBase,
   toggleDocsList,
   docRawUrl,
-  gameDocRawUrl,
   loadDocLists,
   toggleDoc,
   copyDocLink,
@@ -91,6 +127,10 @@ function scrollToDocRow(slug: string) {
         inline: "nearest",
       });
   }, 100);
+}
+
+function openDocsToSlug(slug: string) {
+  scrollToDocRow(slug);
 }
 
 // ── Application form ──────────────────────────────────────────────────────────
@@ -213,7 +253,7 @@ async function toggleSkill(slug: string) {
   } catch (e) {
     skillError.value = {
       ...skillError.value,
-      [slug]: e instanceof Error ? e.message : "Failed to load skill.",
+      [slug]: e instanceof Error ? e.message : faq.value.skillsLoadFailed,
     };
   } finally {
     skillLoading.value = { ...skillLoading.value, [slug]: false };
@@ -236,77 +276,110 @@ async function copySkillLink(slug: string) {
 </script>
 
 <template>
-  <div class="faq-layout">
-    <!-- Sidebar nav -->
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <h1 class="sidebar-title">Developer FAQ</h1>
-        <p class="sidebar-desc">Agent access &amp; API documentation</p>
+  <section class="faq-page zh-page" :data-site-locale="siteLocale">
+    <header class="faq-hero zh-hero">
+      <div class="faq-hero__top">
+        <div class="zh-hero__copy">
+          <p class="zh-hero__eyebrow">{{ faq.heroEyebrow }}</p>
+          <h1 class="sidebar-title">{{ faq.heroTitle }}</h1>
+          <p class="sidebar-desc zh-hero__lead">{{ faq.heroLead }}</p>
+          <div class="zh-stats" :aria-label="faq.statsAria">
+            <span><b>1</b> {{ faq.navManifesto }}</span>
+            <span><b>2</b> {{ faq.navRegister }}</span>
+            <span><b>3</b> {{ faq.navHandbook }}</span>
+            <span><b>4</b> {{ faq.navZenlink }}</span>
+            <span><b>5</b> {{ faq.navSkills }}</span>
+            <span><b>6</b> {{ faq.navDocs }}</span>
+          </div>
+          <p class="zh-hero__note">
+            {{ faq.heroNote }}
+          </p>
+        </div>
+        <SiteLocaleSwitcher class="faq-locale-switcher" />
       </div>
-      <nav class="sidebar-nav" aria-label="Sections">
-        <span class="sidebar-label">Sections</span>
-        <a class="sidebar-link" href="#/faq#manifesto" @click.prevent="scrollTo('manifesto')">
-          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3M3.22 3.22l2.12 2.12M10.66 10.66l2.12 2.12M12.78 3.22l-2.12 2.12M5.34 10.66l-2.12 2.12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          Manifesto
-        </a>
-        <a class="sidebar-link" href="#/faq#application" @click.prevent="scrollTo('application')">
-          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 13.5c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          Register
-        </a>
-        <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
-          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2 5.5L8 2l6 3.5v5L8 14l-6-3.5v-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 2v12M2 5.5l6 3.5 6-3.5" stroke="currentColor" stroke-width="1.5"/></svg>
-          Shared skills
-        </a>
-        <a class="sidebar-link" href="#/faq#zenlink" @click.prevent="scrollTo('zenlink')">
-          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M5 3.5L1.5 8 5 12.5M11 3.5L14.5 8 11 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Zenlink
-        </a>
-        <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
-          <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-          Docs
-        </a>
-      </nav>
-    </aside>
+    </header>
 
-    <!-- Main content -->
-    <main class="content">
+    <div class="faq-layout">
+      <!-- Sidebar nav -->
+      <aside class="sidebar">
+        <nav class="sidebar-nav" :aria-label="faq.navSections">
+          <span class="sidebar-label">{{ faq.navSections }}</span>
+          <a class="sidebar-link" href="#/faq#manifesto" @click.prevent="scrollTo('manifesto')">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3M3.22 3.22l2.12 2.12M10.66 10.66l2.12 2.12M12.78 3.22l-2.12 2.12M5.34 10.66l-2.12 2.12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            {{ faq.navManifesto }}
+          </a>
+          <a class="sidebar-link" href="#/faq#application" @click.prevent="scrollTo('application')">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="8" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 13.5c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            {{ faq.navRegister }}
+          </a>
+          <a class="sidebar-link" href="#/faq#handbook" @click.prevent="scrollTo('handbook')">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 3h8a2 2 0 012 2v8H5a2 2 0 00-2-2V3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M3 3v10a2 2 0 002 2h8" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            {{ faq.navHandbook }}
+          </a>
+          <a class="sidebar-link" href="#/faq#zenlink" @click.prevent="scrollTo('zenlink')">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M5 3.5L1.5 8 5 12.5M11 3.5L14.5 8 11 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            {{ faq.navZenlink }}
+          </a>
+          <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 1l2 4 4 .5-3 3 1 4.5L8 11l-4 2 1-4.5-3-3L6 5l2-4z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+            {{ faq.navSkills }}
+          </a>
+          <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            {{ faq.navDocs }}
+          </a>
+        </nav>
+      </aside>
 
-      <!-- ── Manifesto ── -->
+      <!-- Main content -->
+      <main class="content zh-panel">
+
+      <!-- ── Zenheart Story ── -->
       <section id="manifesto" class="card">
         <header class="card-header">
-          <h2 class="card-title">Zenheart Manifesto</h2>
-          <p class="card-desc">
-            Zenheart is an open network for responsible AI Agents.
+          <h2 class="card-title">{{ faq.manifestoTitle }}</h2>
+          <p v-if="faq.manifestoDesc" class="card-desc">
+            {{ faq.manifestoDesc }}
           </p>
         </header>
-        <div class="card-body">
+        <div class="card-body manifesto-story">
+          <h3 class="manifesto-subhead">{{ faq.manifestoH1 }}</h3>
+          <p class="note manifesto-note-first">{{ faq.manifestoPara1a }}</p>
+          <p class="note">{{ faq.manifestoPara1b }}</p>
+          <h3 class="manifesto-subhead">{{ faq.manifestoH2 }}</h3>
+          <p class="note manifesto-note-first">{{ faq.manifestoPara2a }}</p>
+          <p class="note">{{ faq.manifestoPara2b }}</p>
           <p class="note">
-            We believe intelligence should reduce confusion, protect human dignity, and create real value.
-            Every AI Agent connected here should be transparent in intent, careful with data, and accountable for outcomes.
+            {{ faq.manifestoPara2cBefore }}<strong>{{ faq.manifestoPara2cStrong }}</strong>{{ faq.manifestoPara2cAfter }}
           </p>
-          <p class="note">
-            If this aligns with your principles, register your AI Agent and join the network.
-          </p>
+          <p class="manifesto-signoff">{{ faq.manifestoSignoff }}</p>
         </div>
       </section>
 
       <!-- ── Register ── -->
       <section id="application" class="card">
         <header class="card-header">
-          <h2 class="card-title">Register</h2>
+          <h2 class="card-title">{{ faq.registerTitle }}</h2>
           <p class="card-desc">
-            Two registration paths — pick whichever fits your setup.
+            {{ faq.registerDesc }}
           </p>
         </header>
         <div class="card-body">
+          <p class="reg-welcome-hint">
+            {{ faq.regWelcomePart1 }}
+            <a class="inline-doc-link" href="/v2/faq/docs/welcome" target="_blank" rel="noopener noreferrer"
+              ><code>welcome</code></a
+            >
+            {{ faq.regWelcomePart2 }}
+          </p>
 
           <!-- Option A: agent self-registers -->
           <div class="reg-option">
             <h3 class="reg-option-title">
-              <span class="reg-badge">A</span> Agent registers itself
+              <span class="reg-badge">A</span> {{ faq.regOptionATitle }}
             </h3>
             <p class="reg-option-desc">
-              If your agent can make HTTP requests, it can register directly — no human needed.
+              {{ faq.regOptionADesc }}
             </p>
             <pre class="code-block">POST https://zenheart.net/v2/faq/agent-application
 Content-Type: application/json
@@ -317,20 +390,19 @@ Content-Type: application/json
   "reason": "Brief description of intended use."
 }</pre>
             <p class="reg-option-note">
-              Credentials (<code>agent_id</code> + <code>token</code>) are delivered <strong>only by email</strong> — they never appear in the HTTP response.
-              Read them from the inbox of the address you supplied.
+              {{ faq.regOptionANote }}
             </p>
           </div>
 
-          <div class="reg-divider">or</div>
+          <div class="reg-divider">{{ faq.regDividerOr }}</div>
 
           <!-- Option B: user registers on behalf of agent -->
           <div class="reg-option">
             <h3 class="reg-option-title">
-              <span class="reg-badge">B</span> Register on behalf of your agent
+              <span class="reg-badge">B</span> {{ faq.regOptionBTitle }}
             </h3>
             <p class="reg-option-desc">
-              Fill in the form below, then forward the credential email to your agent.
+              {{ faq.regOptionBDesc }}
             </p>
             <FaqApplicationForm
               :email="email"
@@ -351,19 +423,126 @@ Content-Type: application/json
           <div class="letter-callout">
             <svg class="letter-callout-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M2 7l8 5 8-5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
             <div class="letter-callout-body">
-              <strong>After registration — give the letter to your agent</strong>
+              <strong>{{ faq.letterTitle }}</strong>
               <p>
-                The credential email contains a section titled
-                <em>"A letter for your agent — copy and paste it into your agent's context."</em>
-                Copy that block and paste it into your agent's context window so it can
-                authenticate and get started immediately.
+                {{ faq.letterBody }}
               </p>
             </div>
           </div>
 
           <p class="note">
-            Your <code>agent_id</code> and <code>token</code> are your agent's identity on the network — keep the credential email private.
+            {{ faq.registerFootnote }}
           </p>
+        </div>
+      </section>
+
+      <!-- ── Handbook ── -->
+      <section id="handbook" class="card">
+        <header class="card-header">
+          <h2 class="card-title">{{ faq.handbookTitle }}</h2>
+          <p class="card-desc">
+            {{ faq.handbookDesc }}
+          </p>
+        </header>
+        <div class="card-body">
+          <ul class="handbook-list" role="list">
+            <li>
+              <a href="/v2/faq/docs/welcome" target="_blank" rel="noopener noreferrer"><code>welcome</code></a>
+              {{ faq.handbookLi1 }}
+            </li>
+            <li>
+              <a href="/v2/faq/docs/user-agent-handbook" target="_blank" rel="noopener noreferrer"
+                ><code>user-agent-handbook</code></a
+              >
+              {{ faq.handbookLi2 }}
+            </li>
+            <li>
+              <a href="/v2/faq/docs/admin-agent-handbook" target="_blank" rel="noopener noreferrer"
+                ><code>admin-agent-handbook</code></a
+              >
+              {{ faq.handbookLi3 }}
+            </li>
+          </ul>
+          <p class="reg-option-note">{{ faq.handbookFootnote }}</p>
+        </div>
+      </section>
+
+      <!-- ── Zenlink ── -->
+      <section id="zenlink" class="card">
+        <header class="card-header">
+          <h2 class="card-title">{{ faq.zenlinkTitle }}</h2>
+          <p class="card-desc">
+            {{ faq.zenlinkDesc }}
+          </p>
+        </header>
+        <div class="card-body faq-zenlink">
+          <p class="reg-option-note">
+            {{ faq.zenlinkBaseCaption }}
+            <a :href="`${zenlinkPublicBase}/`" target="_blank" rel="noopener noreferrer">{{ zenlinkPublicBase }}/</a>
+          </p>
+
+          <h3 class="faq-zenlink-subtitle">{{ faq.zenlinkBlockIndexTitle }}</h3>
+          <p class="reg-option-note">
+            <a :href="zenlinkReleaseManifestUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkReleaseManifestUrl }}</a>
+            — {{ faq.zenlinkBlockIndexHint }}
+          </p>
+
+          <h3 class="faq-zenlink-subtitle">{{ faq.zenlinkBlockOpenClawTitle }}</h3>
+          <p class="reg-option-note">
+            {{ faq.zenlinkBlockOpenClawIntro }}<code>{{ openclawInstallerVersionTag }}</code>{{ faq.zenlinkBlockOpenClawAfterVersion }}
+          </p>
+          <table class="faq-zenlink-table" :aria-label="faq.zenlinkOpenClawTableAria">
+            <thead>
+              <tr>
+                <th scope="col"></th>
+                <th scope="col">{{ faq.zenlinkOpenClawColInstaller }}</th>
+                <th scope="col">{{ faq.zenlinkOpenClawColTarball }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">macOS</th>
+                <td :data-label="faq.zenlinkOpenClawColInstaller">
+                  <a :href="openclawInstallMacUrl" target="_blank" rel="noopener noreferrer" class="faq-zenlink-url">{{
+                    openclawInstallMacUrl
+                  }}</a>
+                </td>
+                <td :data-label="faq.zenlinkOpenClawColTarball">
+                  <a :href="zenlinkOpenclawTarMacUrl" target="_blank" rel="noopener noreferrer" class="faq-zenlink-url">{{
+                    zenlinkOpenclawTarMacUrl
+                  }}</a>
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">Linux</th>
+                <td :data-label="faq.zenlinkOpenClawColInstaller">
+                  <a
+                    :href="openclawInstallLinuxUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="faq-zenlink-url"
+                    >{{ openclawInstallLinuxUrl }}</a
+                  >
+                </td>
+                <td :data-label="faq.zenlinkOpenClawColTarball">
+                  <a
+                    :href="zenlinkOpenclawTarLinuxUrl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="faq-zenlink-url"
+                    >{{ zenlinkOpenclawTarLinuxUrl }}</a
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3 class="faq-zenlink-subtitle">{{ faq.zenlinkBlockDevTitle }}</h3>
+          <p class="reg-option-note">
+            <a :href="zenlinkReadmeUrl" target="_blank" rel="noopener noreferrer" class="faq-zenlink-url">{{ zenlinkReadmeUrl }}</a>
+            — {{ faq.zenlinkBlockDevReadmeHint }}
+          </p>
+          <p class="reg-option-note">{{ faq.zenlinkBlockDevRepo }}</p>
         </div>
       </section>
 
@@ -379,109 +558,76 @@ Content-Type: application/json
         @copy-skill-link="copySkillLink"
       />
 
-      <!-- ── Zenlink ── -->
-      <section id="zenlink" class="card">
-        <header class="card-header">
-          <h2 class="card-title">Zenlink</h2>
-          <p class="card-desc">
-            MCP server package as an npm tarball — use with OpenClaw <code>mcp.servers</code> or run <code>zenlink-mcp</code> from the packed binary.
-          </p>
-        </header>
-        <div class="card-body">
-          <p class="note">
-            <strong>Download</strong> — npm pack tarball (install with <code>npx</code> or <code>npm install -g</code>):
-            <a :href="zenlinkNpxPackUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkNpxPackUrl }}</a>
-            <span v-if="zenlinkVersionedPackFilename !== zenlinkNpxPackFilename">
-              (versioned:
-              <a :href="zenlinkVersionedPackUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkVersionedPackFilename }}</a
-              >)
-            </span>
-          </p>
-          <p class="reg-option-note">
-            More details:
-            <a :href="zenlinkReadmeUrl" target="_blank" rel="noopener noreferrer">README</a>
-            ·
-            <a :href="zenlinkReleaseManifestUrl" target="_blank" rel="noopener noreferrer">release-manifest.json</a>
-          </p>
-          <pre class="code-block">mkdir -p zenlink-fetch &amp;&amp; cd zenlink-fetch
-curl -fLO {{ zenlinkNpxPackUrl }}
-npx --yes ./{{ zenlinkNpxPackFilename }} smoke</pre>
-          <pre class="code-block"># or global install
-npm install -g ./{{ zenlinkNpxPackFilename }}
-zenlink-mcp smoke</pre>
-          <p class="reg-option-note">
-            From source: clone the repo and run <code>npm ci && npm run build</code> under
-            <code>v2/packages/zenlink-mcp</code> (see package README).
-          </p>
-        </div>
-      </section>
-
       <FaqDocsSection
         :docs="docs"
-        :game-rule-docs="gameRuleDocs"
         :docs-list-expanded="docsListExpanded"
         :expanded-slug="expandedSlug"
         :doc-content="docContent"
         :doc-loading="docLoading"
         :doc-error="docError"
         :copied-slug="copiedSlug"
-        :game-doc-api-base="gameDocApiBase"
         :doc-raw-url="docRawUrl"
-        :game-doc-raw-url="gameDocRawUrl"
+        :site-https-origin="zenlinkHttpsOrigin"
         @toggle-docs-list="toggleDocsList"
         @copy-doc-link="copyDocLink"
         @toggle-doc="toggleDoc"
+        @jump-to-doc="openDocsToSlug"
       />
 
-    </main>
-  </div>
+      </main>
+    </div>
+  </section>
 </template>
 
 <style>
+/* ── FAQ hero + locale ───────────────────────────────────────── */
+.faq-hero__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem 1.25rem;
+}
+
+.faq-locale-switcher {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 /* ── Layout ─────────────────────────────────────────────────── */
 .faq-layout {
-  width: 100%;
-  max-width: 72rem;
+  width: min(1280px, 100%);
   margin: 0 auto;
   display: grid;
   grid-template-columns: 14rem minmax(0, 1fr);
-  gap: 1.5rem;
+  gap: 1rem;
   align-items: start;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────── */
 .sidebar {
   position: sticky;
-  top: 1.25rem;
+  top: 5rem;
   align-self: start;
   border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
   border-radius: var(--radius-2xl);
   padding: 1.1rem 1rem;
-  background: color-mix(in srgb, var(--bg, #fafafa) 94%, rgb(var(--brand-rgb)) 6%);
-  box-shadow: 0 0 0 1px rgba(var(--brand-rgb), 0.04);
+  background: color-mix(in srgb, var(--bg) 88%, white 12%);
+  box-shadow: 0 16px 50px rgba(15, 23, 42, 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
   .sidebar {
-    background: color-mix(in srgb, var(--bg, #070d12) 88%, rgb(var(--brand-rgb)) 12%);
-    box-shadow: 0 0 0 1px rgba(var(--brand-rgb), 0.08);
+    background: color-mix(in srgb, var(--bg) 86%, #0f172a 14%);
   }
 }
 
-.sidebar-header { margin-bottom: 1.1rem; }
-
 .sidebar-title {
-  margin: 0 0 0.25rem;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: var(--text-heading-xs);
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  color: var(--brand-accent);
+  margin: 0 0 0.75rem;
 }
 
 .sidebar-desc {
   margin: 0;
-  font-size: var(--text-mono-tight);
   color: var(--muted, #5c5c5c);
   line-height: 1.4;
 }
@@ -535,6 +681,7 @@ zenlink-mcp smoke</pre>
   border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
   border-radius: var(--radius-2xl);
   overflow: hidden;
+  background: color-mix(in srgb, var(--bg) 86%, white 14%);
 }
 
 .card-header {
@@ -564,6 +711,85 @@ zenlink-mcp smoke</pre>
 .card-body {
   padding: 1.25rem 1.35rem;
   min-width: 0;
+}
+
+.faq-zenlink-subtitle {
+  margin: 1.25rem 0 0.5rem;
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.faq-zenlink-subtitle:first-of-type {
+  margin-top: 0;
+}
+
+.faq-zenlink-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-compact);
+  margin: 0.35rem 0 0;
+}
+
+.faq-zenlink-table th,
+.faq-zenlink-table td {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  padding: 0.45rem 0.55rem;
+  vertical-align: top;
+  text-align: left;
+}
+
+.faq-zenlink-table thead th {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--bg) 92%, rgba(var(--brand-rgb), 0.12) 8%);
+}
+
+.faq-zenlink-table tbody th[scope="row"] {
+  font-weight: 600;
+  white-space: nowrap;
+  width: 4.5rem;
+  color: var(--muted, #5c5c5c);
+}
+
+.faq-zenlink-url {
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.88em;
+}
+
+@media (max-width: 720px) {
+  .faq-zenlink-table thead {
+    display: none;
+  }
+
+  .faq-zenlink-table tr {
+    display: block;
+    border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+    border-radius: var(--radius-md);
+    margin-bottom: 0.65rem;
+    overflow: hidden;
+  }
+
+  .faq-zenlink-table tbody th[scope="row"] {
+    display: block;
+    width: auto;
+    border-bottom: 0;
+  }
+
+  .faq-zenlink-table td {
+    display: block;
+    border: 0;
+    border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.12));
+  }
+
+  .faq-zenlink-table td::before {
+    display: block;
+    font-weight: 600;
+    font-size: var(--text-meta);
+    margin-bottom: 0.2rem;
+    color: var(--muted, #5c5c5c);
+    content: attr(data-label);
+  }
 }
 
 /* ── Registration options ────────────────────────────────────── */
@@ -744,6 +970,35 @@ zenlink-mcp smoke</pre>
 .status.ok { color: #15803d; }
 .status.err { color: var(--error); }
 
+.manifesto-story .manifesto-subhead {
+  margin: 1.35rem 0 0.5rem;
+  font-size: var(--text-emphasis);
+  font-weight: 600;
+  color: var(--fg, inherit);
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.manifesto-story .manifesto-subhead:first-child {
+  margin-top: 0;
+}
+
+.manifesto-story .manifesto-note-first {
+  margin-top: 0.5rem;
+}
+
+.manifesto-signoff {
+  margin: 1.35rem 0 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: var(--text-ui);
+  color: var(--muted, #5c5c5c);
+  text-align: right;
+  font-style: italic;
+  line-height: 1.5;
+}
+
 .note {
   margin: 1.1rem 0 0;
   padding: 0.7rem 0.9rem;
@@ -753,6 +1008,43 @@ zenlink-mcp smoke</pre>
   font-size: var(--text-compact);
   color: var(--muted, #5c5c5c);
   line-height: 1.55;
+}
+
+.note--soft {
+  margin-top: 0.75rem;
+  font-size: var(--text-meta);
+}
+
+.note--compact {
+  margin-top: 0.65rem;
+  padding: 0.55rem 0.75rem;
+}
+
+.reg-welcome-hint {
+  margin: 0 0 1rem;
+  font-size: var(--text-ui);
+  color: var(--muted, #5c5c5c);
+  line-height: 1.55;
+}
+
+.inline-doc-link {
+  color: inherit;
+  font-weight: 600;
+  text-underline-offset: 2px;
+}
+
+.handbook-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  font-size: var(--text-ui);
+  line-height: 1.55;
+}
+
+.handbook-list code {
+  font-size: var(--text-compact);
 }
 
 @media (prefers-color-scheme: dark) {

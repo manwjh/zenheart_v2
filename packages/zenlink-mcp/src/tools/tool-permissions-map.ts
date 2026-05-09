@@ -7,6 +7,7 @@ export type ZenlinkToolPlane =
   | "transport"
   | "social_ws"
   | "social_http"
+  | "agent_http"
   | "msgbox_private"
   | "msgbox_global_sovereign"
   | "news_public_http"
@@ -45,6 +46,8 @@ const ZENLINK_TOOL_PERMISSION_ROWS_UNSORTED: readonly ZenlinkToolPermissionRow[]
     plane: "msgbox_global_sovereign",
     sovereignOnly: true,
   },
+  { tool: "zenlink_admin_http", plane: "admin_http", sovereignOnly: true },
+  { tool: "zenlink_admin_ws", plane: "admin_ws", sovereignOnly: true },
   { tool: "zenlink_connect", plane: "transport", sovereignOnly: false },
   {
     tool: "zenlink_create_room",
@@ -53,6 +56,7 @@ const ZENLINK_TOOL_PERMISSION_ROWS_UNSORTED: readonly ZenlinkToolPermissionRow[]
     permissionRef: { module: "social", action: "create_room" },
   },
   { tool: "zenlink_disconnect", plane: "transport", sovereignOnly: false },
+  { tool: "zenlink_doctor", plane: "transport", sovereignOnly: false },
   {
     tool: "zenlink_get_inbox",
     plane: "msgbox_private",
@@ -69,6 +73,11 @@ const ZENLINK_TOOL_PERMISSION_ROWS_UNSORTED: readonly ZenlinkToolPermissionRow[]
     sovereignOnly: false,
   },
   {
+    tool: "zenlink_msgbox",
+    plane: "msgbox_global_sovereign",
+    sovereignOnly: true,
+  },
+  {
     tool: "zenlink_get_room_messages",
     plane: "social_http",
     sovereignOnly: false,
@@ -76,6 +85,7 @@ const ZENLINK_TOOL_PERMISSION_ROWS_UNSORTED: readonly ZenlinkToolPermissionRow[]
   { tool: "zenlink_inbound_poll", plane: "transport", sovereignOnly: false },
   { tool: "zenlink_inbound_wait", plane: "transport", sovereignOnly: false },
   { tool: "zenlink_inbound_stats", plane: "transport", sovereignOnly: false },
+  { tool: "zenlink_wake_drain", plane: "transport", sovereignOnly: false },
   {
     tool: "zenlink_join_room",
     plane: "social_ws",
@@ -120,6 +130,11 @@ const ZENLINK_TOOL_PERMISSION_ROWS_UNSORTED: readonly ZenlinkToolPermissionRow[]
     sovereignOnly: false,
   },
   {
+    tool: "zenlink_news_manage",
+    plane: "news_agent_ws",
+    sovereignOnly: false,
+  },
+  {
     tool: "zenlink_news_publish",
     plane: "news_agent_ws",
     sovereignOnly: false,
@@ -144,6 +159,11 @@ const ZENLINK_TOOL_PERMISSION_ROWS_UNSORTED: readonly ZenlinkToolPermissionRow[]
   { tool: "zenlink_patch_profile", plane: "profile", sovereignOnly: false },
   {
     tool: "zenlink_pull_room_topics",
+    plane: "social_ws",
+    sovereignOnly: false,
+  },
+  {
+    tool: "zenlink_rooms",
     plane: "social_ws",
     sovereignOnly: false,
   },
@@ -188,6 +208,16 @@ const ZENLINK_TOOL_PERMISSION_ROWS_UNSORTED: readonly ZenlinkToolPermissionRow[]
   {
     tool: "zenlink_update_room_access_lists",
     plane: "social_ws",
+    sovereignOnly: false,
+  },
+  {
+    tool: "zenlink_update_room_metadata",
+    plane: "social_ws",
+    sovereignOnly: false,
+  },
+  {
+    tool: "zenlink_upload_image",
+    plane: "agent_http",
     sovereignOnly: false,
   },
   { tool: "zenlink_admin_create_agent", plane: "admin_http", sovereignOnly: true },
@@ -320,27 +350,26 @@ export const ZENLINK_MCP_TOOL_NAMES_SORTED: readonly string[] = Object.freeze(
  * Full toolset remains available via ZENLINK_MCP_TOOLSET=full.
  */
 export const ZENLINK_MCP_CORE_TOOL_NAMES: readonly string[] = Object.freeze([
-  "zenlink_ack_messages",
   "zenlink_connect",
   "zenlink_disconnect",
-  "zenlink_get_inbox",
-  "zenlink_get_inbox_summary",
-  "zenlink_get_room_messages",
+  "zenlink_doctor",
   "zenlink_inbound_poll",
   "zenlink_inbound_wait",
+  "zenlink_wake_drain",
   "zenlink_join_room",
-  "zenlink_list_room_members",
-  "zenlink_list_rooms_lobby",
   "zenlink_news_get",
   "zenlink_news_list",
-  "zenlink_news_publish",
+  "zenlink_news_manage",
   "zenlink_router_apply_result",
   "zenlink_router_pack_context",
+  "zenlink_msgbox",
+  "zenlink_rooms",
   "zenlink_send_dm",
   "zenlink_send_message",
   "zenlink_social_grounding",
   "zenlink_start_long_lived",
   "zenlink_status",
+  "zenlink_upload_image",
 ]);
 
 const CORE_SET = new Set(ZENLINK_MCP_CORE_TOOL_NAMES);

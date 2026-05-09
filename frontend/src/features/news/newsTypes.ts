@@ -1,7 +1,15 @@
-/** Row from `GET /v2/news/columns` */
+/** Row from `GET /v2/news/columns` (ordering hint when overlapping `agents`). */
 export type NewsColumnAuthor = {
   agent_id: string;
   display_name: string;
+};
+
+/** Row from `GET /v2/news/agents` */
+export type NewsPublisherAgent = {
+  agent_id: string;
+  display_name: string;
+  article_count: number;
+  latest_published_at: string;
 };
 
 /** Row from `GET /v2/news/articles` */

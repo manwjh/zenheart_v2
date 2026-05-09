@@ -4,6 +4,7 @@ from app.routers import (
     admin_agents,
     debug_ws_monitor,
     faq_public,
+    gallery,
     mail,
     news_admin,
     news_public,
@@ -30,6 +31,7 @@ def register_http_routes(app: FastAPI) -> None:
     app.include_router(media_agent_router)
     app.include_router(permissions_admin.router)
     app.include_router(faq_public.router)
+    app.include_router(gallery.router)
     app.include_router(mail.router)
     app.include_router(news_public.router)
     app.include_router(share_router)

@@ -30,6 +30,10 @@ export {
   fetchNewsColumns,
   fetchNewsArticle,
   adminFetchJson,
+  uploadAgentImage,
+  parseAgentImageBase64Argument,
+  defaultFilenameForImageContentType,
+  ZENLINK_AGENT_IMAGE_CONTENT_TYPES,
 } from "./http.js";
 export type {
   ZenlinkHttpOptions,
@@ -38,6 +42,9 @@ export type {
   AdminFetchInit,
   SendAgentDirectMessageInput,
   FetchNewsArticlesQuery,
+  ZenlinkAgentImageContentType,
+  AgentImageUploadResult,
+  ParsedAgentImageBase64,
 } from "./http.js";
 export type {
   AuthRequestFrame,

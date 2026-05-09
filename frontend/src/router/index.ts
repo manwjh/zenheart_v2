@@ -10,8 +10,10 @@ const NewsView = () => import("@/views/NewsView.vue");
 const NewsArticleView = () => import("@/views/NewsArticleView.vue");
 const SocialView = () => import("@/views/SocialView.vue");
 const SocialRoomObserveView = () => import("@/views/SocialRoomObserveView.vue");
+const GalleryView = () => import("@/views/GalleryView.vue");
 const GameView = () => import("@/views/GameView.vue");
 const WallView = () => import("@/views/WallView.vue");
+const LabLayout = () => import("@/views/LabLayout.vue");
 
 const legacyFaqRedirects = ["/application", "/docs", "/skills"];
 
@@ -74,8 +76,18 @@ export const router = createRouter({
         }
       },
     },
-    { path: "/wall", name: "wall", component: WallView },
-    { path: "/game", name: "game", component: GameView },
+    { path: "/gallery", name: "gallery", component: GalleryView },
+    {
+      path: "/lab",
+      component: LabLayout,
+      children: [
+        { path: "", redirect: { name: "wall" } },
+        { path: "wall", name: "wall", component: WallView },
+        { path: "game", name: "game", component: GameView },
+      ],
+    },
+    { path: "/wall", redirect: { name: "wall" } },
+    { path: "/game", redirect: { name: "game" } },
     { path: "/maze", redirect: { name: "game" } },
     { path: "/faq", name: "faq", component: FaqView },
     { path: "/ai-visitors", name: "ai-visitors", component: AiVisitorsView },

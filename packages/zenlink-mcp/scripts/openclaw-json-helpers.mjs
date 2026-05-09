@@ -7,6 +7,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+export const DEFAULT_ZENLINK_OPENCLAW_SESSION_KEY = "hook:zenheart-main";
+
 export function defaultOpenClawJsonPath() {
   const fromEnv =
     process.env.OPENCLAW_JSON ?? process.env.OPENCLAW_CONFIG_PATH ?? "";
@@ -17,7 +19,7 @@ export function defaultOpenClawJsonPath() {
 }
 
 /**
- * Build `http(s)://host:port/path` hook base (`…/hooks`). Must match MCP `wake` POST base minus `/wake`.
+ * Build `http(s)://host:port/path` hook base (`…/hooks`). The notifier posts to `${base}/agent`.
  *
  * Prefer OpenClaw `gateway` fields when present; override with env when tuning without editing JSON:
  * `ZENLINK_MCP_GATEWAY_PORT`, `ZENLINK_MCP_GATEWAY_HOST`, `ZENLINK_MCP_GATEWAY_TLS=1`.
@@ -89,6 +91,26 @@ export function hooksCompletenessIssues(cfg) {
   if (!tok) {
     issues.push("hooks.token missing or empty");
   }
+  const defaultSessionKey =
+    typeof h.defaultSessionKey === "string" ? h.defaultSessionKey.trim() : "";
+  const expectedSessionKey =
+    process.env.ZENLINK_MCP_OPENCLAW_SESSION_KEY?.trim() ||
+    DEFAULT_ZENLINK_OPENCLAW_SESSION_KEY;
+  if (!defaultSessionKey) {
+    issues.push("hooks.defaultSessionKey missing or empty");
+  } else if (defaultSessionKey !== expectedSessionKey) {
+    issues.push(`hooks.defaultSessionKey should be ${expectedSessionKey}`);
+  }
+  const expectedPrefix = sessionKeyPrefix(expectedSessionKey);
+  if (h.allowRequestSessionKey !== true) {
+    issues.push("hooks.allowRequestSessionKey should be true");
+  }
+  const prefixes = Array.isArray(h.allowedSessionKeyPrefixes)
+    ? h.allowedSessionKeyPrefixes.filter((value) => typeof value === "string")
+    : [];
+  if (!prefixes.includes(expectedPrefix)) {
+    issues.push(`hooks.allowedSessionKeyPrefixes should include ${expectedPrefix}`);
+  }
   return issues;
 }
 
@@ -118,6 +140,25 @@ export function applyDefaultOpenClawHooksToConfig(cfg, opts = {}) {
   if (rotateToken || !hadToken) {
     hooks.token = randomBytes(32).toString("hex");
   }
+  const sessionKey =
+    process.env.ZENLINK_MCP_OPENCLAW_SESSION_KEY?.trim() ||
+    DEFAULT_ZENLINK_OPENCLAW_SESSION_KEY;
+  hooks.defaultSessionKey = sessionKey;
+  hooks.allowRequestSessionKey = true;
+  const prefix = sessionKeyPrefix(sessionKey);
+  const existing = Array.isArray(hooks.allowedSessionKeyPrefixes)
+    ? hooks.allowedSessionKeyPrefixes.filter((value) => typeof value === "string")
+    : [];
+  if (!existing.includes(prefix)) {
+    existing.push(prefix);
+  }
+  hooks.allowedSessionKeyPrefixes = existing;
+}
+
+function sessionKeyPrefix(sessionKey) {
+  const index = sessionKey.indexOf(":");
+  if (index < 0) return `${sessionKey}:`;
+  return sessionKey.slice(0, index + 1);
 }
 
 /**
@@ -186,20 +227,20 @@ export function readModifyWriteOpenClawHooks(jsonPath, opts = {}) {
   return { ok: true, jsonPath, cfg, hookBase, rotated };
 }
 
-/** Full **`POST`** URL for **`/hooks/wake`** ( **`hookBase`** is **`…/hooks`** without trailing slash ok). */
-export function openClawHookWakeUrl(hookBase) {
+/** Full **`POST`** URL for **`/hooks/agent`** ( **`hookBase`** is **`…/hooks`** without trailing slash ok). */
+export function openClawHookAgentUrl(hookBase) {
   const b = String(hookBase).replace(/\/$/, "");
-  return `${b}/wake`;
+  return `${b}/agent`;
 }
 
 /**
- * **`POST`** wake probe toward OpenClaw Gateway (Node 18+ **`fetch`**).
+ * **`POST`** agent hook probe toward OpenClaw Gateway (Node 18+ **`fetch`**).
  *
  * @param {string} hookBase Derived base like **`http://127.0.0.1:18789/hooks`**
  * @param {string} token Same as **`hooks.token`**
  */
-export async function probeOpenClawHookWake(hookBase, token) {
-  const url = openClawHookWakeUrl(hookBase);
+export async function probeOpenClawHookAgent(hookBase, token) {
+  const url = openClawHookAgentUrl(hookBase);
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -207,8 +248,11 @@ export async function probeOpenClawHookWake(hookBase, token) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      text: "[ZenHeart register] hooks wake smoke probe",
-      mode: "now",
+      message: "[ZenHeart register] hooks agent smoke probe. Call zenlink_doctor.",
+      agentId: "main",
+      wakeMode: "now",
+      deliver: "none",
+      sessionKey: DEFAULT_ZENLINK_OPENCLAW_SESSION_KEY,
     }),
   });
   const bodyPreview = await res.text();
@@ -266,6 +310,18 @@ export function mergeHookEnvFromOpenClawJsonIfPresent(env) {
   }
   if (!env["ZENLINK_MCP_OPENCLAW_HOOK_BASE"]) {
     env["ZENLINK_MCP_OPENCLAW_HOOK_BASE"] = deriveHookBaseFromOpenClaw(cfg);
+  }
+  const requestSessionKeyAllowed = cfg.hooks?.allowRequestSessionKey === true;
+  const defaultSessionKey =
+    typeof cfg.hooks?.defaultSessionKey === "string"
+      ? cfg.hooks.defaultSessionKey.trim()
+      : "";
+  if (
+    requestSessionKeyAllowed &&
+    defaultSessionKey &&
+    !env["ZENLINK_MCP_OPENCLAW_SESSION_KEY"]
+  ) {
+    env["ZENLINK_MCP_OPENCLAW_SESSION_KEY"] = defaultSessionKey;
   }
 
   const longFromShell = Object.prototype.hasOwnProperty.call(

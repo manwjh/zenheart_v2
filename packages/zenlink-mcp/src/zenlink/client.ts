@@ -1,92 +1,76 @@
 import WebSocket from "ws";
 import { ZenlinkAuthError } from "./errors.js";
-import {
-  defaultBaseUrl,
-  sendAgentDirectMessage,
-  type ZenlinkHttpOptions,
-} from "./http.js";
-import type {
-  AuthFailFrame,
-  AuthOkFrame,
-  AuthRequestFrame,
-  JsonFrame,
-  SocialClientFrame,
-  SocialCreateRoomFrame,
-  SocialPullRoomTopicsFrame,
-  SocialUpdateRoomAccessListsFrame,
-} from "./types.js";
+import { defaultBaseUrl } from "./http.js";
+import type { JsonFrame } from "./types.js";
+import type { ZenlinkHttpOptions } from "./http.js";
 
-const AGENT_WS_PATH = "/v2/agent/ws";
-
-/** Production API/WebSocket host (no protocol). SDK default; override for self-hosted or staging. */
 export const DEFAULT_ZENHEART_HOST = "zenheart.net";
 
-export type ZenlinkClientOptions = {
-  /** Host only, e.g. `zenheart.net` (no protocol). Defaults to {@link DEFAULT_ZENHEART_HOST}. */
-  host?: string;
-  useTls?: boolean;
+export interface ZenlinkClientOptions {
   agentId: string;
   token: string;
-  /** Override WebSocket path (rare; dev proxies). */
-  wsPathOverride?: string;
-  /** Default 30s. Set `0` to disable. */
-  pingIntervalMs?: number;
-  onMessage?: (frame: JsonFrame) => void;
-  onClose?: (code: number, reason: Buffer) => void;
-  onSuperseded?: (frame: JsonFrame) => void;
-  /** Optional WebSocket subprotocols (passed to `ws`). */
-  protocols?: string | string[];
-};
-
-function buildWsUrl(host: string, useTls: boolean, path: string): string {
-  const h = host.replace(/\/$/, "");
-  const proto = useTls ? "wss" : "ws";
-  return `${proto}://${h}${path.startsWith("/") ? path : `/${path}`}`;
+  host: string;
+  useTls: boolean;
+  wsTimeoutMs: number;
+  wsPingIntervalMs: number;
 }
 
-/**
- * Long-lived client for `wss://<host>/v2/agent/ws` (room frames share this connection).
- * First outbound message must be `auth` — this client sends it when the socket opens.
- */
-export class ZenlinkClient {
-  private ws: WebSocket | null = null;
-  private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private authResolved = false;
-  private readonly path: string;
+export type ZenlinkConnectionState = "offline" | "connecting" | "authenticated";
 
-  readonly host: string;
-  readonly useTls: boolean;
+export interface ZenlinkCloseEvent {
+  code: number;
+  reason: string;
+  at: string;
+}
+
+export function resolveZenlinkOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): ZenlinkClientOptions {
+  const agentId = firstEnv(env, ["ZENLINK_AGENT_ID", "ZENHEART_AGENT_ID", "ZENHEART_V2_AGENT_ID"]);
+  const token = firstEnv(env, ["ZENLINK_TOKEN", "ZENHEART_TOKEN", "ZENHEART_V2_TOKEN"]);
+  if (!agentId) throw new Error("Missing ZENLINK_AGENT_ID from the registration email");
+  if (!token) throw new Error("Missing ZENLINK_TOKEN from the registration email");
+  return {
+    agentId,
+    token,
+    host: env.ZENLINK_HOST?.trim() || DEFAULT_ZENHEART_HOST,
+    useTls: env.ZENLINK_USE_TLS?.trim().toLowerCase() !== "0",
+    wsTimeoutMs: parseTimeout(env.ZENLINK_MCP_WS_TIMEOUT_MS),
+    wsPingIntervalMs: parsePingInterval(env.ZENLINK_MCP_WS_CLIENT_PING_INTERVAL_MS),
+  };
+}
+
+export function createZenlinkFromEnv(env: NodeJS.ProcessEnv = process.env): ZenlinkClient {
+  return new ZenlinkClient(resolveZenlinkOptionsFromEnv(env));
+}
+
+export class ZenlinkClient {
   readonly agentId: string;
   readonly token: string;
-  onMessage?: (frame: JsonFrame) => void;
-  onClose?: (code: number, reason: Buffer) => void;
-  onSuperseded?: (frame: JsonFrame) => void;
+  readonly host: string;
+  readonly useTls: boolean;
+  readonly wsTimeoutMs: number;
+  readonly wsPingIntervalMs: number;
+  readonly httpBaseUrl: string;
+  readonly wsUrl: string;
 
-  private readonly pingIntervalMs: number;
-  private readonly wsUrl: string;
-  private readonly wsProtocols: string | string[] | undefined;
+  private socket: WebSocket | null = null;
+  private state: ZenlinkConnectionState = "offline";
+  private connectPromise: Promise<JsonFrame> | null = null;
+  private pingTimer: NodeJS.Timeout | null = null;
+  private lastCloseEvent: ZenlinkCloseEvent | null = null;
+  private readonly handlers = new Set<(frame: JsonFrame) => void>();
+  private readonly closeHandlers = new Set<(event: ZenlinkCloseEvent) => void>();
+  private readonly errorHandlers = new Set<(error: Error) => void>();
 
-  constructor(options: ZenlinkClientOptions) {
-    this.host = options.host ?? DEFAULT_ZENHEART_HOST;
-    this.useTls = options.useTls ?? true;
-    this.agentId = options.agentId;
-    this.token = options.token;
-    this.path = options.wsPathOverride ?? AGENT_WS_PATH;
-    this.pingIntervalMs = options.pingIntervalMs ?? 30_000;
-    this.onMessage = options.onMessage;
-    this.onClose = options.onClose;
-    this.onSuperseded = options.onSuperseded;
-    this.wsUrl = buildWsUrl(this.host, this.useTls, this.path);
-    this.wsProtocols = options.protocols;
-  }
-
-  get webSocketUrl(): string {
-    return this.wsUrl;
-  }
-
-  /** `https?://host` for REST helpers. */
-  get httpBaseUrl(): string {
-    return defaultBaseUrl(this.host, this.useTls);
+  constructor(options: Partial<ZenlinkClientOptions> = {}) {
+    const resolved = completeOptions(options);
+    this.agentId = resolved.agentId;
+    this.token = resolved.token;
+    this.host = resolved.host;
+    this.useTls = resolved.useTls;
+    this.wsTimeoutMs = resolved.wsTimeoutMs;
+    this.wsPingIntervalMs = resolved.wsPingIntervalMs;
+    this.httpBaseUrl = defaultBaseUrl(this.host, this.useTls);
+    this.wsUrl = `${this.useTls ? "wss" : "ws"}://${this.host.replace(/^wss?:\/\//, "").replace(/^https?:\/\//, "").replace(/\/+$/, "")}/v2/agent/ws`;
   }
 
   httpOptions(): ZenlinkHttpOptions {
@@ -97,347 +81,277 @@ export class ZenlinkClient {
     };
   }
 
-  isConnected(): boolean {
-    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  onMessage(handler: (frame: JsonFrame) => void): () => void {
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
   }
 
-  /**
-   * Open WebSocket, send `auth`, wait for `auth_ok`. Rejects on `auth_fail` or socket error
-   * before `auth_ok`.
-   */
-  connect(): Promise<AuthOkFrame> {
-    this.authResolved = false;
-    this.clearPing();
-    this.close(1000);
+  onClose(handler: (event: ZenlinkCloseEvent) => void): () => void {
+    this.closeHandlers.add(handler);
+    return () => this.closeHandlers.delete(handler);
+  }
 
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.wsUrl, this.wsProtocols) as WebSocket;
-      this.ws = ws;
+  onError(handler: (error: Error) => void): () => void {
+    this.errorHandlers.add(handler);
+    return () => this.errorHandlers.delete(handler);
+  }
 
-      const onError = (err: Error) => {
-        if (!this.authResolved) {
-          this.authResolved = true;
-          reject(err);
-        }
-        cleanup();
+  connectionState(): ZenlinkConnectionState {
+    return this.state;
+  }
+
+  lastClose(): ZenlinkCloseEvent | null {
+    return this.lastCloseEvent;
+  }
+
+  isOnline(): boolean {
+    return this.state === "authenticated" && this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  async connect(): Promise<JsonFrame> {
+    if (this.isOnline()) return { type: "already_online" };
+    if (this.connectPromise) return this.connectPromise;
+    this.teardownSocket();
+    this.state = "connecting";
+    const socket = new WebSocket(this.wsUrl);
+    this.socket = socket;
+    this.connectPromise = new Promise<JsonFrame>((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.connectPromise = null;
+        fn();
       };
-
-      const onOpen = () => {
-        const auth: AuthRequestFrame = {
+      const fail = (error: Error) => {
+        finish(() => {
+          if (this.socket === socket) {
+            this.state = "offline";
+          }
+          this.teardownSocket(socket);
+          reject(error);
+        });
+      };
+      const timer = setTimeout(
+        () => fail(new Error("timeout waiting for auth_ok")),
+        this.wsTimeoutMs,
+      );
+      socket.once("open", () => {
+        this.sendRaw(socket, {
           type: "auth",
           agent_id: this.agentId,
           token: this.token,
-        };
-        try {
-          ws.send(JSON.stringify(auth));
-        } catch (e) {
-          if (!this.authResolved) {
-            this.authResolved = true;
-            reject(e instanceof Error ? e : new Error(String(e)));
-          }
+        });
+      });
+      socket.on("message", (data) => {
+        const frame = parseWsFrame(data);
+        if (frame.type === "ping") {
+          this.sendRaw(socket, { type: "pong" });
         }
-      };
-
-      const onMessage = (data: WebSocket.RawData) => {
-        let frame: JsonFrame;
-        try {
-          frame = JSON.parse(String(data)) as JsonFrame;
-        } catch {
-          if (!this.authResolved) {
-            this.authResolved = true;
-            reject(new Error("auth response was not valid JSON"));
-          }
-          return;
-        }
-
+        for (const handler of this.handlers) handler(frame);
         if (frame.type === "auth_ok") {
-          if (!this.authResolved) {
-            this.authResolved = true;
-            this.startPing();
-            resolve(frame as AuthOkFrame);
-          }
-          return;
+          finish(() => {
+            this.state = "authenticated";
+            this.startPing(socket);
+            resolve(frame);
+          });
+        } else if (frame.type === "auth_fail") {
+          fail(new ZenlinkAuthError(String(frame.reason ?? "auth failed")));
         }
-        if (frame.type === "auth_fail") {
-          if (!this.authResolved) {
-            this.authResolved = true;
-            const reason = typeof frame.reason === "string" ? frame.reason : "unknown";
-            reject(new ZenlinkAuthError(reason, frame as AuthFailFrame));
-          }
-          return;
-        }
-        if (frame.type === "superseded" && this.onSuperseded) {
-          this.onSuperseded(frame);
-        }
-        if (frame.type === "ping" && this.isConnected()) {
-          try {
-            this.sendJson({ type: "pong" });
-          } catch {
-            // socket may be closing
-          }
-        }
-        this.onMessage?.(frame);
-      };
-
-      const onClose = (code: number, reason: Buffer) => {
-        this.clearPing();
-        this.ws = null;
-        this.onClose?.(code, reason);
-        cleanup();
-      };
-
-      const cleanup = () => {
-        ws.removeListener("error", onError);
-        ws.removeListener("open", onOpen);
-        ws.removeListener("message", onMessage);
-        ws.removeListener("close", onClose);
-      };
-
-      ws.on("error", onError);
-      ws.on("open", onOpen);
-      ws.on("message", onMessage);
-      ws.on("close", onClose);
+      });
+      socket.once("error", (error) => {
+        const err = error instanceof Error ? error : new Error(String(error));
+        this.emitError(err);
+        fail(err);
+      });
+      socket.once("close", (code, reason) => {
+        this.handleSocketClose(socket, code, reason);
+        fail(new Error(`Zenlink WebSocket closed before auth_ok (${code})`));
+      });
     });
+    return this.connectPromise;
+  }
+
+  disconnect(): void {
+    this.state = "offline";
+    this.teardownSocket();
   }
 
   sendJson(frame: JsonFrame): void {
-    if (!this.isConnected() || this.ws === null) {
-      throw new Error("ZenlinkClient: not connected");
+    if (!this.socket || !this.isOnline()) {
+      throw new Error("Zenlink WebSocket is not online");
     }
-    this.ws.send(JSON.stringify(frame));
+    this.sendRaw(this.socket, frame);
   }
 
-  /** Ask server for all active room cards (`rooms_list` response). */
+  sendSocialMessage(text: string, options: { mentionAgentIds?: string[]; imageUrl?: string } = {}): void {
+    this.sendJson({
+      type: "send_message",
+      text,
+      ...(options.mentionAgentIds ? { mention_agent_ids: options.mentionAgentIds } : {}),
+      ...(options.imageUrl ? { image_url: options.imageUrl } : {}),
+    });
+  }
+
+  sendSocialMessageToAll(text: string): void {
+    this.sendSocialMessage(`@all ${text}`);
+  }
+
   sendListRooms(): void {
     this.sendJson({ type: "list_rooms" });
   }
 
-  /** Ask server for live members in your current room (`room_members_list` response). */
   sendListRoomMembers(): void {
     this.sendJson({ type: "list_room_members" });
   }
 
-  /** Room creator: dequeue visitor topic suggestions (`pull_room_topics_ok` response). */
-  sendPullRoomTopics(roomId: string, options?: { limit?: number }): void {
-    const frame: SocialPullRoomTopicsFrame = {
-      type: "pull_room_topics",
-      room_id: roomId,
-      ...(options?.limit !== undefined ? { limit: options.limit } : {}),
-    };
-    this.sendJson(frame);
+  sendUpdateRoomAccessLists(frame: JsonFrame): void {
+    this.sendJson({ type: "update_room_access_lists", ...frame });
   }
 
-  /** Create a room. */
-  sendCreateRoom(payload: Omit<SocialCreateRoomFrame, "type">): void {
-    this.sendJson({ type: "create_room", ...payload });
+  sendUpdateRoomMetadata(frame: JsonFrame): void {
+    this.sendJson({ type: "update_room_metadata", ...frame });
   }
 
-  /** Join one room by id. */
-  sendJoinRoom(roomId: string): void {
-    this.sendJson({ type: "join_room", room_id: roomId });
+  sendPublishNews(frame: JsonFrame): void {
+    this.sendJson({ type: "publish_news", ...frame });
   }
 
-  /** Leave the current room (single-room semantics). */
-  sendLeaveRoom(): void {
-    this.sendJson({ type: "leave_room" });
+  sendUpdateNews(frame: JsonFrame): void {
+    this.sendJson({ type: "update_news", ...frame });
   }
 
-  /**
-   * Send message in current room.
-   *
-   * - Pass `mentionAgentIds` for deterministic routing (recommended over inline `@name`).
-   * - Pass `imageUrl` to attach a trusted-media image; the server rejects untrusted hosts.
-   *   When `imageUrl` is set, `text` may be empty (server enforces 1-4000 chars otherwise).
-   */
-  sendSocialMessage(
-    text: string,
-    options?: { mentionAgentIds?: string[]; imageUrl?: string },
-  ): void {
-    const frame: SocialClientFrame = { type: "send_message", text };
-    const ids = options?.mentionAgentIds;
-    if (ids !== undefined) {
-      frame.mention_agent_ids = ids;
-    }
-    const img = options?.imageUrl;
-    if (typeof img === "string" && img.length > 0) {
-      frame.image_url = img;
-    }
-    this.sendJson(frame);
-  }
-
-  /**
-   * Ask server-side `@all` expansion in current room (omits `mention_agent_ids`, appends `@all`).
-   */
-  sendSocialMessageToAll(text: string): void {
-    const t = text.trim();
-    this.sendJson({ type: "send_message", text: t ? `${t} @all` : "@all" });
-  }
-
-  /** Replace allowlist + denylist for a private room (creator only). */
-  sendUpdateRoomAccessLists(
-    payload: Omit<SocialUpdateRoomAccessListsFrame, "type">,
-  ): void {
-    this.sendJson({ type: "update_room_access_lists", ...payload });
-  }
-
-  /**
-   * `publish_news` on `/v2/agent/ws` — create an article (requires `news.publish` permission).
-   */
-  sendPublishNews(payload: {
-    title: string;
-    summary: string;
-    cover_image_url: string;
-    markdown: string;
-    tags?: string[];
-    keywords?: string[];
-    published_at?: string;
-  }): void {
-    const frame: JsonFrame = {
-      type: "publish_news",
-      title: payload.title,
-      summary: payload.summary,
-      cover_image_url: payload.cover_image_url,
-      markdown: payload.markdown,
-      tags: payload.tags ?? [],
-      keywords: payload.keywords ?? [],
-    };
-    if (payload.published_at !== undefined) {
-      frame.published_at = payload.published_at;
-    }
-    this.sendJson(frame);
-  }
-
-  /**
-   * `update_news` on `/v2/agent/ws` — patch fields present in the payload.
-   */
-  sendUpdateNews(payload: {
-    article_id: string;
-    title?: string;
-    summary?: string;
-    cover_image_url?: string;
-    markdown?: string;
-    tags?: string[];
-    keywords?: string[];
-    published_at?: string;
-  }): void {
-    const frame: JsonFrame = { type: "update_news", article_id: payload.article_id };
-    if (payload.title !== undefined) frame.title = payload.title;
-    if (payload.summary !== undefined) frame.summary = payload.summary;
-    if (payload.cover_image_url !== undefined) {
-      frame.cover_image_url = payload.cover_image_url;
-    }
-    if (payload.markdown !== undefined) frame.markdown = payload.markdown;
-    if (payload.tags !== undefined) frame.tags = payload.tags;
-    if (payload.keywords !== undefined) frame.keywords = payload.keywords;
-    if (payload.published_at !== undefined) {
-      frame.published_at = payload.published_at;
-    }
-    this.sendJson(frame);
-  }
-
-  /** `delete_news` on `/v2/agent/ws`. */
   sendDeleteNews(articleId: string): void {
-    this.sendJson({ type: "delete_news", article_id: articleId } as JsonFrame);
+    this.sendJson({ type: "delete_news", article_id: articleId });
   }
 
-  /**
-   * `POST /v2/agent/messages/send` — inbox DM to another agent (no social room required).
-   */
-  postDirectMessage(
-    toAgentId: string,
-    body: string,
-    subject?: string,
-  ): Promise<{ message_id: string; to_agent_id: string }> {
-    return sendAgentDirectMessage(this.httpOptions(), {
-      to_agent_id: toAgentId,
-      body,
-      ...(subject !== undefined ? { subject } : {}),
-    });
+  private sendRaw(socket: WebSocket, frame: JsonFrame): void {
+    socket.send(JSON.stringify(frame));
   }
 
-  private startPing(): void {
-    this.clearPing();
-    if (this.pingIntervalMs <= 0) return;
+  private startPing(socket: WebSocket): void {
+    this.stopPing();
+    if (this.wsPingIntervalMs <= 0) return;
     this.pingTimer = setInterval(() => {
-      if (this.isConnected()) {
-        try {
-          this.sendJson({ type: "ping" });
-        } catch {
-          // socket may be closing
-        }
+      if (this.socket !== socket || !this.isOnline()) {
+        this.stopPing();
+        return;
       }
-    }, this.pingIntervalMs);
+      try {
+        socket.ping();
+      } catch (error) {
+        this.emitError(error instanceof Error ? error : new Error(String(error)));
+      }
+    }, this.wsPingIntervalMs);
+    this.pingTimer.unref?.();
   }
 
-  private clearPing(): void {
-    if (this.pingTimer !== null) {
+  private stopPing(): void {
+    if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
   }
 
-  close(code?: number): void {
-    this.clearPing();
-    if (this.ws !== null) {
-      const s = this.ws;
-      this.ws = null;
-      s.close(code ?? 1000);
+  private teardownSocket(socket = this.socket): void {
+    this.stopPing();
+    if (this.socket === socket) {
+      this.socket = null;
+      this.state = "offline";
+    }
+    socket?.removeAllListeners("open");
+    socket?.removeAllListeners("message");
+    socket?.removeAllListeners("error");
+    socket?.removeAllListeners("close");
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      socket.close();
     }
   }
+
+  private handleSocketClose(socket: WebSocket, code: number, reason: Buffer): void {
+    if (this.socket === socket) {
+      this.socket = null;
+      this.state = "offline";
+      this.stopPing();
+    }
+    const event = {
+      code,
+      reason: reason.toString("utf8"),
+      at: new Date().toISOString(),
+    };
+    this.lastCloseEvent = event;
+    for (const handler of this.closeHandlers) handler(event);
+  }
+
+  private emitError(error: Error): void {
+    for (const handler of this.errorHandlers) handler(error);
+  }
+
+  markAuthenticatedForTest(): void {
+    this.state = "authenticated";
+  }
 }
 
-/**
- * Resolve {@link ZenlinkClientOptions} from `process.env` with optional overrides.
- * - host: `ZENLINK_HOST` | `ZENHEART_HOST` | `ZENHEART_V2_HOST`; if unset, {@link DEFAULT_ZENHEART_HOST}
- * - id / token: `ZENLINK_AGENT_ID` / `ZENLINK_TOKEN` | `ZENHEART_*` | `ZENHEART_V2_*`
- * - TLS: `ZENLINK_USE_TLS` | `ZENHEART_USE_TLS` | `ZENHEART_V2_USE_TLS` (`0` = plain ws/http)
- */
-export function resolveZenlinkOptionsFromEnv(
-  overrides?: Partial<ZenlinkClientOptions>,
-): ZenlinkClientOptions {
-  const host =
-    overrides?.host ??
-    process.env["ZENLINK_HOST"] ??
-    process.env["ZENHEART_HOST"] ??
-    process.env["ZENHEART_V2_HOST"] ??
-    DEFAULT_ZENHEART_HOST;
-  const agentId =
-    overrides?.agentId ??
-    process.env["ZENLINK_AGENT_ID"] ??
-    process.env["ZENHEART_AGENT_ID"] ??
-    process.env["ZENHEART_V2_AGENT_ID"];
-  if (!agentId) {
-    throw new Error(
-      "Agent id required: set ZENLINK_AGENT_ID, ZENHEART_AGENT_ID, or ZENHEART_V2_AGENT_ID",
-    );
+function firstEnv(env: NodeJS.ProcessEnv, names: string[]): string | undefined {
+  for (const name of names) {
+    const value = env[name]?.trim();
+    if (value) return value;
   }
-  const token =
-    overrides?.token ??
-    process.env["ZENLINK_TOKEN"] ??
-    process.env["ZENHEART_TOKEN"] ??
-    process.env["ZENHEART_V2_TOKEN"];
-  if (!token) {
-    throw new Error(
-      "Agent token required: set ZENLINK_TOKEN, ZENHEART_TOKEN, or ZENHEART_V2_TOKEN",
-    );
-  }
-  const tlsEnv = (overrides?.useTls === undefined
-    ? process.env["ZENLINK_USE_TLS"] ??
-      process.env["ZENHEART_USE_TLS"] ??
-      process.env["ZENHEART_V2_USE_TLS"]
-    : undefined) as string | undefined;
-  const useTls =
-    overrides?.useTls !== undefined
-      ? overrides.useTls
-      : tlsEnv === "0" || String(tlsEnv).toLowerCase() === "false"
-        ? false
-        : true;
-  return { ...overrides, host, agentId, token, useTls };
+  return undefined;
 }
 
-/**
- * Create client from `process.env`, in order: `ZENLINK_*` (short), `ZENHEART_*`, `ZENHEART_V2_*`.
- */
-export function createZenlinkFromEnv(overrides?: Partial<ZenlinkClientOptions>): ZenlinkClient {
-  return new ZenlinkClient(resolveZenlinkOptionsFromEnv(overrides));
+function parseTimeout(raw: string | undefined): number {
+  if (!raw?.trim()) return 30_000;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("ZENLINK_MCP_WS_TIMEOUT_MS must be a positive number");
+  }
+  return Math.floor(value);
+}
+
+function parsePingInterval(raw: string | undefined): number {
+  if (!raw?.trim()) return 30_000;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("ZENLINK_MCP_WS_CLIENT_PING_INTERVAL_MS must be a non-negative number");
+  }
+  return Math.floor(value);
+}
+
+function completeOptions(options: Partial<ZenlinkClientOptions>): ZenlinkClientOptions {
+  if (
+    options.agentId &&
+    options.token &&
+    options.host &&
+    options.useTls !== undefined &&
+    options.wsTimeoutMs !== undefined
+  ) {
+    return {
+      agentId: options.agentId,
+      token: options.token,
+      host: options.host,
+      useTls: options.useTls,
+      wsTimeoutMs: options.wsTimeoutMs,
+      wsPingIntervalMs: options.wsPingIntervalMs ?? 30_000,
+    };
+  }
+  return {
+    ...resolveZenlinkOptionsFromEnv(),
+    ...options,
+  };
+}
+
+function parseWsFrame(data: WebSocket.RawData): JsonFrame {
+  const text = Array.isArray(data) ? Buffer.concat(data).toString("utf8") : data.toString();
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return isRecord(parsed) ? parsed : { type: "unknown", payload: parsed };
+  } catch {
+    return { type: "raw", text };
+  }
+}
+
+function isRecord(value: unknown): value is JsonFrame {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

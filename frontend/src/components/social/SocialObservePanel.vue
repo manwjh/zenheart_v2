@@ -40,7 +40,7 @@ const props = withDefaults(
     observeError: string | null;
     observePendingTopics: PendingTopicSuggestionLike[];
     observeTopicQueueExpanded: boolean;
-    observeMessagesToday: ChatMessageLike[];
+    observeMessages: ChatMessageLike[];
     observeMessagesCount: number;
     topicDraft: string;
     sendingTopicSubmission: boolean;
@@ -61,7 +61,17 @@ const emit = defineEmits<{
 
 /** Topic, rules, members, and visitor suggestions — collapsed by default so the feed uses vertical space. */
 const roomDetailsExpanded = ref(false);
+const topicComposerExpanded = ref(false);
 const failedImageMessageIds = ref<Set<string>>(new Set());
+
+const memberNameById = computed(() => {
+  const names = new Map<string, string>();
+  for (const member of props.observeMembers) {
+    const name = member.agent_name.trim();
+    if (member.agent_id && name) names.set(member.agent_id, name);
+  }
+  return names;
+});
 
 function messageImageKey(msg: ChatMessageLike): string {
   return String(msg.id);
@@ -75,6 +85,34 @@ function markImageFailed(msg: ChatMessageLike): void {
   const next = new Set(failedImageMessageIds.value);
   next.add(messageImageKey(msg));
   failedImageMessageIds.value = next;
+}
+
+function agentInitial(name: string): string {
+  const clean = name.trim();
+  return (clean[0] || "?").toUpperCase();
+}
+
+function displayAgentName(msg: ChatMessageLike): string {
+  if (msg.agent_id) {
+    const memberName = memberNameById.value.get(msg.agent_id);
+    if (memberName) return memberName;
+  }
+  return msg.agent_name.trim() || msg.agent_id || "Unknown";
+}
+
+function agentToneStyle(msg: ChatMessageLike): Record<string, string> {
+  const seed = msg.agent_id || msg.agent_name || String(msg.id);
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) % 360;
+  }
+  return { "--agent-hue": `${hash}deg` };
+}
+
+function submitTopicSuggestionFromComposer(): void {
+  if (!props.topicDraft.trim()) return;
+  emit("submit-topic");
+  topicComposerExpanded.value = false;
 }
 
 const hasRoomDetails = computed(() => {
@@ -91,12 +129,17 @@ watch(
   () => props.observingRoom?.room_id,
   () => {
     roomDetailsExpanded.value = false;
+    topicComposerExpanded.value = false;
   },
 );
 </script>
 
 <template>
-  <div v-if="observingRoom" class="observe-panel observe-panel--page">
+  <div
+    v-if="observingRoom"
+    class="observe-panel observe-panel--page"
+    :class="{ 'observe-panel--composer-expanded': topicComposerExpanded }"
+  >
     <div class="observe-header observe-header--compact">
       <div class="observe-header__row">
         <button
@@ -224,32 +267,38 @@ watch(
       <div id="observe-feed" class="observe-feed__scroll">
         <div class="observe-feed__content">
           <div
-            v-for="msg in observeMessagesToday"
+            v-for="msg in observeMessages"
             :key="msg.id"
             class="msg-row"
             :class="{ 'msg-row--system': msg.system }"
+            :style="msg.system ? undefined : agentToneStyle(msg)"
           >
             <template v-if="!msg.system">
-              <span class="msg-agent">{{ msg.agent_name }}</span>
-              <span class="msg-time">{{ formatTime(msg.sent_at) }}</span>
-              <img
-                v-if="msg.image_url && !isImageFailed(msg)"
-                class="msg-image"
-                :src="msg.image_url"
-                alt="Shared image"
-                loading="lazy"
-                @error="markImageFailed(msg)"
-              />
-              <a
-                v-if="msg.image_url && isImageFailed(msg)"
-                class="msg-image-fallback"
-                :href="msg.image_url"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Image unavailable. Open original.
-              </a>
-              <p v-if="msg.text" class="msg-text" v-html="messageMentionHtml(msg)"></p>
+              <span class="msg-avatar" aria-hidden="true">{{ agentInitial(displayAgentName(msg)) }}</span>
+              <div class="msg-body">
+                <div class="msg-header">
+                  <span class="msg-agent">{{ displayAgentName(msg) }}</span>
+                  <time class="msg-time" :datetime="msg.sent_at">{{ formatTime(msg.sent_at) }}</time>
+                </div>
+                <img
+                  v-if="msg.image_url && !isImageFailed(msg)"
+                  class="msg-image"
+                  :src="msg.image_url"
+                  alt="Shared image"
+                  loading="lazy"
+                  @error="markImageFailed(msg)"
+                />
+                <a
+                  v-if="msg.image_url && isImageFailed(msg)"
+                  class="msg-image-fallback"
+                  :href="msg.image_url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Image unavailable. Open original.
+                </a>
+                <p v-if="msg.text" class="msg-text" v-html="messageMentionHtml(msg)"></p>
+              </div>
             </template>
             <template v-else>
               <p class="msg-system-text">- {{ msg.text }}</p>
@@ -262,23 +311,53 @@ watch(
       </div>
     </div>
 
-    <div v-if="!observingRoom.is_private" class="observe-composer">
-      <input
-        :value="topicDraft"
-        class="observe-input"
-        type="text"
-        maxlength="4000"
-        placeholder="Suggest a topic for the room owner (not posted to agent chat)"
-        title="Visitor topic queue for the creator"
-        @input="emit('update:topicDraft', ($event.target as HTMLInputElement).value)"
-        @keydown="emit('topic-keydown', $event)"
-      />
+    <div
+      v-if="!observingRoom.is_private"
+      class="observe-composer"
+      :class="{ 'observe-composer--expanded': topicComposerExpanded }"
+    >
+      <button
+        class="observe-composer__quick"
+        type="button"
+        title="Suggest a topic"
+        aria-label="Suggest a topic"
+        @click="topicComposerExpanded = true"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <div class="observe-composer__field">
+        <input
+          :value="topicDraft"
+          class="observe-input"
+          type="text"
+          maxlength="4000"
+          placeholder="Suggest a topic"
+          title="Visitor topic queue for the creator"
+          @input="emit('update:topicDraft', ($event.target as HTMLInputElement).value)"
+          @keydown="emit('topic-keydown', $event)"
+        />
+        <p class="observe-composer__hint">Sent to the room owner, not into agent chat.</p>
+      </div>
+      <button
+        class="observe-composer__collapse"
+        type="button"
+        title="Hide topic input"
+        aria-label="Hide topic input"
+        @click="topicComposerExpanded = false"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </button>
       <button
         class="watch-btn"
         :disabled="!observeConnected || sendingTopicSubmission || !topicDraft.trim()"
         type="button"
         title="Submit topic"
-        @click="emit('submit-topic')"
+        aria-label="Submit topic suggestion"
+        @click="submitTopicSuggestionFromComposer"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -290,7 +369,7 @@ watch(
 
 <style>
 .observe-panel {
-  background: var(--bg);
+  background: transparent;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -301,20 +380,21 @@ watch(
   flex: 1 1 0;
   width: 100%;
   min-height: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  box-shadow: 0 0 0 1px rgba(var(--brand-rgb), 0.04);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .observe-header {
   flex-shrink: 0;
-  padding: 1rem 1.1rem 0.85rem;
+  padding: 0.75rem 1.1rem;
   border-bottom: 1px solid var(--border);
+  background: rgba(var(--brand-rgb), 0.025);
 }
 
 .observe-header__row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: flex-start;
   gap: 0.75rem;
   flex-wrap: wrap;
@@ -325,18 +405,18 @@ watch(
   display: flex;
   align-items: center;
   gap: 0.45rem;
-  flex: 1 1 10rem;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
   margin: 0;
-  padding: 0.2rem 0;
-  border: none;
-  background: transparent;
+  padding: 0.32rem 0.55rem;
+  border: 1px solid var(--border);
+  background: rgba(127, 127, 127, 0.04);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-pill);
 }
 
 .observe-details__toggle:hover {
@@ -366,12 +446,12 @@ watch(
 }
 
 .observe-details__label {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
-  font-size: var(--text-meta);
+  font-size: var(--text-caption);
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   opacity: 0.75;
 }
@@ -391,7 +471,9 @@ watch(
 .observe-details-panel {
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.015);
+  background:
+    linear-gradient(180deg, rgba(var(--brand-rgb), 0.055), rgba(var(--brand-rgb), 0.025)),
+    rgba(0, 0, 0, 0.015);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -418,6 +500,10 @@ watch(
 
 @media (max-width: 640px), (orientation: portrait) {
   .observe-panel--page {
+    position: relative;
+  }
+
+  .observe-panel--page {
     border-radius: 0;
     border-left: none;
     border-right: none;
@@ -426,8 +512,37 @@ watch(
   }
 
   .observe-header {
-    padding: 0.85rem 0.85rem 0.85rem;
-    padding-top: calc(0.35rem + env(safe-area-inset-top, 0px));
+    padding: 0.42rem 0.85rem;
+    padding-top: calc(0.42rem + env(safe-area-inset-top, 0px));
+  }
+
+  .observe-header__row {
+    gap: 0.45rem;
+  }
+
+  .observe-details__toggle {
+    min-height: 1.8rem;
+    padding: 0.22rem 0.5rem;
+  }
+
+  .observe-details__label {
+    display: none;
+  }
+
+  .observe-details__badge {
+    min-width: 1.1rem;
+    padding: 0.05rem 0.32rem;
+  }
+
+  .observe-meta {
+    gap: 0.25rem;
+  }
+
+  .badge,
+  .member-pill {
+    padding-top: 0.1rem;
+    padding-bottom: 0.1rem;
+    font-size: var(--text-caption);
   }
 
   .observe-title-group--in-details {
@@ -447,7 +562,11 @@ watch(
   }
 
   .observe-feed__content {
-    padding: 0.6rem 0.85rem 1rem;
+    padding: 0.75rem 0.85rem 1rem;
+  }
+
+  .observe-panel:not(.observe-panel--composer-expanded) .observe-feed__content {
+    padding-bottom: calc(3.75rem + env(safe-area-inset-bottom, 0px));
   }
 
   .obs-error-block {
@@ -456,8 +575,81 @@ watch(
   }
 
   .observe-composer {
-    padding-left: 0.85rem;
-    padding-right: 0.85rem;
+    position: absolute;
+    right: max(0.85rem, env(safe-area-inset-right, 0px));
+    bottom: calc(0.85rem + env(safe-area-inset-bottom, 0px));
+    z-index: 8;
+    gap: 0;
+    padding: 0;
+    border-top: none;
+    background: transparent;
+    backdrop-filter: none;
+    pointer-events: none;
+  }
+
+  .observe-composer--expanded {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    align-items: flex-end;
+    gap: 0.45rem;
+    padding: 0.65rem 0.85rem
+      calc(0.65rem + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--border);
+    background:
+      linear-gradient(180deg, rgba(var(--brand-rgb), 0.045), rgba(var(--brand-rgb), 0.075)),
+      var(--bg);
+    backdrop-filter: blur(10px) saturate(140%);
+    pointer-events: auto;
+  }
+
+  .observe-input {
+    min-height: 2.5rem;
+    padding: 0.55rem 0.7rem;
+    font-size: var(--text-compact);
+  }
+
+  .observe-composer__hint {
+    font-size: var(--text-caption);
+  }
+
+  .observe-composer:not(.observe-composer--expanded) .observe-composer__field,
+  .observe-composer:not(.observe-composer--expanded) .observe-composer__collapse,
+  .observe-composer:not(.observe-composer--expanded) .watch-btn {
+    display: none;
+  }
+
+  .observe-composer--expanded .observe-composer__quick {
+    display: none;
+  }
+
+  .watch-btn {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  .watch-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .msg-row {
+    gap: 0.5rem;
+  }
+
+  .msg-avatar {
+    flex-basis: 1.75rem;
+    width: 1.75rem;
+    height: 1.75rem;
+    margin-top: 1.3rem;
+  }
+
+  .msg-body {
+    max-width: calc(100% - 2.25rem);
+  }
+
+  .msg-text {
+    padding: 0.62rem 0.72rem;
   }
 }
 
@@ -483,9 +675,10 @@ watch(
 
 .observe-meta {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.3rem;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -500,8 +693,23 @@ watch(
 }
 
 .badge--live {
+  position: relative;
+  padding-left: 1.1rem;
   background: #22c55e22;
   color: #16a34a;
+}
+
+.badge--live::before {
+  position: absolute;
+  left: 0.48rem;
+  top: 50%;
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 0.28rem color-mix(in srgb, currentColor 18%, transparent);
+  content: "";
+  transform: translateY(-50%);
 }
 
 .badge--off {
@@ -535,6 +743,9 @@ watch(
 }
 
 .member-pill {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
   font-size: var(--text-meta);
   color: var(--muted);
 }
@@ -761,55 +972,109 @@ watch(
   -webkit-overflow-scrolling: touch;
   /* One declaration: bind vertical trackpad/wheel to this scrollport (Chromium). */
   touch-action: pan-y;
+  background:
+    radial-gradient(circle at 12% 10%, rgba(var(--brand-rgb), 0.075), transparent 22rem),
+    radial-gradient(circle at 88% 36%, rgba(var(--brand-rgb), 0.05), transparent 26rem);
 }
 
 .observe-feed__content {
   box-sizing: border-box;
   min-height: 100%;
-  padding: 0.75rem 1.1rem 1.1rem;
+  padding: 1rem 1.1rem 1.2rem;
 }
 
 .observe-feed__content > * + * {
-  margin-top: 0.8rem;
+  margin-top: 0.95rem;
 }
 
 .observe-composer {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   position: relative;
-  gap: 0.5rem;
-  padding: 0.7rem 1.1rem
-    calc(var(--layout-composer-pad-bottom) + env(safe-area-inset-bottom, 0px));
+  gap: 0.65rem;
+  padding: 0.75rem 1.1rem
+    calc(0.75rem + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  background:
+    linear-gradient(180deg, rgba(var(--brand-rgb), 0.045), rgba(var(--brand-rgb), 0.075)),
+    var(--bg);
+  backdrop-filter: blur(10px) saturate(140%);
+}
+
+.observe-composer__field {
+  flex: 1;
+  min-width: 0;
+}
+
+.observe-composer__quick,
+.observe-composer__collapse {
+  display: none;
+}
+
+.observe-composer__hint {
+  margin: 0.32rem 0 0;
+  font-size: var(--text-meta);
+  color: var(--muted);
 }
 
 .observe-input {
-  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
   min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 0.45rem 0.65rem;
-  font-size: var(--text-compact);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 0.65rem 0.85rem;
+  font-size: var(--text-ui);
   background: var(--bg);
   color: var(--fg);
+  min-height: 2.75rem;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.observe-input:focus {
+  outline: none;
+  border-color: var(--accent, #6b8f71);
+  box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.12), inset 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  .observe-composer {
+    background: rgba(var(--brand-rgb), 0.05);
+  }
+
+  .observe-input {
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+
+  .observe-input:focus {
+    box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.18), inset 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+
 }
 
 .watch-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.4rem 0.55rem;
-  border-radius: var(--radius-md);
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
   border: none;
   background: var(--fg);
   color: var(--bg);
-  font-size: var(--text-compact);
+  font-size: var(--text-ui);
   font-weight: 500;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, transform 0.1s;
   flex-shrink: 0;
   line-height: 0;
+}
+
+.watch-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 .watch-btn:hover:not(:disabled) {
@@ -823,15 +1088,52 @@ watch(
 
 .msg-row {
   display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+  align-items: flex-start;
+  gap: 0.65rem;
   min-width: 0;
+}
+
+.msg-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  margin-top: 1.35rem;
+  border: 1px solid hsl(var(--agent-hue) 72% 50% / 0.38);
+  border-radius: 50%;
+  background:
+    linear-gradient(135deg, hsl(var(--agent-hue) 72% 48% / 0.22), transparent),
+    rgba(var(--brand-rgb), 0.05);
+  color: hsl(var(--agent-hue) 74% 36%);
+  font-size: var(--text-meta);
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.msg-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: min(52rem, 100%);
+}
+
+.msg-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+  margin-bottom: 0.22rem;
 }
 
 .msg-agent {
   font-size: var(--text-meta);
-  font-weight: 600;
-  color: var(--muted);
+  font-weight: 700;
+  color: hsl(var(--agent-hue) 74% 36%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .msg-time {
@@ -843,15 +1145,36 @@ watch(
 .msg-text {
   margin: 0;
   font-size: var(--text-read-body);
-  line-height: 1.5;
+  line-height: 1.58;
   color: var(--fg);
-  background: var(--border);
-  padding: 0.5rem 0.75rem;
-  border-radius: 0 0.6rem 0.6rem 0.6rem;
+  background:
+    linear-gradient(135deg, hsl(var(--agent-hue) 72% 48% / 0.12), transparent 16rem),
+    color-mix(in srgb, var(--bg) 88%, var(--fg) 12%);
+  padding: 0.7rem 0.85rem;
+  border: 1px solid color-mix(in srgb, hsl(var(--agent-hue) 72% 48%) 32%, var(--border));
+  border-left: 3px solid hsl(var(--agent-hue) 72% 48% / 0.72);
+  border-radius: 0.25rem 0.9rem 0.9rem 0.9rem;
+  box-shadow: 0 0.5rem 1.6rem rgba(15, 23, 42, 0.04);
   white-space: pre-wrap;
   word-break: break-word;
   min-width: 0;
   overflow-x: clip;
+}
+
+@media (prefers-color-scheme: dark) {
+  .msg-avatar,
+  .msg-agent {
+    color: hsl(var(--agent-hue) 82% 72%);
+  }
+
+  .msg-text {
+    background:
+      linear-gradient(135deg, hsl(var(--agent-hue) 78% 56% / 0.18), transparent 16rem),
+      color-mix(in srgb, var(--bg) 82%, white 8%);
+    border-color: color-mix(in srgb, hsl(var(--agent-hue) 78% 62%) 38%, var(--border));
+    border-left-color: hsl(var(--agent-hue) 78% 62% / 0.78);
+    box-shadow: 0 0.6rem 1.8rem rgba(0, 0, 0, 0.22);
+  }
 }
 
 .msg-image {
@@ -924,10 +1247,15 @@ watch(
 
 .msg-row--system {
   align-items: center;
+  justify-content: center;
 }
 
 .msg-system-text {
   margin: 0;
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: rgba(127, 127, 127, 0.06);
   font-size: var(--text-meta);
   color: var(--muted);
   font-style: italic;
@@ -938,6 +1266,129 @@ watch(
   text-align: center;
   color: var(--muted);
   font-size: var(--text-ui);
-  padding: 2rem 0;
+  padding: 3rem 1rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-card);
+  background: rgba(127, 127, 127, 0.04);
+}
+
+@media (max-width: 640px), (orientation: portrait) {
+  .observe-meta {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .badge,
+  .member-pill {
+    padding-top: 0.1rem;
+    padding-bottom: 0.1rem;
+    font-size: var(--text-caption);
+  }
+
+  .observe-composer {
+    position: absolute;
+    right: max(0.85rem, env(safe-area-inset-right, 0px));
+    bottom: calc(0.85rem + env(safe-area-inset-bottom, 0px));
+    z-index: 8;
+    gap: 0;
+    padding: 0;
+    border-top: none;
+    background: transparent;
+    backdrop-filter: none;
+    pointer-events: none;
+  }
+
+  .observe-composer--expanded {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    align-items: flex-end;
+    gap: 0.45rem;
+    padding: 0.65rem 0.85rem
+      calc(0.65rem + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--border);
+    background:
+      linear-gradient(180deg, rgba(var(--brand-rgb), 0.045), rgba(var(--brand-rgb), 0.075)),
+      var(--bg);
+    backdrop-filter: blur(10px) saturate(140%);
+    pointer-events: auto;
+  }
+
+  .observe-composer__quick {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    border: 1px solid rgba(var(--brand-rgb), 0.28);
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--fg) 90%, var(--brand-accent) 10%);
+    color: var(--bg);
+    box-shadow: 0 0.75rem 1.8rem rgba(0, 0, 0, 0.28);
+    pointer-events: auto;
+  }
+
+  .observe-composer--expanded .observe-composer__quick {
+    display: none;
+  }
+
+  .observe-composer:not(.observe-composer--expanded) .observe-composer__field,
+  .observe-composer:not(.observe-composer--expanded) .observe-composer__collapse,
+  .observe-composer:not(.observe-composer--expanded) .watch-btn {
+    display: none;
+  }
+
+  .observe-composer__collapse {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: rgba(127, 127, 127, 0.08);
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  .observe-input {
+    min-height: 2.5rem;
+    padding: 0.55rem 0.7rem;
+    font-size: var(--text-compact);
+  }
+
+  .observe-composer__hint {
+    font-size: var(--text-caption);
+  }
+
+  .watch-btn {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  .watch-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .msg-row {
+    gap: 0.5rem;
+  }
+
+  .msg-avatar {
+    flex-basis: 1.75rem;
+    width: 1.75rem;
+    height: 1.75rem;
+    margin-top: 1.3rem;
+  }
+
+  .msg-body {
+    max-width: calc(100% - 2.25rem);
+  }
+
+  .msg-text {
+    padding: 0.62rem 0.72rem;
+  }
 }
 </style>
