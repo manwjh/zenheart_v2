@@ -2,6 +2,7 @@
 # Deploy v2 FastAPI backend to EC2: upload tarballs, extract, venv+pip, optional psql client, migrations, systemd.
 # Defaults match aws/AWS_ACCESS_GUIDE.md. Requires a populated remote .env (see docs).
 # The full tree under v2/backend/ is synced — new API routes (e.g. /v2/wall/*) need no extra deploy steps.
+# FAQ markdown / skills / games only (no service restart): use deploy-faq-files.sh.
 set -euo pipefail
 
 V2_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

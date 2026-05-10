@@ -45,6 +45,11 @@ def test_core_http_routes_exist() -> None:
         ("POST", "/v2/admin/news/columns"),
         ("PUT", "/v2/admin/news/columns/order"),
         ("DELETE", "/v2/admin/news/columns/{agent_id}"),
+        ("GET", "/v2/faq/feedback"),
+        ("POST", "/v2/faq/feedback"),
+        ("POST", "/v2/agent/submissions"),
+        ("GET", "/v2/admin/submissions"),
+        ("POST", "/v2/admin/submissions/{submission_id}/review"),
     }
     assert expected.issubset(contracts)
 

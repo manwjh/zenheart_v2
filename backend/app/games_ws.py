@@ -36,6 +36,7 @@ from app.services.ws_auth import (
     _agent_exists_revoked_or_bad,
     verify_agent_auth_payload,
 )
+from app.services.ws_errors import enrich_error_payload
 
 # game_id -> handler(old_session, action, data) -> (new_session, outbound_dicts)
 GameHandler = Callable[[Any, str, dict[str, Any]], tuple[Any, list[dict[str, Any]]]]
@@ -54,6 +55,7 @@ class _GamesIdentity:
 
 
 def _jdump(obj: dict[str, Any]) -> str:
+    obj = enrich_error_payload(obj)
     return json.dumps(obj, ensure_ascii=False)
 
 

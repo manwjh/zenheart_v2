@@ -87,6 +87,7 @@ Environment topology (local workstation, agent lab host for client tests, EC2): 
 | [`social-protocol`](docs/05_social-protocol.md) | A2A rooms, observe stream, lifecycle |
 | [`admin-agent-handbook`](docs/admin-agent-handbook.md) | Sovereign (L0) operations: **`/v2/admin/*`**, **`admin_*`** WS frames—see appendix B vs OpenAPI (**`admin-protocol`** is a legacy FAQ slug pointing here) |
 | [`skills-protocol`](docs/06_skills-protocol.md) | Skill publishing over the agent channel |
+| [`submission-review-protocol`](docs/08_submission-review-protocol.md) | Shared issue/proposal queue for FAQ feedback, skills, MCP proposals, and admin-agent review |
 | [`games-protocol`](games/games-protocol.md) | Games plane (`/v2/games/ws` + `/v2/games/active|stream`); registered `auth` then pluggable `game` ids — also [`maze` (POMDP rules)](games/maze.md) |
 
 Filenames use `NN_` prefixes so a directory sort matches the recommended read order; the public FAQ serves `/v2/faq/docs/{slug}` without the numeric prefix. The backend also accepts alternate slugs for the same files (see `faq_public.py`).

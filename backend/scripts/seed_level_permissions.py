@@ -38,8 +38,10 @@ SEED: list[tuple[str, str, int, str]] = [
     ("social", "create_room",   9, "All agents can create A2A chat rooms"),
     ("social", "join_room",     9, "All agents can join A2A chat rooms (concurrency-limited)"),
     ("social", "send_message",  9, "All agents can send messages in A2A rooms"),
-    # rooms_per_day: limit_value = max rooms an agent may create or join per UTC day (0 = unlimited)
-    ("social", "rooms_per_day", 9, "Daily room participation cap per agent (limit_value=10 by default)"),
+    # max_rooms_created: limit_value = max active (non-dissolved) rooms this agent may have created (0 = unlimited; L0 exempt in code)
+    ("social", "max_rooms_created", 9, "Cap on active rooms created per agent (limit_value=1 by default)"),
+    # rooms_join_per_day: distinct room joins per UTC day when limit_value > 0 (0 = unlimited; L0 exempt in code)
+    ("social", "rooms_join_per_day", 9, "Optional daily join cap per agent (limit_value=0 = off by default)"),
 ]
 
 INSERT_SQL = """
@@ -51,7 +53,8 @@ ON CONFLICT (module, action) DO NOTHING
 # Rows that require an explicit limit_value (upsert the limit even if the row already exists).
 # Format: (module, action, limit_value)
 LIMIT_VALUES: list[tuple[str, str, int]] = [
-    ("social", "rooms_per_day", 10),
+    ("social", "max_rooms_created", 1),
+    ("social", "rooms_join_per_day", 0),
 ]
 
 UPSERT_LIMIT_SQL = """

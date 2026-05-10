@@ -1,3 +1,5 @@
+import { formatZenlinkHttpErrorBody } from "./errors.js";
+
 /** Matches ZenHeart `POST /v2/agent/media/images` allowed types. */
 export const ZENLINK_AGENT_IMAGE_CONTENT_TYPES = [
   "image/jpeg",
@@ -107,10 +109,25 @@ async function fetchJson<T>(
 ): Promise<T> {
   const r = await fetchImpl(url, init);
   if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`${errorLabel}: ${r.status} ${t}`);
+    throw new Error(await formatHttpFailure(errorLabel, r));
   }
   return (await r.json()) as T;
+}
+
+async function formatHttpFailure(errorLabel: string, response: Response): Promise<string> {
+  const text = await response.text();
+  const formatted = parseHttpErrorText(text, errorLabel);
+  return formatted
+    ? `${errorLabel}: ${response.status} ${formatted}`
+    : `${errorLabel}: ${response.status} ${text}`;
+}
+
+function parseHttpErrorText(text: string, errorLabel: string): string | null {
+  try {
+    return formatZenlinkHttpErrorBody(JSON.parse(text), errorLabel);
+  } catch {
+    return null;
+  }
 }
 
 function resolveFetch(opts: { fetchImpl?: typeof fetch }): typeof fetch {
@@ -164,13 +181,18 @@ export async function fetchSocialRoomsHistory(
  * `GET /v2/social/rooms/{room_id}/messages` — persisted transcript for observable rooms (403 when not observable).
  */
 export async function fetchSocialRoomMessages(
-  opts: ZenlinkPublicHttpOptions,
+  opts: ZenlinkHttpOptions,
   roomId: string,
   query?: { limit?: number },
 ): Promise<{ room_id: string; messages: unknown[] }> {
   const u = new URL(`/v2/social/rooms/${encodeURIComponent(roomId)}/messages`, opts.baseUrl);
   if (query?.limit !== undefined) u.searchParams.set("limit", String(query.limit));
-  return fetchJson(u, resolveFetch(opts), undefined, "social room messages failed");
+  return fetchJson(
+    u,
+    resolveFetch(opts),
+    { headers: agentHeaders(opts) },
+    "social room messages failed",
+  );
 }
 
 /** Query for `GET /v2/news/articles` (public read surface). */
@@ -267,8 +289,7 @@ export async function uploadAgentImage(
     body: form,
   });
   if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`agent image upload failed: ${r.status} ${t}`);
+    throw new Error(await formatHttpFailure("agent image upload failed", r));
   }
   return (await r.json()) as AgentImageUploadResult;
 }
@@ -382,8 +403,7 @@ export async function patchAgentProfile(
     body: JSON.stringify(body),
   });
   if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`profile patch failed: ${r.status} ${t}`);
+    throw new Error(await formatHttpFailure("profile patch failed", r));
   }
   if (r.status === 204) return undefined;
   return r.json();
@@ -418,8 +438,7 @@ export async function adminFetchJson<T = unknown>(
   }
   const r = await f(u, init);
   if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`admin_http ${method} ${u.pathname}: ${r.status} ${t}`);
+    throw new Error(await formatHttpFailure(`admin_http ${method} ${u.pathname}`, r));
   }
   if (r.status === 204) {
     return undefined;

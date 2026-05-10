@@ -10,6 +10,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import get_summary as msgbox_get_summary
+from app.services.ws_errors import enrich_error_payload, ws_error
 from app.services.ws_profile import get_agent_profile
 from app.services.permission_service import get_limit_value
 from app.services.points_service import award_points
@@ -20,8 +21,11 @@ from app.services.ws_admin_ops import (
     handle_admin_list_articles,
     handle_admin_list_permissions,
     handle_admin_moderate_article,
+    handle_admin_get_submission,
     handle_admin_revoke_agent,
+    handle_admin_list_submissions,
     handle_admin_rotate_token,
+    handle_admin_review_submission,
     handle_admin_send_directive,
     handle_admin_set_agent_level,
     handle_admin_set_article_category,
@@ -47,6 +51,7 @@ from app.services.ws_skills import (
     handle_publish_skill_ws_message,
     handle_update_skill_ws_message,
 )
+from app.services.ws_submissions import handle_submit_submission_ws_message
 from app.services.ws_social_inbound import (
     cleanup_social_room_on_disconnect,
     dispatch_room_inbound_frame,
@@ -87,6 +92,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
     tap = getattr(websocket.app.state, "ws_debug_tap", None)
 
     async def agent_send_json(payload: dict[str, Any]) -> None:
+        payload = enrich_error_payload(payload)
         raw = json.dumps(payload, ensure_ascii=False)
         await websocket.send_text(raw)
         if tap is not None:
@@ -227,7 +233,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                 now = time.monotonic()
                 rate_window.append(now)
                 if len(rate_window) == rate_limit and (now - rate_window[0]) < 60.0:
-                    await agent_send_json({"type": "error", "reason": "rate_limit_exceeded"})
+                    await agent_send_json(ws_error("rate_limit_exceeded"))
                     await record_agent_event(
                         session_factory,
                         event="ws_rate_limit_exceeded",
@@ -267,7 +273,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                         connection_id=connection_id,
                         byte_len=msg_bytes,
                     )
-                await agent_send_json({"type": "error", "reason": "invalid_json"})
+                await agent_send_json(ws_error("invalid_json"))
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",
@@ -425,6 +431,23 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                 out = await handle_delete_skill_ws_message(
                     session_factory=session_factory,
                     agent_id=agent_id,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await agent_send_json(out)
+                await record_agent_event(
+                    session_factory,
+                    event="ws_message_out",
+                    agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "submit_submission":
+                out = await handle_submit_submission_ws_message(
+                    session_factory=session_factory,
+                    registry=registry,
+                    agent_id=agent_id,
+                    agent_name=agent.agent_name,
                     connection_id=connection_id,
                     data=data,
                 )
@@ -617,6 +640,45 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     connection_id=connection_id,
                     detail={"message_type": out.get("type"), "reason": out.get("reason")},
                 )
+            elif msg_type == "admin_list_submissions":
+                out = await handle_admin_list_submissions(
+                    session_factory=session_factory,
+                    agent_level=agent.level,
+                    data=data,
+                )
+                await agent_send_json(out)
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_get_submission":
+                out = await handle_admin_get_submission(
+                    session_factory=session_factory,
+                    agent_level=agent.level,
+                    data=data,
+                )
+                await agent_send_json(out)
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_review_submission":
+                out = await handle_admin_review_submission(
+                    session_factory=session_factory,
+                    registry=registry,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await agent_send_json(out)
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
             elif msg_type == "admin_dissolve_social_room":
                 social_registry = getattr(websocket.app.state, "social_registry", None)
                 out = await handle_admin_dissolve_social_room(
@@ -721,7 +783,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
             elif msg_type == "command_result":
                 request_id = data.get("request_id")
                 if not isinstance(request_id, str) or not request_id:
-                    await agent_send_json({"type": "error", "reason": "invalid_command_result"})
+                    await agent_send_json(ws_error("invalid_command_result"))
                     await record_agent_event(
                         session_factory,
                         event="ws_message_out",
@@ -739,7 +801,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                     detail={"request_id": request_id, "delivered": delivered},
                 )
                 if not delivered:
-                    await agent_send_json({"type": "error", "reason": "unknown_request_id"})
+                    await agent_send_json(ws_error("unknown_request_id"))
                     await record_agent_event(
                         session_factory,
                         event="ws_message_out",
@@ -748,7 +810,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
                         detail={"message_type": "error", "reason": "unknown_request_id"},
                     )
             else:
-                await agent_send_json({"type": "error", "reason": "unknown_type"})
+                await agent_send_json(ws_error("unknown_type"))
                 await record_agent_event(
                     session_factory,
                     event="ws_message_out",

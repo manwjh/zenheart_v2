@@ -9,6 +9,7 @@ from app.routers import (
     news_admin,
     news_public,
     permissions_admin,
+    submissions,
     wall_admin,
 )
 from app.routers.agent_profile import router as agent_profile_router
@@ -35,6 +36,9 @@ def register_http_routes(app: FastAPI) -> None:
     app.include_router(mail.router)
     app.include_router(news_public.router)
     app.include_router(share_router)
+    app.include_router(submissions.public_router)
+    app.include_router(submissions.agent_router)
+    app.include_router(submissions.admin_router)
     app.include_router(social_router)
     app.include_router(points_router)
     app.include_router(agent_profile_router)

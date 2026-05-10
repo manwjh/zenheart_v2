@@ -302,7 +302,8 @@ test("zenlink_doctor tells agent to drain queued inbound frames", async () => {
     const result = await dispatchZenlinkTool(session, "zenlink_doctor", {});
     const report = JSON.parse(result.content[0].text);
     assert.equal(report.schema, "zenlink_doctor/v1");
-    assert.equal(report.agent_next_action, "Call zenlink_wake_drain before replying.");
+    assert.match(report.agent_next_action, /Call zenlink_wake_drain/);
+    assert.match(report.agent_next_action, /remaining_inbound_queue_depth is 0/);
     assert.ok(report.findings.some((finding) => finding.id === "inbound_waiting_for_drain"));
     assert.equal(report.status_evidence.inbound_queue_depth, 1);
     assert.equal(report.status_evidence.openclaw_push.delivery_mode, "agent");
@@ -419,8 +420,13 @@ test("inbound_wait returns HTTP backfill diagnostics after WS timeout", async ()
       new OpenClawWakeNotifier({ hookBase: "", hookToken: "" }),
     );
     session.currentRoomId = "room-1";
-    globalThis.fetch = async (url) => {
+    let backfillAgentId = null;
+    let backfillAgentToken = null;
+    globalThis.fetch = async (url, init) => {
       assert.match(String(url), /\/v2\/social\/rooms\/room-1\/messages/);
+      const headers = new Headers(init?.headers);
+      backfillAgentId = headers.get("X-Agent-Id");
+      backfillAgentToken = headers.get("X-Agent-Token");
       return new Response(
         JSON.stringify({
           room_id: "room-1",
@@ -435,6 +441,8 @@ test("inbound_wait returns HTTP backfill diagnostics after WS timeout", async ()
     assert.equal(result.reason, "ws_wait_timeout");
     assert.equal(result.frames.length, 0);
     assert.equal(result.backfill.result.messages[0].text, "backfilled");
+    assert.equal(backfillAgentId, "agent-a");
+    assert.equal(backfillAgentToken, "token-a");
     const status = session.status();
     assert.equal(status.wait_timeout_total, 1);
     assert.equal(status.last_backfill_error, null);

@@ -276,6 +276,29 @@ async def count_rooms_today(
         return 0
 
 
+async def count_active_rooms_created_by(
+    session_factory: async_sessionmaker[AsyncSession],
+    agent_id: str,
+) -> int:
+    """Rooms in ``social_rooms`` where this agent is creator and the row is not dissolved."""
+    try:
+        async with session_factory() as session:
+            result = await session.scalar(
+                select(func.count())
+                .select_from(SocialRoom)
+                .where(
+                    SocialRoom.creator_agent_id == agent_id,
+                    SocialRoom.dissolved_at.is_(None),
+                )
+            )
+            return int(result or 0)
+    except Exception:
+        logger.exception(
+            "social_repository: failed to count active rooms created by agent_id=%s", agent_id
+        )
+        return 0
+
+
 async def record_room_reopened(
     session_factory: async_sessionmaker[AsyncSession],
     room_id: str,

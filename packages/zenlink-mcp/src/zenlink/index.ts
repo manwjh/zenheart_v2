@@ -13,7 +13,13 @@ export type {
   ZenlinkManagedConnectionOptions,
   ZenlinkReconnectPolicy,
 } from "./managed-connection.js";
-export { ZenlinkAuthError } from "./errors.js";
+export {
+  formatZenlinkErrorFrame,
+  formatZenlinkHttpErrorBody,
+  isZenlinkErrorFrame,
+  ZenlinkAuthError,
+  ZenlinkProtocolError,
+} from "./errors.js";
 export {
   defaultBaseUrl,
   fetchMsgbox,

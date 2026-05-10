@@ -1,3 +1,5 @@
+import { formatZenlinkHttpErrorBody } from "../zenlink/errors.js";
+
 export interface WakeNotifierStatus {
   enabled: boolean;
   hook_base: string | null;
@@ -32,6 +34,7 @@ export interface WakeNotifierOptions {
   roomLineCoalesceMs?: number;
   maxPending?: number;
   retryBaseMs?: number;
+  inboundQueueDepth?: () => number;
   fetchImpl?: typeof fetch;
 }
 
@@ -50,6 +53,8 @@ const DEFAULT_MAX_PENDING = 128;
 const DEFAULT_RETRY_BASE_MS = 1_000;
 const WAKE_ACTION_PREFIX =
   "[ZenHeart inbound] Action required: call zenlink_wake_drain before replying. Wake text is a summary, not the full payload.";
+const WAKE_DRAIN_EXAMPLE =
+  'Required tool call: zenlink_wake_drain({"timeout_ms":1000,"limit":32,"inbox_limit":10}). If remaining_inbound_queue_depth is greater than 0, call it again before replying.';
 
 export class OpenClawWakeNotifier {
   private readonly hookBase: string;
@@ -62,6 +67,7 @@ export class OpenClawWakeNotifier {
   private readonly roomLineCoalesceMs: number;
   private readonly maxPending: number;
   private readonly retryBaseMs: number;
+  private readonly inboundQueueDepth: (() => number) | null;
   private readonly fetchImpl: typeof fetch;
   private readonly pending: PendingWake[] = [];
   private readonly sentTotalByType: Record<string, number> = {};
@@ -93,6 +99,7 @@ export class OpenClawWakeNotifier {
     this.roomLineCoalesceMs = options.roomLineCoalesceMs ?? parseEnvInt("ZENLINK_MCP_OPENCLAW_WAKE_COALESCE_ROOM_MESSAGE_MS", DEFAULT_ROOM_LINE_COALESCE_MS);
     this.maxPending = options.maxPending ?? parseEnvInt("ZENLINK_MCP_OPENCLAW_WAKE_MAX_PENDING", DEFAULT_MAX_PENDING);
     this.retryBaseMs = options.retryBaseMs ?? parseEnvInt("ZENLINK_MCP_OPENCLAW_WAKE_RETRY_BASE_MS", DEFAULT_RETRY_BASE_MS);
+    this.inboundQueueDepth = options.inboundQueueDepth ?? null;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -152,7 +159,7 @@ export class OpenClawWakeNotifier {
     this.pending.push({
       frame,
       frameType,
-      text: summarizeWakeFrame(frame),
+      text: summarizeWakeFrame(frame, this.safeInboundQueueDepth()),
       attempt: 0,
     });
     emitWakeEvent("wake_enqueued", { frame_type: frameType, pending_wake_count: this.pending.length });
@@ -218,7 +225,7 @@ export class OpenClawWakeNotifier {
     });
     this.lastHttpStatus = res.status;
     if (!res.ok) {
-      throw new Error(`OpenClaw wake failed with HTTP ${res.status}`);
+      throw new Error(await formatOpenClawWakeFailure(res));
     }
   }
 
@@ -252,6 +259,17 @@ export class OpenClawWakeNotifier {
 
   private dedupeWindowFor(frame: unknown): number {
     return isRoomLineFrame(frame) ? this.roomLineCoalesceMs : this.dedupeMs;
+  }
+
+  private safeInboundQueueDepth(): number | null {
+    if (!this.inboundQueueDepth) return null;
+    try {
+      const depth = this.inboundQueueDepth();
+      if (!Number.isFinite(depth) || depth < 0) return null;
+      return Math.floor(depth);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -296,16 +314,18 @@ function isRoomLineFrame(frame: unknown): boolean {
   return frame.type === "social_notify" && frame.kind === "message";
 }
 
-function summarizeWakeFrame(frame: unknown): string {
+function summarizeWakeFrame(frame: unknown, inboundQueueDepth: number | null): string {
+  const queueLine =
+    inboundQueueDepth === null ? "" : `\nQueued inbound frames now: ${inboundQueueDepth}.`;
   if (isRecord(frame)) {
     const type = frameTypeOf(frame);
     const roomId = typeof frame.room_id === "string" ? ` room=${frame.room_id}` : "";
     const sender = typeof frame.agent_id === "string" ? ` from=${frame.agent_id}` : "";
     const text = typeof frame.text === "string" ? ` ${truncate(frame.text, 280)}` : "";
-    if (text) return `${WAKE_ACTION_PREFIX}\nSummary: ${type}${roomId}${sender}:${text}`;
-    return `${WAKE_ACTION_PREFIX}\nSummary: ${type}${roomId}${sender}: ${truncate(JSON.stringify(frame), 500)}`;
+    if (text) return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${type}${roomId}${sender}:${text}`;
+    return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${type}${roomId}${sender}: ${truncate(JSON.stringify(frame), 500)}`;
   }
-  return `${WAKE_ACTION_PREFIX}\nSummary: ${truncate(JSON.stringify(frame), 500)}`;
+  return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${truncate(JSON.stringify(frame), 500)}`;
 }
 
 function truncate(value: string, max: number): string {
@@ -315,6 +335,22 @@ function truncate(value: string, max: number): string {
 
 function increment(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
+}
+
+async function formatOpenClawWakeFailure(response: Response): Promise<string> {
+  const text = await response.text();
+  const formatted = parseOpenClawErrorText(text);
+  return formatted
+    ? `OpenClaw wake failed with HTTP ${response.status}: ${formatted}`
+    : `OpenClaw wake failed with HTTP ${response.status}`;
+}
+
+function parseOpenClawErrorText(text: string): string | null {
+  try {
+    return formatZenlinkHttpErrorBody(JSON.parse(text), "OpenClaw wake failed");
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

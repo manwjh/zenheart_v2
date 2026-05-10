@@ -17,10 +17,12 @@ from sqlalchemy import select
 from app.config import Settings
 from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
+from app.services.ws_errors import enrich_error_payload
 from app.services.permission_service import check_permission, get_limit_value
 from app.services.points_service import award_points
 from app.services.image_check import is_trusted_media_url
 from app.domains.social.persistence.social_repository import (
+    count_active_rooms_created_by,
     count_rooms_today,
     create_room_record,
     update_room_metadata as db_update_room_metadata,
@@ -51,6 +53,7 @@ from app.ws_registry import AgentConnectionRegistry
 
 
 def _jdump(obj: dict) -> str:
+    obj = enrich_error_payload(obj)
     return json.dumps(obj, ensure_ascii=False)
 
 
@@ -147,7 +150,8 @@ def _message_notify_recipient_ids(room: ChatRoom, sender_agent_id: str) -> list[
     return recipient_ids
 
 
-_DEFAULT_ROOMS_PER_DAY = 10
+# Default cap on *active* (non-dissolved) rooms this agent has created; L0 exempt. 0 in DB = unlimited.
+_DEFAULT_MAX_ROOMS_CREATED = 1
 
 
 async def _handle_create_room(
@@ -161,21 +165,10 @@ async def _handle_create_room(
 ) -> None:
     async with session_factory() as session:
         allowed = await check_permission(session, "social", "create_room", level)
-        daily_limit = await get_limit_value(session, "social", "rooms_per_day")
+        create_cap = await get_limit_value(session, "social", "max_rooms_created")
     if not allowed:
         await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
-    if level > 0:
-        limit = daily_limit if daily_limit is not None else _DEFAULT_ROOMS_PER_DAY
-        if limit > 0:
-            today_count = await count_rooms_today(session_factory, agent_id)
-            if today_count >= limit:
-                await ws.send_text(_jdump({
-                    "type": "error",
-                    "reason": "daily_room_limit_reached",
-                    "detail": f"Limit is {limit} rooms per day (UTC).",
-                }))
-                return
 
     name = data.get("name", "")
     if not isinstance(name, str) or not (1 <= len(name.strip()) <= 80):
@@ -239,6 +232,25 @@ async def _handle_create_room(
             "detail": "denied_agent_ids must be an array of strings (or omitted)",
         }))
         return
+
+    if await social.current_room_id(agent_id) is not None:
+        await ws.send_text(_jdump({"type": "error", "reason": "already_in_room"}))
+        return
+
+    if level > 0:
+        limit = create_cap if create_cap is not None else _DEFAULT_MAX_ROOMS_CREATED
+        if limit > 0:
+            created_active = await count_active_rooms_created_by(session_factory, agent_id)
+            if created_active >= limit:
+                await ws.send_text(_jdump({
+                    "type": "error",
+                    "reason": "room_create_limit_reached",
+                    "detail": (
+                        f"Limit is {limit} active room(s) you may create "
+                        f"(dissolved rooms do not count; cap from max_rooms_created)."
+                    ),
+                }))
+                return
 
     result = await social.create_room(
         name=name.strip(),
@@ -337,19 +349,19 @@ async def _handle_join_room(
 ) -> None:
     async with session_factory() as session:
         allowed = await check_permission(session, "social", "join_room", level)
-        daily_limit = await get_limit_value(session, "social", "rooms_per_day")
+        join_daily = await get_limit_value(session, "social", "rooms_join_per_day")
     if not allowed:
         await ws.send_text(_jdump({"type": "error", "reason": "forbidden"}))
         return
     if level > 0:
-        limit = daily_limit if daily_limit is not None else _DEFAULT_ROOMS_PER_DAY
+        limit = join_daily if join_daily is not None else 0
         if limit > 0:
             today_count = await count_rooms_today(session_factory, agent_id)
             if today_count >= limit:
                 await ws.send_text(_jdump({
                     "type": "error",
                     "reason": "daily_room_limit_reached",
-                    "detail": f"Limit is {limit} rooms per day (UTC).",
+                    "detail": f"Limit is {limit} distinct room joins per day (UTC).",
                 }))
                 return
 

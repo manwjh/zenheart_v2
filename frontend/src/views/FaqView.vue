@@ -6,6 +6,7 @@ import DOMPurify from "dompurify";
 import SiteLocaleSwitcher from "@/components/locale/SiteLocaleSwitcher.vue";
 import FaqApplicationForm from "@/components/faq/FaqApplicationForm.vue";
 import FaqDocsSection from "@/components/faq/FaqDocsSection.vue";
+import FaqFeedbackSection from "@/components/faq/FaqFeedbackSection.vue";
 import FaqSkillsSection from "@/components/faq/FaqSkillsSection.vue";
 import {
   clipCurlDownloadMarkdown,
@@ -290,6 +291,7 @@ async function copySkillLink(slug: string) {
             <span><b>4</b> {{ faq.navZenlink }}</span>
             <span><b>5</b> {{ faq.navSkills }}</span>
             <span><b>6</b> {{ faq.navDocs }}</span>
+            <span><b>7</b> {{ faq.navFeedback }}</span>
           </div>
           <p class="zh-hero__note">
             {{ faq.heroNote }}
@@ -327,6 +329,10 @@ async function copySkillLink(slug: string) {
           <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
             <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
             {{ faq.navDocs }}
+          </a>
+          <a class="sidebar-link" href="#/faq#feedback" @click.prevent="scrollTo('feedback')">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 3.5h10a1 1 0 011 1v6a1 1 0 01-1 1H8l-3.5 2v-2H3a1 1 0 01-1-1v-6a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5 6.5h6M5 8.8h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            {{ faq.navFeedback }}
           </a>
         </nav>
       </aside>
@@ -573,6 +579,8 @@ Content-Type: application/json
         @toggle-doc="toggleDoc"
         @jump-to-doc="openDocsToSlug"
       />
+
+      <FaqFeedbackSection :docs="docs" />
 
       </main>
     </div>

@@ -25,6 +25,7 @@ from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
 from app.services.permission_service import get_limit_value
 from app.services.display_name_resolve import enrich_member_dicts_live, enrich_social_lobby_snapshots
+from app.services.ws_errors import enrich_error_payload
 from app.domains.social.persistence.social_repository import (
     get_room_messages,
     list_pending_topic_suggestions,
@@ -33,6 +34,11 @@ from app.domains.social.persistence.social_repository import (
 )
 from app.services.ws_auth import verify_agent_auth_payload, verify_observe_shared_token
 from app.social_registry import SocialRoomRegistry
+
+
+def _jdump(obj: dict) -> str:
+    obj = enrich_error_payload(obj)
+    return json.dumps(obj, ensure_ascii=False)
 
 
 def _is_send_after_close_error(exc: RuntimeError) -> bool:
@@ -80,9 +86,7 @@ async def _observe_handshake_required(
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        await websocket.send_text(
-            json.dumps({"type": "auth_fail", "reason": "invalid_json"})
-        )
+        await websocket.send_text(_jdump({"type": "auth_fail", "reason": "invalid_json"}))
         await websocket.close(code=1003, reason="invalid_json")
         return False
 
@@ -91,9 +95,7 @@ async def _observe_handshake_required(
     if msg_type == "auth_observe":
         tok = data.get("token")
         if not isinstance(tok, str) or not verify_observe_shared_token(tok, shared):
-            await websocket.send_text(
-                json.dumps({"type": "auth_fail", "reason": "invalid_observe_token"})
-            )
+            await websocket.send_text(_jdump({"type": "auth_fail", "reason": "invalid_observe_token"}))
             await websocket.close(code=4401, reason="invalid_observe_token")
             return False
         await websocket.send_text(json.dumps({"type": "auth_observe_ok"}))
@@ -103,9 +105,7 @@ async def _observe_handshake_required(
         agent_id = data.get("agent_id")
         token = data.get("token")
         if not isinstance(agent_id, str) or not isinstance(token, str):
-            await websocket.send_text(
-                json.dumps({"type": "auth_fail", "reason": "invalid_payload"})
-            )
+            await websocket.send_text(_jdump({"type": "auth_fail", "reason": "invalid_payload"}))
             await websocket.close(code=1003, reason="invalid_payload")
             return False
         agent = await verify_agent_auth_payload(
@@ -128,7 +128,7 @@ async def _observe_handshake_required(
             else:
                 reason = "invalid_token"
             await websocket.send_text(
-                json.dumps({"type": "auth_fail", "reason": reason})
+                _jdump({"type": "auth_fail", "reason": reason})
             )
             await websocket.close(code=code, reason=reason)
             return False
@@ -144,7 +144,7 @@ async def _observe_handshake_required(
         return True
 
     await websocket.send_text(
-        json.dumps({"type": "error", "reason": "observe_auth_required"})
+        _jdump({"type": "error", "reason": "observe_auth_required"})
     )
     await websocket.close(code=4401, reason="observe_auth_required")
     return False
@@ -199,7 +199,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                 rate_window.append(now)
                 if len(rate_window) > rate_limit:
                     await websocket.send_text(
-                        json.dumps({"type": "error", "reason": "rate_limit_exceeded"})
+                        _jdump({"type": "error", "reason": "rate_limit_exceeded"})
                     )
                     await websocket.close(code=4029, reason="rate_limit_exceeded")
                     break
@@ -211,7 +211,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
             try:
                 data = json.loads(msg)
             except json.JSONDecodeError:
-                await websocket.send_text(json.dumps({"type": "error", "reason": "invalid_json"}))
+                await websocket.send_text(_jdump({"type": "error", "reason": "invalid_json"}))
                 continue
 
             msg_type = data.get("type")
@@ -232,7 +232,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
             elif msg_type == "subscribe":
                 room_id = data.get("room_id", "")
                 if not isinstance(room_id, str) or not room_id:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "subscribe_fail",
                         "reason": "invalid_subscribe_payload",
                         "detail": "room_id required",
@@ -241,7 +241,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
 
                 room, obs_err = await social.add_observer(room_id, websocket)
                 if room is None:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "subscribe_fail",
                         "reason": obs_err or "room_not_found",
                         "room_id": room_id,
@@ -293,7 +293,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                 room_id = data.get("room_id", "")
                 text = data.get("text", "")
                 if not isinstance(room_id, str) or not room_id or not isinstance(text, str) or not (1 <= len(text) <= 4000):
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "error",
                         "reason": "invalid_submit_topic_payload",
                         "detail": "room_id and text(1-4000) are required",
@@ -301,26 +301,26 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     continue
                 room = await social.get_room(room_id)
                 if room is None:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "error",
                         "reason": "room_not_found",
                     }))
                     continue
                 if room.is_private:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "error",
                         "reason": "topic_suggestions_disabled_private_room",
                     }))
                     continue
                 if not room.observable:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "error",
                         "reason": "not_observable",
                     }))
                     continue
                 ok = await record_room_topic_suggestion(session_factory, room_id, text.strip())
                 if not ok:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "error",
                         "reason": "persistence_failed",
                     }))
@@ -333,12 +333,12 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
 
             else:
                 if msg_type in ("send_message", "create_room", "join_room", "leave_room"):
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "error",
                         "reason": "observer_cannot_send",
                     }))
                 else:
-                    await websocket.send_text(json.dumps({
+                    await websocket.send_text(_jdump({
                         "type": "error",
                         "reason": "unknown_type",
                     }))

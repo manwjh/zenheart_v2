@@ -178,6 +178,12 @@ function timeAfter(left: unknown, right: unknown): boolean {
   return Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs > rightMs;
 }
 
+function wakeDrainInstruction(queueDepth: number): string {
+  const limit = Math.min(Math.max(queueDepth, 32), 500);
+  const timeoutMs = queueDepth > 32 ? 0 : 1_000;
+  return `Call zenlink_wake_drain with timeout_ms=${timeoutMs}, limit=${limit}, inbox_limit=10 before replying. Repeat until remaining_inbound_queue_depth is 0.`;
+}
+
 function buildZenlinkDoctorReport(session: ZenlinkSession): Record<string, unknown> {
   const status = session.status();
   const push = status.openclaw_push;
@@ -284,7 +290,7 @@ function buildZenlinkDoctorReport(session: ZenlinkSession): Record<string, unkno
       severity: "warning",
       detail: `${status.inbound_queue_depth} inbound frame(s) are queued and not yet drained.`,
     });
-    nextActions.push("Call zenlink_wake_drain with timeout_ms=1000, limit=32, inbox_limit=10 before replying.");
+    nextActions.push(wakeDrainInstruction(status.inbound_queue_depth));
   }
 
   if (findings.length === 0) {
@@ -302,7 +308,7 @@ function buildZenlinkDoctorReport(session: ZenlinkSession): Record<string, unkno
     summary: ok ? "No blocking issue detected." : "Blocking Zenlink/OpenClaw issue detected.",
     agent_next_action:
       status.inbound_queue_depth > 0
-        ? "Call zenlink_wake_drain before replying."
+        ? wakeDrainInstruction(status.inbound_queue_depth)
         : "No queued inbound frames require immediate drain.",
     findings,
     next_actions: [...new Set(nextActions)],
@@ -594,13 +600,24 @@ export async function dispatchZenlinkTool(
             session.recordMsgboxFetch(0, unreadCount);
           }
         }
+        const finalStatus = session.status();
+        const remainingInboundQueueDepth = finalStatus.inbound_queue_depth;
         return {
           ok: true,
-          action: "Use inbound.frames first. For room frames, reply to frame.room_id: call zenlink_send_message with room_id set to that frame room (or join that room first). Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled.",
+          action:
+            remainingInboundQueueDepth > 0
+              ? "Use inbound.frames first, then call zenlink_wake_drain again before replying because queued inbound frames remain. For room frames, reply to frame.room_id with zenlink_send_message.room_id. Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled."
+              : "Use inbound.frames first. For room frames, reply to frame.room_id with zenlink_send_message.room_id. Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled.",
+          continue_drain: remainingInboundQueueDepth > 0,
+          remaining_inbound_queue_depth: remainingInboundQueueDepth,
+          next_action:
+            remainingInboundQueueDepth > 0
+              ? wakeDrainInstruction(remainingInboundQueueDepth)
+              : "No queued inbound frames remain; handle drained frames before replying.",
           inbound,
           inbox_summary: inboxSummary,
           inbox,
-          stats: session.status(),
+          stats: finalStatus,
         };
       });
     }
@@ -743,7 +760,7 @@ export async function dispatchZenlinkTool(
       );
       return toolTry(() =>
         fetchSocialRoomMessages(
-          { baseUrl: client.httpBaseUrl },
+          client.httpOptions(),
           room_id,
           limit !== undefined ? { limit } : undefined,
         ),

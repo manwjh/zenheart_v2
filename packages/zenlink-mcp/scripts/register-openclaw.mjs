@@ -2,7 +2,7 @@
 /**
  * Register zenlink-mcp in OpenClaw config (mcp.servers) via CLI.
  *
- * Requires: openclaw on PATH, built dist/cli.js, and registration-email credentials:
+ * Requires: openclaw on PATH (or ZENLINK_MCP_OPENCLAW_COMMAND / OPENCLAW_BIN), built dist/cli.js, and registration-email credentials:
  *   ZENLINK_AGENT_ID + ZENLINK_TOKEN.
  *
  * Registration writes a plain stdio MCP spec; forwards **`ZENLINK_MCP_USE_DAEMON`** /
@@ -70,6 +70,13 @@ function createMinimalConfigAllowed() {
   return (
     x === "1" || String(x ?? "").toLowerCase() === "true"
   );
+}
+
+function resolveOpenClawCommand() {
+  const explicit =
+    process.env.ZENLINK_MCP_OPENCLAW_COMMAND?.trim() ||
+    process.env.OPENCLAW_BIN?.trim();
+  return explicit || "openclaw";
 }
 
 /**
@@ -399,11 +406,11 @@ async function runPostInstallDoctorCheck(env, opts = {}) {
 }
 
 /**
- * @param {{ pkgRoot: string; nodeCommand: string; env: Record<string, string> }} opts
+ * @param {{ pkgRoot: string; nodeCommand: string; openClawCommand: string; env: Record<string, string> }} opts
  * @returns {Array<{ id: string, ok: boolean, detail?: string }>}
  */
 function runPostInstallActivation(opts) {
-  const { pkgRoot, nodeCommand, env } = opts;
+  const { pkgRoot, nodeCommand, openClawCommand, env } = opts;
   if (!postInstallActivationEnabled()) {
     emitInstallPhase({
       pkgRoot,
@@ -523,7 +530,7 @@ function runPostInstallActivation(opts) {
     component: "register",
     phase: "gateway_restart_enter",
   });
-  const restart = spawnSync("openclaw", ["gateway", "restart"], {
+  const restart = spawnSync(openClawCommand, ["gateway", "restart"], {
     stdio: "inherit",
   });
   if (restart.error || (restart.status ?? 1) !== 0) {
@@ -942,6 +949,10 @@ async function main() {
   } else {
     console.error(`note: registering MCP command with current Node: ${nodeCommand}`);
   }
+  const openClawCommand = resolveOpenClawCommand();
+  if (openClawCommand !== "openclaw") {
+    console.error(`note: using OpenClaw CLI command: ${openClawCommand}`);
+  }
 
   const spec = {
     command: nodeCommand,
@@ -963,10 +974,10 @@ async function main() {
     pkgRoot,
     component: "register",
     phase: "openclaw_cli_spawn",
-    detail: String(name),
+    detail: `${openClawCommand} mcp set ${name}`,
   });
 
-  const result = spawnSync("openclaw", ["mcp", "set", name, payload], {
+  const result = spawnSync(openClawCommand, ["mcp", "set", name, payload], {
     stdio: "inherit",
   });
 
@@ -978,7 +989,7 @@ async function main() {
         phase: "openclaw_cli_missing",
       });
       console.error(
-        "error: openclaw not found in PATH.\n\nPaste under mcp.servers in ~/.openclaw/openclaw.json:\n",
+        `error: OpenClaw CLI not found: ${openClawCommand}.\nSet ZENLINK_MCP_OPENCLAW_COMMAND or OPENCLAW_BIN, or put openclaw on PATH.\n\nPaste under mcp.servers in ~/.openclaw/openclaw.json:\n`,
       );
       const snippet = { mcp: { servers: { [name]: spec } } };
       console.log(JSON.stringify(snippet, null, 2));
@@ -1000,7 +1011,7 @@ async function main() {
             {
               id: "openclaw_cli_on_path",
               ok: false,
-              detail: "ENOENT",
+              detail: `ENOENT:${openClawCommand}`,
             },
             {
               id: "mcp_servers_persisted",
@@ -1160,6 +1171,7 @@ async function main() {
   const activationChecks = runPostInstallActivation({
     pkgRoot,
     nodeCommand,
+    openClawCommand,
     env,
   });
   let doctorCheck = { id: "zenlink_doctor", ok: true, detail: "skipped_activation_failed" };

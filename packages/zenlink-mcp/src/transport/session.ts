@@ -117,9 +117,13 @@ export class ZenlinkSession {
   private lastMsgboxAckAt: string | null = null;
   private lastMsgboxAckCount = 0;
 
-  constructor(client = new ZenlinkClient(), notifier = new OpenClawWakeNotifier()) {
+  constructor(client = new ZenlinkClient(), notifier?: OpenClawWakeNotifier) {
     this.client = client;
-    this.notifier = notifier;
+    this.notifier =
+      notifier ??
+      new OpenClawWakeNotifier({
+        inboundQueueDepth: () => this.inboundQueue.length,
+      });
     this.inboundQueueMax = parseQueueMax();
     this.inboundDropTypes = parseInboundDropTypes();
     this.client.onMessage((frame: unknown) => this.handleFrame(frame));
@@ -708,7 +712,7 @@ export class ZenlinkSession {
     if (!roomId) return null;
     try {
       const result = await fetchSocialRoomMessages(
-        { baseUrl: this.client.httpBaseUrl },
+        this.client.httpOptions(),
         roomId,
         { limit },
       );

@@ -8,6 +8,32 @@ _TIMEOUT = 8.0
 _FALLBACK_METHODS = ("head", "get")
 
 
+def sniff_image_content_type(data: bytes) -> str | None:
+    """Return an ``image/*`` MIME type from magic bytes, or None if unrecognized.
+
+    nginx and browsers map ``Content-Type`` from the stored file extension; the
+    upload APIs must save with an extension that matches the real format so
+    room messages and ``<img>`` decode correctly.
+    """
+    if not data:
+        return None
+    if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(data) >= 6 and data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    text_head = data[:4096].decode("utf-8", errors="ignore").lstrip("\ufeff \t\r\n")
+    lowered = text_head[:512].lower()
+    if lowered.startswith("<?xml") or lowered.startswith("<svg") or "<svg" in lowered or lowered.startswith(
+        "<!doctype svg"
+    ):
+        return "image/svg+xml"
+    return None
+
+
 def is_trusted_media_url(url: str, *, public_site_base_url: str, media_public_base_url: str) -> bool:
     """Return True if *url* refers to a locally-hosted image that does not need remote verification.
 

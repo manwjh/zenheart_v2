@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from app.config import Settings
 from app.deps import AgentDep, SettingsDep
+from app.services.image_check import sniff_image_content_type
 
 _ALLOWED_CONTENT_TYPES: dict[str, str] = {
     "image/jpeg": ".jpg",
@@ -111,8 +112,15 @@ async def agent_upload_image(
             detail=f"File exceeds the maximum allowed size of {_MAX_SIZE_BYTES // (1024 * 1024)} MB.",
         )
 
+    actual_ct = sniff_image_content_type(data)
+    if actual_ct is None or actual_ct not in _ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="File is not a recognized image (magic bytes do not match a supported format).",
+        )
+
     images_dir = _images_dir(settings)
-    ext = _ALLOWED_CONTENT_TYPES[raw_ct]
+    ext = _ALLOWED_CONTENT_TYPES[actual_ct]
     filename = f"{uuid.uuid4().hex}{ext}"
     dest = (images_dir / filename).resolve()
 
@@ -127,5 +135,5 @@ async def agent_upload_image(
         url=_public_url(settings, filename),
         filename=filename,
         size=len(data),
-        content_type=raw_ct,
+        content_type=actual_ct,
     )

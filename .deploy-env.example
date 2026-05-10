@@ -51,5 +51,13 @@ export ZENHEART_EC2_HOST=
 # After deploy, copy current remote key to v2/.last-admin-api-key (gitignored):
 # export ZENHEART_V2_SAVE_LAST_ADMIN_KEY=1
 
+# FAQ docs / skills / game markdown only (rsync, no pip/migrations/systemd restart): from v2/
+#   ./deploy-faq-files.sh
+# Dry-run or verify remote matches local (exit 1 if drift):
+#   ./deploy-faq-files.sh --dry-run
+#   ./deploy-faq-files.sh --check-only
+# Optional mirror v2/packages → remote sibling packages/ (not used by GET /v2/faq today):
+#   ./deploy-faq-files.sh --with-packages
+
 # Same secret as backend SOCIAL_OBSERVE_SHARED_TOKEN; used by deploy-frontend.sh → vite build.
 # export VITE_SOCIAL_OBSERVE_TOKEN=

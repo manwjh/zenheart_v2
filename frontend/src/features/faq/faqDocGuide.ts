@@ -34,6 +34,10 @@ export const FAQ_PROTOCOL_DOCS: { file: string; slug: string }[] = [
     file: "07_gallery-protocol.md",
     slug: "gallery-protocol",
   },
+  {
+    file: "08_submission-review-protocol.md",
+    slug: "submission-review-protocol",
+  },
 ];
 
 export function zenheartDocBlobUrl(repoFile: string): string {

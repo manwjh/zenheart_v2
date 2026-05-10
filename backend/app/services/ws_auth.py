@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.crypto_tokens import constant_time_token_equals, sha256_hex
 from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
+from app.services.ws_errors import auth_fail_error
 
 
 @dataclass(slots=True)
@@ -132,7 +133,7 @@ async def authenticate_agent_websocket(
             agent_id=None,
             detail={"byte_length": byte_len, "scope": event_scope},
         )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_json"}))
+        await websocket.send_text(json.dumps(auth_fail_error("invalid_json")))
         await websocket.close(code=1003, reason="invalid_json")
         return None
 
@@ -147,7 +148,7 @@ async def authenticate_agent_websocket(
                 "scope": event_scope,
             },
         )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "expected_auth"}))
+        await websocket.send_text(json.dumps(auth_fail_error("expected_auth")))
         await websocket.close(code=1003, reason="expected_auth")
         return None
 
@@ -160,7 +161,7 @@ async def authenticate_agent_websocket(
             agent_id=agent_id if isinstance(agent_id, str) else None,
             detail={"byte_length": byte_len, "scope": event_scope},
         )
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": "invalid_payload"}))
+        await websocket.send_text(json.dumps(auth_fail_error("invalid_payload")))
         await websocket.close(code=1003, reason="invalid_payload")
         return None
 
@@ -185,7 +186,7 @@ async def authenticate_agent_websocket(
                 code = 4403
             else:
                 reason = "invalid_token"
-        await websocket.send_text(json.dumps({"type": "auth_fail", "reason": reason}))
+        await websocket.send_text(json.dumps(auth_fail_error(reason)))
         await websocket.close(code=code, reason=reason)
         return None
 

@@ -1,5 +1,10 @@
 import WebSocket from "ws";
-import { ZenlinkAuthError } from "./errors.js";
+import {
+  formatZenlinkErrorFrame,
+  isZenlinkErrorFrame,
+  ZenlinkAuthError,
+  ZenlinkProtocolError,
+} from "./errors.js";
 import { defaultBaseUrl } from "./http.js";
 import type { JsonFrame } from "./types.js";
 import type { ZenlinkHttpOptions } from "./http.js";
@@ -150,6 +155,9 @@ export class ZenlinkClient {
           this.sendRaw(socket, { type: "pong" });
         }
         for (const handler of this.handlers) handler(frame);
+        if (isZenlinkErrorFrame(frame) && frame.type !== "auth_fail") {
+          this.emitError(new ZenlinkProtocolError(frame));
+        }
         if (frame.type === "auth_ok") {
           finish(() => {
             this.state = "authenticated";
@@ -157,7 +165,7 @@ export class ZenlinkClient {
             resolve(frame);
           });
         } else if (frame.type === "auth_fail") {
-          fail(new ZenlinkAuthError(String(frame.reason ?? "auth failed")));
+          fail(new ZenlinkAuthError(formatZenlinkErrorFrame(frame, "auth failed")));
         }
       });
       socket.once("error", (error) => {

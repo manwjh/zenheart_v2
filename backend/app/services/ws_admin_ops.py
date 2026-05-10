@@ -18,6 +18,9 @@ Frames:
   admin_moderate_article         remove an article and notify the author
   admin_dissolve_social_room     force-dissolve an active A2A chat room
   admin_resurrect_social_room    restore a dissolved room to the lobby (DB + in-memory)
+  admin_list_submissions         list submission review queue items
+  admin_get_submission           fetch one submission with comments and reviews
+  admin_review_submission        claim / request changes / accept / reject / publish
 """
 from __future__ import annotations
 
@@ -33,11 +36,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.crypto_tokens import generate_token, sha256_hex
-from app.model_defs import Agent, LevelPermission, NewsArticle
+from app.model_defs import Agent, LevelPermission, NewsArticle, Submission
 from app.services.agent_event_log import record_agent_event
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.msgbox import push_message
 from app.services.msgbox_notify import push_msgbox_notify_to_agent
+from app.services.submissions import (
+    apply_submission_review,
+    comment_to_dict,
+    list_submission_comments,
+    list_submission_reviews,
+    load_submission_or_404,
+    notify_submission_submitter,
+    review_to_dict,
+    submission_to_dict,
+)
 
 if TYPE_CHECKING:
     from app.ws_registry import AgentConnectionRegistry
@@ -946,4 +959,156 @@ async def handle_admin_resurrect_social_room(
         "creator_id": room.creator_id,
         "created_at": room.created_at.isoformat(),
         "total_messages": room.message_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# admin_list_submissions / admin_get_submission / admin_review_submission
+# ---------------------------------------------------------------------------
+
+class _ListSubmissionsPayload(BaseModel):
+    status: str | None = Field(default=None, max_length=30)
+    kind: str | None = Field(default=None, max_length=20)
+    artifact_type: str | None = Field(default=None, max_length=40)
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class _GetSubmissionPayload(BaseModel):
+    submission_id: str = Field(min_length=1, max_length=80)
+
+
+class _ReviewSubmissionPayload(BaseModel):
+    submission_id: str = Field(min_length=1, max_length=80)
+    decision: str = Field(min_length=1, max_length=30)
+    summary: str = Field(min_length=1, max_length=20000)
+    owner_report: str | None = Field(default=None, max_length=20000)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+async def handle_admin_list_submissions(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    agent_level: int,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    err = _check_level0(agent_level)
+    if err:
+        return err
+
+    try:
+        payload = _ListSubmissionsPayload.model_validate(data)
+    except ValidationError as exc:
+        return {"type": "error", "reason": "invalid_admin_list_submissions_payload", "detail": exc.errors()}
+
+    query = select(Submission).order_by(Submission.created_at.desc()).limit(payload.limit)
+    if payload.status:
+        query = query.where(Submission.status == payload.status)
+    if payload.kind:
+        query = query.where(Submission.kind == payload.kind)
+    if payload.artifact_type:
+        query = query.where(Submission.artifact_type == payload.artifact_type)
+
+    async with session_factory() as session:
+        rows = list((await session.scalars(query)).all())
+
+    return {
+        "type": "admin_list_submissions_ok",
+        "submissions": [submission_to_dict(row) for row in rows],
+        "total": len(rows),
+    }
+
+
+async def handle_admin_get_submission(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    agent_level: int,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    err = _check_level0(agent_level)
+    if err:
+        return err
+
+    try:
+        payload = _GetSubmissionPayload.model_validate(data)
+    except ValidationError as exc:
+        return {"type": "error", "reason": "invalid_admin_get_submission_payload", "detail": exc.errors()}
+
+    async with session_factory() as session:
+        try:
+            submission = await load_submission_or_404(session, payload.submission_id)
+        except Exception:
+            return {"type": "error", "reason": "submission_not_found"}
+        comments = await list_submission_comments(session, submission.id)
+        reviews = await list_submission_reviews(session, submission.id)
+        return {
+            "type": "admin_get_submission_ok",
+            "submission": submission_to_dict(submission),
+            "comments": [comment_to_dict(row) for row in comments],
+            "reviews": [review_to_dict(row) for row in reviews],
+        }
+
+
+async def handle_admin_review_submission(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    registry: "AgentConnectionRegistry",
+    sovereign_agent_id: str,
+    agent_level: int,
+    connection_id: str,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    err = _check_level0(agent_level)
+    if err:
+        return err
+
+    try:
+        payload = _ReviewSubmissionPayload.model_validate(data)
+    except ValidationError as exc:
+        return {"type": "error", "reason": "invalid_admin_review_submission_payload", "detail": exc.errors()}
+
+    async with session_factory() as session:
+        try:
+            submission = await load_submission_or_404(session, payload.submission_id)
+        except Exception:
+            return {"type": "error", "reason": "submission_not_found"}
+        try:
+            review = await apply_submission_review(
+                session,
+                submission=submission,
+                reviewer_agent_id=sovereign_agent_id,
+                decision=payload.decision,
+                summary=payload.summary,
+                owner_report=payload.owner_report,
+                payload=payload.payload,
+            )
+        except ValidationError as exc:
+            return {"type": "error", "reason": "invalid_admin_review_submission_payload", "detail": exc.errors()}
+        except Exception as exc:
+            detail = getattr(exc, "detail", None)
+            if isinstance(detail, str):
+                return {"type": "error", "reason": "submission_review_failed", "detail": detail}
+            return {"type": "error", "reason": "submission_review_failed"}
+        comments = await list_submission_comments(session, submission.id)
+        reviews = await list_submission_reviews(session, submission.id)
+
+    message_id = await notify_submission_submitter(
+        session_factory,
+        registry,
+        submission=submission,
+        decision=payload.decision,
+        summary=payload.summary,
+    )
+    await record_agent_event(
+        session_factory,
+        event="submission_reviewed_via_ws",
+        agent_id=sovereign_agent_id,
+        connection_id=connection_id,
+        detail={"submission_id": payload.submission_id, "decision": payload.decision, "message_id": message_id},
+    )
+    return {
+        "type": "admin_review_submission_ok",
+        "submission": submission_to_dict(submission),
+        "review": review_to_dict(review),
+        "comments": [comment_to_dict(row) for row in comments],
+        "reviews": [review_to_dict(row) for row in reviews],
     }

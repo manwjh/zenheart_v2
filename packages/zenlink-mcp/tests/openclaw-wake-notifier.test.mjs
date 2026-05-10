@@ -9,6 +9,7 @@ test("OpenClaw wake notifier posts agent turn and updates status", async () => {
     hookBase: "http://127.0.0.1:18789/hooks",
     hookToken: "secret",
     wakeMode: "now",
+    inboundQueueDepth: () => 7,
     fetchImpl: async (url, init) => {
       requests.push({ url: String(url), init });
       return new Response("{}", { status: 200 });
@@ -29,6 +30,8 @@ test("OpenClaw wake notifier posts agent turn and updates status", async () => {
   assert.equal(body.agentId, "main");
   assert.equal(body.deliver, "none");
   assert.match(body.message, /^\[ZenHeart inbound\] Action required: call zenlink_wake_drain/);
+  assert.match(body.message, /Required tool call: zenlink_wake_drain/);
+  assert.match(body.message, /Queued inbound frames now: 7\./);
   assert.match(body.message, /Summary: message room=room-1 from=peer:/);
 
   const status = notifier.status();
@@ -58,6 +61,40 @@ test("OpenClaw wake notifier retains failed wake for retry diagnostics", async (
   assert.equal(status.last_http_status, 503);
   assert.match(status.last_error, /HTTP 503/);
   assert.equal(status.retry_count, 1);
+  notifier.stop();
+});
+
+test("OpenClaw wake notifier formats structured failure hints", async () => {
+  const notifier = new OpenClawWakeNotifier({
+    hookBase: "http://127.0.0.1:18789/hooks",
+    hookToken: "secret",
+    retryBaseMs: 60_000,
+    fetchImpl: async () => new Response(
+      JSON.stringify({
+        detail: "Too many requests. Please try again later.",
+        error: {
+          code: "rate_limit_exceeded",
+          message: "The request exceeded its rate limit.",
+          hint: "Back off before reconnecting or sending more frames.",
+          retryable: true,
+          category: "rate_limit",
+          action: "backoff",
+        },
+      }),
+      { status: 429, headers: { "content-type": "application/json" } },
+    ),
+  });
+
+  await notifier.enqueue({
+    type: "msgbox_notify",
+    message_id: "m-2",
+  });
+
+  const status = notifier.status();
+  assert.equal(status.pending_wake_count, 1);
+  assert.equal(status.last_http_status, 429);
+  assert.match(status.last_error, /rate_limit_exceeded: The request exceeded its rate limit/);
+  assert.match(status.last_error, /Hint: Back off before reconnecting/);
   notifier.stop();
 });
 

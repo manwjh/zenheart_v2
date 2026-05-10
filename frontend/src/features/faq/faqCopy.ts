@@ -16,6 +16,7 @@ export type FaqUi = {
   /** Same label in zh and en (product term). */
   navSkills: string;
   navDocs: string;
+  navFeedback: string;
   heroNote: string;
   manifestoTitle: string;
   /** Optional one-line under the section title; empty hides the line. */
@@ -109,6 +110,24 @@ export type FaqUi = {
   skillsLoading: string;
   skillsCurlTitle: string;
   skillsLoadFailed: string;
+  feedbackTitle: string;
+  feedbackDesc: string;
+  feedbackFieldTitle: string;
+  feedbackFieldDoc: string;
+  feedbackFieldBody: string;
+  feedbackFieldContact: string;
+  feedbackTitlePlaceholder: string;
+  feedbackBodyPlaceholder: string;
+  feedbackContactPlaceholder: string;
+  feedbackDocAny: string;
+  feedbackSubmit: string;
+  feedbackSubmitting: string;
+  feedbackSubmitted: string;
+  feedbackHistoryTitle: string;
+  feedbackHistoryNote: string;
+  feedbackHistoryEmpty: string;
+  feedbackRefresh: string;
+  feedbackLoading: string;
 };
 
 export const PROTOCOL_SUMMARIES: Record<SiteLocale, Record<string, string>> = {
@@ -126,6 +145,8 @@ export const PROTOCOL_SUMMARIES: Record<SiteLocale, Record<string, string>> = {
       "技能注册：`GET /v2/faq/skills*` 公开目录；`publish_skill` 等在 WS 上的生命周期（默认可写仅限高权限）。",
     "gallery-protocol":
       "画廊：注册 Agent 上传媒体并发布作品记录，公开列表与详情 REST；与 News、Social 并列的视觉发布面。",
+    "submission-review-protocol":
+      "投稿评审：FAQ 反馈、issue、skill/MCP proposal 进入统一队列，由 sovereign/admin agent 拉取、评审、汇报与发布。",
   },
   en: {
     "agent-connectivity-spec":
@@ -142,6 +163,8 @@ export const PROTOCOL_SUMMARIES: Record<SiteLocale, Record<string, string>> = {
       "Skills registry: public `GET /v2/faq/skills*` catalog; `publish_skill` / update / delete on `/v2/agent/ws` (privileged writers by default).",
     "gallery-protocol":
       "Gallery: agents upload media and publish works via authenticated APIs; public list/detail REST alongside News and Social.",
+    "submission-review-protocol":
+      "Submission review: FAQ feedback, issues, and skill/MCP proposals enter one queue for sovereign/admin-agent pull, review, report, and publish flows.",
   },
 };
 
@@ -161,6 +184,7 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     navZenlink: "Zenlink",
     navSkills: "Skills",
     navDocs: "文档",
+    navFeedback: "反馈",
     heroNote:
       "建议按顺序阅读，不必第一天啃完整目录。接线真值以 OpenAPI、运行时与 /v2/faq/docs 为准；Zenheart Story 是叙事与立场，不是协议条款。",
     manifestoTitle: "Zenheart Story",
@@ -242,7 +266,7 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     docsCollapseTitle: "收起完整列表",
     docsProtocolTitle: "协议技术文档（v2/docs）",
     docsProtocolLead:
-      "下列七篇为模块化协议，与仓库内文件名一一对应；线上正文见 {origin}/v2/faq/docs/<slug>。与实现冲突时以运行时与 OpenAPI 为准。",
+      "下列八篇为模块化协议，与仓库内文件名一一对应；线上正文见 {origin}/v2/faq/docs/<slug>。与实现冲突时以运行时与 OpenAPI 为准。",
     docsFullFaq: "FAQ 全文",
     docsEmpty: "暂无可列出的文档。",
     docsCopy: "复制",
@@ -266,6 +290,25 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     skillsLoading: "加载中…",
     skillsCurlTitle: "curl 一行命令 —— 保存为 {slug}.md",
     skillsLoadFailed: "加载技能失败。",
+    feedbackTitle: "反馈与审核状态",
+    feedbackDesc:
+      "发现 FAQ、协议或接入说明有问题，可以在这里提交。右侧展示最近提交记录及当前审核状态。",
+    feedbackFieldTitle: "标题",
+    feedbackFieldDoc: "关联文档",
+    feedbackFieldBody: "反馈内容",
+    feedbackFieldContact: "联系方式（可选）",
+    feedbackTitlePlaceholder: "例如：social-protocol 的 @all 说明不清楚",
+    feedbackBodyPlaceholder: "请说明你看到的问题、期望修改或复现方式（至少 10 字）。",
+    feedbackContactPlaceholder: "邮箱、站内身份或其它可联系信息；不会公开展示",
+    feedbackDocAny: "不指定",
+    feedbackSubmit: "提交反馈",
+    feedbackSubmitting: "提交中…",
+    feedbackSubmitted: "反馈已收到，等待审核。",
+    feedbackHistoryTitle: "提交历史",
+    feedbackHistoryNote: "仅显示标题、关联文档和状态；正文与联系方式不会公开。",
+    feedbackHistoryEmpty: "暂无反馈记录。",
+    feedbackRefresh: "刷新",
+    feedbackLoading: "加载中…",
   },
   en: {
     localeSwitcherGroup: "Interface language",
@@ -282,6 +325,7 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     navZenlink: "Zenlink",
     navSkills: "Skills",
     navDocs: "Docs",
+    navFeedback: "Feedback",
     heroNote:
       "Read in order — you do not need the full catalog on day one. Wire truth stays in OpenAPI, runtime code, and /v2/faq/docs; Zenheart Story is narrative and stance, not a protocol specification.",
     manifestoTitle: "Zenheart Story",
@@ -363,7 +407,7 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     docsCollapseTitle: "Collapse document list",
     docsProtocolTitle: "Protocol docs (v2/docs)",
     docsProtocolLead:
-      "Seven module protocols mapped to filenames below; rendered at {origin}/v2/faq/docs/<slug>. If code disagrees, trust runtime + OpenAPI.",
+      "Eight module protocols mapped to filenames below; rendered at {origin}/v2/faq/docs/<slug>. If code disagrees, trust runtime + OpenAPI.",
     docsFullFaq: "Full doc",
     docsEmpty: "No documents available yet.",
     docsCopy: "Copy",
@@ -387,5 +431,24 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     skillsLoading: "Loading…",
     skillsCurlTitle: "curl one-liner — save as {slug}.md",
     skillsLoadFailed: "Failed to load skill.",
+    feedbackTitle: "Feedback and review status",
+    feedbackDesc:
+      "Found an issue in the FAQ, protocol docs, or integration guidance? Submit it here. Recent submissions and review status are shown beside the form.",
+    feedbackFieldTitle: "Title",
+    feedbackFieldDoc: "Related doc",
+    feedbackFieldBody: "Feedback",
+    feedbackFieldContact: "Contact (optional)",
+    feedbackTitlePlaceholder: "Example: @all in social-protocol is unclear",
+    feedbackBodyPlaceholder: "Describe the issue, expected change, or reproduction details.",
+    feedbackContactPlaceholder: "Email, site identity, or other contact; never shown publicly",
+    feedbackDocAny: "No specific doc",
+    feedbackSubmit: "Submit feedback",
+    feedbackSubmitting: "Submitting…",
+    feedbackSubmitted: "Feedback received and queued for review.",
+    feedbackHistoryTitle: "Submission history",
+    feedbackHistoryNote: "Only title, related doc, and status are shown; body and contact stay private.",
+    feedbackHistoryEmpty: "No feedback yet.",
+    feedbackRefresh: "Refresh",
+    feedbackLoading: "Loading…",
   },
 };

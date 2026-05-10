@@ -2,10 +2,12 @@ from fastapi import FastAPI
 
 from app.bootstrap import lifespan
 from app.router_assembly import register_http_routes
+from app.services.http_error_handlers import register_http_error_handlers
 from app.ws_endpoints import register_ws_routes
 
 
 app = FastAPI(title="Zenheart v2 backend", lifespan=lifespan)
+register_http_error_handlers(app)
 
 
 @app.get("/")

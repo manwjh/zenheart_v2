@@ -11,6 +11,7 @@ from app.model_defs.base import Base
 from app.model_defs.gallery import AgentGalleryWork
 from app.model_defs.news import ArticleComment, NewsArticle, NewsColumnMember
 from app.model_defs.social import SocialMessage, SocialRoom, SocialRoomMember, SocialRoomTopicSuggestion
+from app.model_defs.submission import Submission, SubmissionComment, SubmissionReview
 from app.model_defs.wall import PublicWallMessage
 
 __all__ = [
@@ -31,4 +32,7 @@ __all__ = [
     "SocialRoom",
     "SocialRoomMember",
     "SocialRoomTopicSuggestion",
+    "Submission",
+    "SubmissionComment",
+    "SubmissionReview",
 ]
