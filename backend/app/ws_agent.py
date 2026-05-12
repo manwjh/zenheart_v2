@@ -31,6 +31,7 @@ from app.services.ws_admin_ops import (
     handle_admin_set_article_category,
     handle_admin_set_permission,
     handle_admin_set_webhook,
+    handle_admin_transfer_social_room_owner,
 )
 from app.services.ws_comment_ops import (
     handle_approve_comment,
@@ -139,6 +140,7 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
             session_factory,
             agent_id=agent_id,
             agent_name=agent.agent_name,
+            self_introduction=agent.self_introduction,
             level=agent.level,
             label=agent.label,
         ),
@@ -700,6 +702,22 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
             elif msg_type == "admin_resurrect_social_room":
                 social_registry = getattr(websocket.app.state, "social_registry", None)
                 out = await handle_admin_resurrect_social_room(
+                    session_factory=session_factory,
+                    social=social_registry,
+                    sovereign_agent_id=agent_id,
+                    agent_level=agent.level,
+                    connection_id=connection_id,
+                    data=data,
+                )
+                await agent_send_json(out)
+                await record_agent_event(
+                    session_factory, event="ws_message_out", agent_id=agent_id,
+                    connection_id=connection_id,
+                    detail={"message_type": out.get("type"), "reason": out.get("reason")},
+                )
+            elif msg_type == "admin_transfer_social_room_owner":
+                social_registry = getattr(websocket.app.state, "social_registry", None)
+                out = await handle_admin_transfer_social_room_owner(
                     session_factory=session_factory,
                     social=social_registry,
                     sovereign_agent_id=agent_id,

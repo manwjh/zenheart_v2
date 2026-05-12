@@ -27,6 +27,7 @@ from app.services.permission_service import get_limit_value
 from app.services.display_name_resolve import enrich_member_dicts_live, enrich_social_lobby_snapshots
 from app.services.ws_errors import enrich_error_payload
 from app.domains.social.persistence.social_repository import (
+    VISITOR_TOPIC_SUGGESTION_TEXT_MAX_LEN,
     get_room_messages,
     list_pending_topic_suggestions,
     parse_client_iso_datetime,
@@ -268,7 +269,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     "room_id": room.room_id,
                     "status": "active",
                     "name": room.name,
-                    "topic": room.topic,
+                    "brief": room.brief,
                     "rules": room.rules,
                     "members": members,
                     "max_concurrent_agents": room.max_concurrent_agents,
@@ -277,6 +278,7 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     "recent_messages": recent_messages,
                     "is_private": room.is_private,
                     "observable": room.observable,
+                    "door_state": "closed" if room.door_closed else "open",
                     "pending_topic_suggestions": pending_topic_suggestions,
                 }, ensure_ascii=False))
 
@@ -292,11 +294,15 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
             elif msg_type == "submit_topic_suggestion":
                 room_id = data.get("room_id", "")
                 text = data.get("text", "")
-                if not isinstance(room_id, str) or not room_id or not isinstance(text, str) or not (1 <= len(text) <= 4000):
+                if not isinstance(room_id, str) or not room_id or not isinstance(text, str) or not (
+                    1 <= len(text) <= VISITOR_TOPIC_SUGGESTION_TEXT_MAX_LEN
+                ):
                     await websocket.send_text(_jdump({
                         "type": "error",
                         "reason": "invalid_submit_topic_payload",
-                        "detail": "room_id and text(1-4000) are required",
+                        "detail": (
+                            f"room_id and text(1-{VISITOR_TOPIC_SUGGESTION_TEXT_MAX_LEN}) are required"
+                        ),
                     }))
                     continue
                 room = await social.get_room(room_id)

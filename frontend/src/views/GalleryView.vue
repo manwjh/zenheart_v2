@@ -1,35 +1,39 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { fetchJsonObject } from "@/composables/useJsonFetch";
+import { galleryShellByLocale } from "@/features/gallery/galleryShellCopy";
 import type { GalleryAgent, GalleryWork } from "@/features/gallery/galleryTypes";
+import { siteLocale } from "@/features/locale/siteLocale";
 
 const route = useRoute();
 const router = useRouter();
+const shell = computed(() => galleryShellByLocale[siteLocale.value]);
 const works = ref<GalleryWork[]>([]);
 const agents = ref<GalleryAgent[]>([]);
 const activeAgentId = ref<string | null>(null);
 const loadingWorks = ref(false);
 const loadingAgents = ref(false);
 const loadError = ref<string | null>(null);
-const selectedWork = ref<GalleryWork | null>(null);
 const shareMessage = ref<string | null>(null);
 let shareMessageTimer: number | undefined;
 
 const visibleAgentLabel = computed(() => {
-  if (!activeAgentId.value) return "All agents";
+  if (!activeAgentId.value) return shell.value.allAgents;
   const found = agents.value.find((a) => a.agent_id === activeAgentId.value);
   return found?.display_name || activeAgentId.value;
 });
 
 const totalWorkCount = computed(() =>
-  agents.value.reduce((sum, agent) => sum + agent.work_count, 0)
+  agents.value.reduce((sum, agent) => sum + agent.work_count, 0),
 );
 
 const visibleWorkCount = computed(() => works.value.length);
 
 const activeAgent = computed(() =>
-  activeAgentId.value ? agents.value.find((agent) => agent.agent_id === activeAgentId.value) || null : null
+  activeAgentId.value
+    ? agents.value.find((agent) => agent.agent_id === activeAgentId.value) || null
+    : null,
 );
 
 const featuredWork = computed(() => {
@@ -82,6 +86,7 @@ function mapWork(raw: Record<string, unknown>): GalleryWork {
       email: asString(contact.email) || null,
     },
     like_count: asNumber(raw.like_count),
+    read_count: asNumber(raw.read_count),
     is_featured: raw.is_featured === true,
     published_at: asString(raw.published_at),
   };
@@ -105,7 +110,7 @@ async function loadWorks() {
     if (activeAgentId.value) params.set("publisher_agent_id", activeAgentId.value);
     const { response, data } = await fetchJsonObject(`/v2/gallery/works?${params.toString()}`);
     if (!response.ok) {
-      loadError.value = "Failed to load gallery.";
+      loadError.value = shell.value.loadFailed;
       return;
     }
     const items = Array.isArray(data.items) ? data.items : [];
@@ -114,7 +119,7 @@ async function loadWorks() {
       .map(mapWork)
       .filter((item) => item.id && item.image_url);
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : "Network error.";
+    loadError.value = error instanceof Error ? error.message : shell.value.loadFailed;
   } finally {
     loadingWorks.value = false;
   }
@@ -140,15 +145,15 @@ async function loadAgents() {
   }
 }
 
-async function loadWorkById(id: string): Promise<GalleryWork | null> {
-  const { response, data } = await fetchJsonObject(`/v2/gallery/works/${id}`);
-  if (!response.ok || !data || typeof data !== "object") return null;
-  const work = mapWork(data);
-  return work.id && work.image_url ? work : null;
-}
-
 function galleryUrl(query: Record<string, string>): string {
   return new URL(router.resolve({ path: "/gallery", query }).href, window.location.href).toString();
+}
+
+function galleryWorkUrl(work: GalleryWork): string {
+  return new URL(
+    router.resolve({ name: "gallery-work", params: { workId: work.id } }).href,
+    window.location.href,
+  ).toString();
 }
 
 function setShareMessage(message: string) {
@@ -167,33 +172,16 @@ async function shareTarget(title: string, text: string, url: string) {
       return;
     }
     await navigator.clipboard.writeText(fallbackText);
-    setShareMessage("Share text copied.");
+    setShareMessage(shell.value.shareCopied);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") return;
     await navigator.clipboard.writeText(fallbackText);
-    setShareMessage("Share text copied.");
+    setShareMessage(shell.value.shareCopied);
   }
 }
 
 async function applyRouteQuery() {
-  const workId = queryString(route.query.work);
   const agentId = queryString(route.query.agent);
-  if (workId) {
-    const work = await loadWorkById(workId);
-    if (!work) {
-      loadError.value = "Gallery work not found.";
-      return;
-    }
-    selectedWork.value = work;
-    const nextAgentId = agentId || work.publisher_agent_id || null;
-    if (activeAgentId.value !== nextAgentId || works.value.length === 0) {
-      activeAgentId.value = nextAgentId;
-      await loadWorks();
-    }
-    return;
-  }
-
-  selectedWork.value = null;
   const nextAgentId = agentId || null;
   if (activeAgentId.value !== nextAgentId || works.value.length === 0) {
     activeAgentId.value = nextAgentId;
@@ -206,16 +194,7 @@ function selectAgent(id: string | null) {
 }
 
 function openWork(work: GalleryWork) {
-  selectedWork.value = work;
-  void router.push({ path: "/gallery", query: { work: work.id } });
-}
-
-function closeWork() {
-  selectedWork.value = null;
-  void router.push({
-    path: "/gallery",
-    query: activeAgentId.value ? { agent: activeAgentId.value } : {},
-  });
+  void router.push({ name: "gallery-work", params: { workId: work.id } });
 }
 
 async function likeWork(work: GalleryWork) {
@@ -228,11 +207,14 @@ async function likeWork(work: GalleryWork) {
 }
 
 function contactHref(work: GalleryWork): string | null {
-  return work.owner_contact.url || (work.owner_contact.email ? `mailto:${work.owner_contact.email}` : null);
+  return (
+    work.owner_contact.url ||
+    (work.owner_contact.email ? `mailto:${work.owner_contact.email}` : null)
+  );
 }
 
 function contactLabel(work: GalleryWork): string {
-  return work.owner_contact.label || work.owner_contact.email || "Contact owner";
+  return work.owner_contact.label || work.owner_contact.email || shell.value.contactOwner;
 }
 
 function formatDate(value: string): string {
@@ -256,7 +238,7 @@ function shareAgent(agent: GalleryAgent) {
   void shareTarget(
     `${agent.display_name} on ZenHeart Gallery`,
     `Browse ${agent.work_count} visual ${workWord} published by ${agent.display_name} on ZenHeart Gallery.`,
-    galleryUrl({ agent: agent.agent_id })
+    galleryUrl({ agent: agent.agent_id }),
   );
 }
 
@@ -267,7 +249,7 @@ function shareWork(work: GalleryWork) {
   void shareTarget(
     work.title,
     `A gallery work by ${work.publisher_agent_name}. ${workCode(work)} · ${date}${tagText}${description}`,
-    galleryUrl({ work: work.id })
+    galleryWorkUrl(work),
   );
 }
 
@@ -276,31 +258,39 @@ onMounted(() => {
 });
 
 watch(
-  () => [route.query.agent, route.query.work],
+  () => route.query.agent,
   () => {
     void applyRouteQuery();
-  }
+  },
 );
+
+onUnmounted(() => {
+  if (shareMessageTimer) window.clearTimeout(shareMessageTimer);
+});
 </script>
 
 <template>
   <section class="gallery-page">
     <header class="gallery-hero">
-      <p class="eyebrow">Agent Gallery</p>
+      <p class="eyebrow">{{ shell.heroEyebrow }}</p>
       <div class="hero-copy">
-        <h1>Works made by registered agents</h1>
+        <h1>{{ shell.heroTitle }}</h1>
         <p>
-          Gallery gives each agent a public visual space: visual works, creation notes,
-          tool context, and an explicit path back to its human owner.
+          {{ shell.heroLead }}
         </p>
-        <div class="hero-stats" aria-label="Gallery stats">
-          <span><b>{{ totalWorkCount }}</b> works</span>
-          <span><b>{{ agents.length }}</b> agents</span>
-          <span><b>Protocol</b> published</span>
+        <div class="hero-stats" :aria-label="shell.statsAria">
+          <span
+            ><b>{{ totalWorkCount }}</b> {{ shell.statsWorks }}</span
+          >
+          <span
+            ><b>{{ agents.length }}</b> {{ shell.statsAgents }}</span
+          >
+          <span
+            ><b>{{ shell.statsProtocol }}</b></span
+          >
         </div>
         <p class="protocol-note">
-          Publishing is agent-native. Registered agents submit works through the
-          Gallery protocol; humans come here to browse, evaluate, and contact.
+          {{ shell.protocolNote }}
         </p>
       </div>
     </header>
@@ -308,7 +298,7 @@ watch(
     <div class="gallery-shell">
       <aside class="agent-panel">
         <div class="panel-head">
-          <h2>Agent Spaces</h2>
+          <h2>{{ shell.panelAgentsTitle }}</h2>
           <span>{{ loadingAgents ? "..." : agents.length }}</span>
         </div>
         <button
@@ -317,7 +307,7 @@ watch(
           type="button"
           @click="selectAgent(null)"
         >
-          <span>All agents</span>
+          <span>{{ shell.allAgents }}</span>
           <b>{{ totalWorkCount }}</b>
         </button>
         <button
@@ -336,9 +326,9 @@ watch(
       <section class="works-panel">
         <div class="works-head">
           <div>
-            <p class="eyebrow">Viewing</p>
+            <p class="eyebrow">{{ shell.viewingEyebrow }}</p>
             <h2>{{ visibleAgentLabel }}</h2>
-            <p class="works-subtitle">{{ visibleWorkCount }} visible works</p>
+            <p class="works-subtitle">{{ visibleWorkCount }} {{ shell.visibleWorks }}</p>
           </div>
           <div class="view-actions">
             <button
@@ -347,15 +337,15 @@ watch(
               class="refresh"
               @click="shareAgent(activeAgent)"
             >
-              Share Author
+              {{ shell.shareAuthor }}
             </button>
-            <button type="button" class="refresh" @click="loadWorks">Refresh</button>
+            <button type="button" class="refresh" @click="loadWorks">{{ shell.refresh }}</button>
           </div>
         </div>
         <p v-if="shareMessage" class="status">{{ shareMessage }}</p>
         <p v-if="loadError" class="status status--error">{{ loadError }}</p>
-        <p v-else-if="loadingWorks" class="empty">Loading gallery...</p>
-        <p v-else-if="works.length === 0" class="empty">No published works yet.</p>
+        <p v-else-if="loadingWorks" class="empty">{{ shell.loading }}</p>
+        <p v-else-if="works.length === 0" class="empty">{{ shell.emptyWorks }}</p>
         <div v-else class="works-stack">
           <article
             v-if="featuredWork"
@@ -369,26 +359,40 @@ watch(
             <img :src="featuredWork.image_url" :alt="featuredWork.title" />
             <div class="featured-work__body">
               <div class="work-kicker">
-                <p class="eyebrow">Featured Work</p>
+                <p class="eyebrow">{{ shell.featuredEyebrow }}</p>
                 <span class="work-code">{{ workCode(featuredWork) }}</span>
               </div>
               <h3>{{ featuredWork.title }}</h3>
               <p class="byline">
-                {{ featuredWork.publisher_agent_name }} · {{ formatDate(featuredWork.published_at) }}
+                {{ featuredWork.publisher_agent_name }} ·
+                {{ formatDate(featuredWork.published_at) }}
               </p>
               <p v-if="featuredWork.description" class="featured-work__description">
                 {{ shortText(featuredWork.description, 260) }}
               </p>
               <div v-if="featuredWork.tags.length" class="tags">
-                <span v-for="tag in featuredWork.tags" :key="`${featuredWork.id}-${tag}`">#{{ tag }}</span>
+                <span v-for="tag in featuredWork.tags" :key="`${featuredWork.id}-${tag}`"
+                  >#{{ tag }}</span
+                >
               </div>
-              <p class="featured-work__hint">Click to inspect prompt, tool context, and owner contact.</p>
+              <p class="featured-work__hint">{{ shell.featuredHint }}</p>
               <div class="actions">
-                <button type="button" title="Like" @click.stop="likeWork(featuredWork)">
+                <button type="button" :title="shell.titleLike" @click.stop="likeWork(featuredWork)">
                   ♡ {{ featuredWork.like_count }}
                 </button>
-                <button type="button" title="Share work" @click.stop="shareWork(featuredWork)">
-                  Share
+                <span class="read-stat" :title="shell.titleReads">
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M1.5 8C2.85 5.35 5.05 4 8 4C10.95 4 13.15 5.35 14.5 8C13.15 10.65 10.95 12 8 12C5.05 12 2.85 10.65 1.5 8Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+                    <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.35"/>
+                  </svg>
+                  <span>{{ featuredWork.read_count }}</span>
+                </span>
+                <button
+                  type="button"
+                  :title="shell.titleShareWork"
+                  @click.stop="shareWork(featuredWork)"
+                >
+                  {{ shell.titleShareWork }}
                 </button>
                 <a
                   v-if="contactHref(featuredWork)"
@@ -414,99 +418,55 @@ watch(
               @keydown.enter.prevent="openWork(work)"
               @keydown.space.prevent="openWork(work)"
             >
-            <div class="work-image-wrap">
-              <img :src="work.image_url" :alt="work.title" loading="lazy" />
-              <span class="work-code work-code--image">{{ workCode(work) }}</span>
-              <span class="inspect-pill">Inspect</span>
-            </div>
-            <div class="work-body">
-              <span class="work-code work-code--inline">{{ workCode(work) }}</span>
-              <div class="work-title-row">
-                <h3>{{ work.title }}</h3>
-                <span v-if="work.is_featured" class="featured">Featured</span>
+              <div class="work-image-wrap">
+                <img :src="work.image_url" :alt="work.title" loading="lazy" />
+                <span class="work-code work-code--image">{{ workCode(work) }}</span>
+                <span class="inspect-pill">{{ shell.inspectPill }}</span>
               </div>
-              <p class="byline">
-                {{ work.publisher_agent_name }} · {{ formatDate(work.published_at) }}
-              </p>
-              <p v-if="work.description" class="description">
-                {{ shortText(work.description, 130) }}
-              </p>
-              <div v-if="work.tags.length" class="tags">
-                <span v-for="tag in work.tags" :key="`${work.id}-${tag}`">#{{ tag }}</span>
+              <div class="work-body">
+                <span class="work-code work-code--inline">{{ workCode(work) }}</span>
+                <div class="work-title-row">
+                  <h3>{{ work.title }}</h3>
+                  <span v-if="work.is_featured" class="featured">{{ shell.badgeFeatured }}</span>
+                </div>
+                <p class="byline">
+                  {{ work.publisher_agent_name }} · {{ formatDate(work.published_at) }}
+                </p>
+                <p v-if="work.description" class="description">
+                  {{ shortText(work.description, 130) }}
+                </p>
+                <div v-if="work.tags.length" class="tags">
+                  <span v-for="tag in work.tags" :key="`${work.id}-${tag}`">#{{ tag }}</span>
+                </div>
+                <div class="actions">
+                  <button type="button" :title="shell.titleLike" @click.stop="likeWork(work)">
+                    ♡ {{ work.like_count }}
+                  </button>
+                  <span class="read-stat" :title="shell.titleReads">
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                      <path d="M1.5 8C2.85 5.35 5.05 4 8 4C10.95 4 13.15 5.35 14.5 8C13.15 10.65 10.95 12 8 12C5.05 12 2.85 10.65 1.5 8Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+                      <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.35"/>
+                    </svg>
+                    <span>{{ work.read_count }}</span>
+                  </span>
+                  <button type="button" :title="shell.titleShareWork" @click.stop="shareWork(work)">
+                    {{ shell.titleShareWork }}
+                  </button>
+                  <a
+                    v-if="contactHref(work)"
+                    :href="contactHref(work) || '#'"
+                    target="_blank"
+                    rel="noopener"
+                    @click.stop
+                  >
+                    {{ contactLabel(work) }}
+                  </a>
+                </div>
               </div>
-              <div class="actions">
-                <button type="button" title="Like" @click.stop="likeWork(work)">♡ {{ work.like_count }}</button>
-                <button type="button" title="Share work" @click.stop="shareWork(work)">Share</button>
-                <a
-                  v-if="contactHref(work)"
-                  :href="contactHref(work) || '#'"
-                  target="_blank"
-                  rel="noopener"
-                  @click.stop
-                >
-                  {{ contactLabel(work) }}
-                </a>
-              </div>
-            </div>
             </article>
           </div>
         </div>
       </section>
-    </div>
-
-    <div
-      v-if="selectedWork"
-      class="work-modal"
-      role="dialog"
-      aria-modal="true"
-      :aria-label="selectedWork.title"
-      @click.self="closeWork"
-    >
-      <article class="work-modal__card">
-        <button type="button" class="work-modal__close" title="Close" @click="closeWork">
-          x
-        </button>
-        <img :src="selectedWork.image_url" :alt="selectedWork.title" />
-        <div class="work-modal__body">
-          <div class="work-kicker">
-            <p class="eyebrow">Gallery Work</p>
-            <span class="work-code">{{ workCode(selectedWork) }}</span>
-          </div>
-          <h2>{{ selectedWork.title }}</h2>
-          <p class="byline">
-            {{ selectedWork.publisher_agent_name }} · {{ formatDate(selectedWork.published_at) }}
-          </p>
-          <p v-if="selectedWork.description" class="modal-copy">
-            {{ selectedWork.description }}
-          </p>
-          <div v-if="selectedWork.prompt" class="prompt">
-            <span>Prompt</span>{{ selectedWork.prompt }}
-          </div>
-          <div v-if="selectedWork.tags.length" class="tags">
-            <span v-for="tag in selectedWork.tags" :key="`modal-${selectedWork.id}-${tag}`">#{{ tag }}</span>
-          </div>
-          <div class="modal-meta">
-            <span v-if="selectedWork.tool_name">{{ selectedWork.tool_name }}</span>
-            <span v-if="selectedWork.license">{{ selectedWork.license }}</span>
-          </div>
-          <div class="actions">
-            <button type="button" title="Like" @click="likeWork(selectedWork)">
-              ♡ {{ selectedWork.like_count }}
-            </button>
-            <button type="button" title="Share work" @click="shareWork(selectedWork)">
-              Share
-            </button>
-            <a
-              v-if="contactHref(selectedWork)"
-              :href="contactHref(selectedWork) || '#'"
-              target="_blank"
-              rel="noopener"
-            >
-              {{ contactLabel(selectedWork) }}
-            </a>
-          </div>
-        </div>
-      </article>
     </div>
   </section>
 </template>
@@ -969,9 +929,7 @@ button:hover,
 }
 
 .byline,
-.description,
-.prompt,
-.modal-meta {
+.description {
   color: var(--muted);
   font-size: var(--text-compact);
 }
@@ -982,20 +940,6 @@ button:hover,
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-}
-
-.prompt {
-  margin-bottom: 0.75rem;
-  padding: 0.65rem;
-  border-left: 3px solid rgba(var(--brand-rgb), 0.35);
-  background: rgba(var(--brand-rgb), 0.06);
-}
-
-.prompt span {
-  display: block;
-  margin-bottom: 0.25rem;
-  color: var(--brand-accent);
-  font-weight: 700;
 }
 
 .tags {
@@ -1011,86 +955,23 @@ button:hover,
   align-items: stretch;
 }
 
+.read-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 0.55rem 0.85rem;
+  background: rgba(127, 127, 127, 0.06);
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .actions a {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.work-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  display: grid;
-  place-items: center;
-  padding: max(1rem, env(safe-area-inset-top, 0px))
-    max(1rem, env(safe-area-inset-right, 0px))
-    max(1rem, env(safe-area-inset-bottom, 0px))
-    max(1rem, env(safe-area-inset-left, 0px));
-  background: rgba(2, 6, 23, 0.74);
-  backdrop-filter: blur(12px);
-}
-
-.work-modal__card {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(300px, 1.2fr) minmax(300px, 0.8fr);
-  width: min(1080px, 100%);
-  max-height: min(820px, 92vh);
-  overflow: hidden;
-  border: 1px solid rgba(var(--brand-rgb), 0.26);
-  border-radius: var(--radius-2xl);
-  background: color-mix(in srgb, var(--bg) 88%, #0f172a 12%);
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.4);
-}
-
-.work-modal__card > img {
-  width: 100%;
-  height: 100%;
-  min-height: 520px;
-  object-fit: cover;
-}
-
-.work-modal__body {
-  min-height: 0;
-  overflow: auto;
-  padding: clamp(1.25rem, 3vw, 2rem);
-}
-
-.work-modal__body h2 {
-  margin-bottom: 0.4rem;
-  font-size: clamp(1.8rem, 3vw, 3rem);
-  line-height: 1;
-  letter-spacing: -0.05em;
-}
-
-.work-modal__close {
-  position: absolute;
-  top: 0.85rem;
-  right: 0.85rem;
-  z-index: 2;
-  width: 2.4rem;
-  height: 2.4rem;
-  padding: 0;
-  background: rgba(2, 6, 23, 0.48);
-  color: #e8f1f8;
-}
-
-.modal-copy {
-  color: var(--muted);
-}
-
-.modal-meta {
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  margin: 1rem 0;
-}
-
-.modal-meta span {
-  border-radius: var(--radius-pill);
-  padding: 0.2rem 0.55rem;
-  background: rgba(127, 127, 127, 0.1);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1108,8 +989,7 @@ button:hover,
     grid-template-columns: 1fr;
   }
 
-  .featured-work,
-  .work-modal__card {
+  .featured-work {
     grid-template-columns: 1fr;
   }
 
@@ -1119,11 +999,6 @@ button:hover,
 
   .featured-work__body {
     min-height: auto;
-  }
-
-  .work-modal__card > img {
-    min-height: 260px;
-    max-height: 42vh;
   }
 
   .agent-panel {

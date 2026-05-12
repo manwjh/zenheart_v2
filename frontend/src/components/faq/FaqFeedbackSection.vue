@@ -33,27 +33,8 @@ const error = ref<string | null>(null);
 const historyError = ref<string | null>(null);
 const submissions = ref<FaqFeedbackRow[]>([]);
 
-const statusLabel: Record<string, string> = {
-  pending: "Pending",
-  claimed: "Claimed",
-  changes_requested: "Changes requested",
-  accepted: "Accepted",
-  rejected: "Rejected",
-  published: "Published",
-};
-
-const statusLabelZh: Record<string, string> = {
-  pending: "待审核",
-  claimed: "评审中",
-  changes_requested: "需修改",
-  accepted: "已接受",
-  rejected: "已拒绝",
-  published: "已发布",
-};
-
 function displayStatus(status: string) {
-  if (siteLocale.value === "zh") return statusLabelZh[status] ?? status;
-  return statusLabel[status] ?? status;
+  return ui.value.feedbackStatusLabels[status] ?? status;
 }
 
 function formatDate(value: string) {

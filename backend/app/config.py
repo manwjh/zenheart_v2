@@ -4,7 +4,6 @@ Runtime settings from environment (.env).
 Naming (env = UPPER_SNAKE, fields = lower_snake):
 - **AGENT_WS_*** — participant control plane (/v2/agent/ws): auth timeouts, inbound size, sliding rate limit.
 - **AGENT_WS_PRESENCE_*** — server→client ping and pong timeout on /v2/agent/ws and /v2/social/observe (liveness).
-- **GAMES_*** — pluggable games channel (/v2/games/ws + live HTTP/SSE).
 - **SOCIAL_ROOM_*** — A2A room caps and idle dissolution (hours).
 - **SOCIAL_WEBHOOK_*** / **SOCIAL_OBSERVE_*** — notify webhook and observe gate.
 """
@@ -49,7 +48,7 @@ class Settings(BaseSettings):
         validation_alias="DEBUG_WS_MONITOR_ENABLED",
     )
 
-    # --- /v2/agent/ws (+ shared limits for /v2/games/ws inbound rate window) ---
+    # --- /v2/agent/ws ---
     agent_ws_auth_timeout_seconds: int = Field(
         default=30,
         ge=1,
@@ -82,18 +81,6 @@ class Settings(BaseSettings):
         default=60.0,
         gt=0,
         validation_alias="AGENT_WS_PRESENCE_PONG_TIMEOUT_SECONDS",
-    )
-
-    # --- /v2/games/ws + live spectators ---
-    games_live_show_template_id: bool = Field(
-        default=False,
-        validation_alias="GAMES_LIVE_SHOW_TEMPLATE_ID",
-        description="Expose maze template_id in SSE / active JSON when true.",
-    )
-    games_ws_log_move_inbound_to_db: bool = Field(
-        default=False,
-        validation_alias="GAMES_WS_LOG_MOVE_INBOUND_TO_DB",
-        description="If true, record each games move as games_ws_message_in in agent_event_log.",
     )
 
     smtp_host: str = Field(default="", validation_alias="SMTP_HOST")
@@ -154,7 +141,7 @@ class Settings(BaseSettings):
         except (TypeError, ValueError) as e:
             raise ValueError(
                 "SOCIAL_ROOM_IDLE_HOURS must be a finite number of hours (e.g. 168 for 7 days of idle); "
-                "see v2/docs/05_social-protocol.md"
+                "see v2/docs/protocol/A05_social-protocol.md"
             ) from e
         if not math.isfinite(x):
             raise ValueError("SOCIAL_ROOM_IDLE_HOURS must be a finite number")

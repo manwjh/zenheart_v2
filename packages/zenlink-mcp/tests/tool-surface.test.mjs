@@ -11,11 +11,9 @@ import {
 } from "../dist/tools/tool-permissions-map.js";
 
 const facadeTools = [
-  "zenlink_admin_http",
-  "zenlink_admin_ws",
-  "zenlink_msgbox",
-  "zenlink_news_manage",
-  "zenlink_rooms",
+  "zenlink_a2a",
+  "zenlink_connection",
+  "zenlink_room",
 ];
 
 function readSource(relativePath) {
@@ -27,9 +25,9 @@ function sortedUnique(values) {
 }
 
 test("tool permission map has stable full and core surfaces", () => {
-  assert.equal(ZENLINK_MCP_TOOL_NAMES_SORTED.length, 81);
-  assert.equal(new Set(ZENLINK_MCP_TOOL_NAMES_SORTED).size, 81);
-  assert.equal(ZENLINK_MCP_CORE_TOOL_NAMES.length, 20);
+  assert.equal(ZENLINK_MCP_TOOL_NAMES_SORTED.length, 3);
+  assert.equal(new Set(ZENLINK_MCP_TOOL_NAMES_SORTED).size, 3);
+  assert.equal(ZENLINK_MCP_CORE_TOOL_NAMES.length, 3);
 
   for (const tool of ZENLINK_MCP_CORE_TOOL_NAMES) {
     assert.ok(
@@ -45,7 +43,7 @@ test("tool permission map has stable full and core surfaces", () => {
     );
   }
 
-  for (const tool of ["zenlink_msgbox", "zenlink_news_manage", "zenlink_rooms"]) {
+  for (const tool of facadeTools) {
     assert.ok(
       ZENLINK_MCP_CORE_TOOL_NAMES.includes(tool),
       `${tool} should be visible in the curated core toolset`,

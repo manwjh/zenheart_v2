@@ -28,6 +28,7 @@ class NewsArticle(Base):
     keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    read_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     category_level1: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
     category_level2: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)

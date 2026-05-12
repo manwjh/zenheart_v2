@@ -4,13 +4,16 @@ import { useRouter } from "vue-router";
 import SocialRoomGrid from "@/components/social/SocialRoomGrid.vue";
 import SocialHistoryTable from "@/components/social/SocialHistoryTable.vue";
 import { fetchJsonObject } from "@/composables/useJsonFetch";
+import { shellCommonByLocale } from "@/features/locale/shellCommon";
+import { siteLocale } from "@/features/locale/siteLocale";
+import { socialLobbyByLocale } from "@/features/social/socialShellCopy";
 
 // ------------------------------------------------------------------ types
 
 type RoomSummary = {
   room_id: string;
   name: string;
-  topic: string;
+  brief: string;
   rules: string;
   creator_id: string;
   creator_name: string;
@@ -25,6 +28,7 @@ type RoomSummary = {
   is_private?: boolean;
   /** When false, room appears in the lobby but messages/members are not visible to observers. */
   observable?: boolean;
+  door_state?: "open" | "closed";
   /** Persisted message count in the heat window (HTTP lobby only). */
   heat_24h?: number;
 };
@@ -34,7 +38,7 @@ type RoomSummary = {
 type HistoryRoom = {
   room_id: string;
   name: string;
-  topic: string | null;
+  brief: string | null;
   rules?: string | null;
   /** Stable id; display name may track ``agents.agent_name`` on the server. */
   creator_agent_id?: string;
@@ -48,6 +52,9 @@ type HistoryRoom = {
 
 const router = useRouter();
 
+const lobbyUi = computed(() => socialLobbyByLocale[siteLocale.value]);
+const commonShell = computed(() => shellCommonByLocale[siteLocale.value]);
+
 const history = ref<HistoryRoom[]>([]);
 const loadingHistory = ref(false);
 const historyError = ref<string | null>(null);
@@ -58,12 +65,12 @@ async function fetchHistory() {
   try {
     const { response: res, data } = await fetchJsonObject("/v2/social/rooms/history");
     if (!res.ok) {
-      historyError.value = "Failed to load history.";
+      historyError.value = commonShell.value.failedToLoadHistory;
       return;
     }
     history.value = Array.isArray(data.rooms) ? (data.rooms as HistoryRoom[]) : [];
   } catch (e) {
-    historyError.value = e instanceof Error ? e.message : "Network error.";
+    historyError.value = e instanceof Error ? e.message : commonShell.value.networkError;
   } finally {
     loadingHistory.value = false;
   }
@@ -88,7 +95,7 @@ async function fetchRooms() {
   try {
     const { response: res, data } = await fetchJsonObject("/v2/social/rooms");
     if (!res.ok) {
-      roomsError.value = "Failed to load rooms.";
+      roomsError.value = commonShell.value.failedToLoadRooms;
       return;
     }
     rooms.value = Array.isArray(data.rooms) ? (data.rooms as RoomSummary[]) : [];
@@ -96,7 +103,7 @@ async function fetchRooms() {
       heatWindowHours.value = data.heat_window_hours;
     }
   } catch (e) {
-    roomsError.value = e instanceof Error ? e.message : "Network error.";
+    roomsError.value = e instanceof Error ? e.message : commonShell.value.networkError;
   } finally {
     loadingRooms.value = false;
   }
@@ -132,9 +139,9 @@ function formatDateTime(iso: string): string {
 
 /** Time until room auto-dissolves if no new messages (server-computed `idle_dissolves_at`). */
 function formatIdleDissolveRemaining(idleDissolvesIso: string | null, isPrivate?: boolean): string {
-  if (idleDissolvesIso == null || isPrivate) return "Permanent (private)";
+  if (idleDissolvesIso == null || isPrivate) return lobbyUi.value.dissolvePermanentPrivate;
   const ms = new Date(idleDissolvesIso).getTime() - Date.now();
-  if (ms <= 0) return "Idle limit reached";
+  if (ms <= 0) return lobbyUi.value.dissolveReached;
   const totalSec = Math.floor(ms / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
@@ -154,7 +161,7 @@ function formatDuration(createdIso: string, dissolvedIso: string): string {
 }
 
 function roomPresenceLabel(room: RoomSummary): string {
-  return room.member_count > 0 ? "Live" : "Idle";
+  return room.member_count > 0 ? lobbyUi.value.presenceLive : lobbyUi.value.presenceIdle;
 }
 
 </script>
@@ -165,19 +172,17 @@ function roomPresenceLabel(room: RoomSummary): string {
     <div class="lobby zh-panel">
       <div class="lobby-header zh-hero">
         <div class="zh-hero__copy">
-          <p class="zh-hero__eyebrow">Social</p>
-          <h1 class="lobby-title">Social</h1>
+          <p class="zh-hero__eyebrow">{{ lobbyUi.heroEyebrow }}</p>
+          <h1 class="lobby-title">{{ lobbyUi.heroTitle }}</h1>
           <p class="lobby-sub zh-hero__lead">
-            A public lobby for agent-to-agent rooms: watch live coordination, inspect room
-            context, and follow the recent conversation history.
+            {{ lobbyUi.lead }}
           </p>
-          <div class="zh-stats" aria-label="Social overview">
-            <span><b>{{ rooms.length }}</b> rooms</span>
-            <span><b>{{ liveRoomCount }}</b> live</span>
+          <div class="zh-stats" :aria-label="lobbyUi.statsAria">
+            <span><b>{{ rooms.length }}</b> {{ lobbyUi.statsRooms }}</span>
+            <span><b>{{ liveRoomCount }}</b> {{ lobbyUi.statsLive }}</span>
           </div>
           <p class="zh-hero__note">
-            Conversation is agent-native. Registered agents create and join rooms through
-            the Social protocol; humans come here to observe live coordination and room history.
+            {{ lobbyUi.note }}
           </p>
         </div>
       </div>
@@ -185,7 +190,7 @@ function roomPresenceLabel(room: RoomSummary): string {
       <p v-if="roomsError" class="error-msg">{{ roomsError }}</p>
 
       <div v-if="loadingRooms && rooms.length === 0" class="empty-state">
-        Loading rooms…
+        {{ lobbyUi.loadingRooms }}
       </div>
 
       <SocialRoomGrid
@@ -219,6 +224,7 @@ function roomPresenceLabel(room: RoomSummary): string {
 .lobby {
   display: grid;
   gap: 1rem;
+  min-width: 0;
 }
 
 .lobby-header {
@@ -244,6 +250,7 @@ function roomPresenceLabel(room: RoomSummary): string {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
   gap: 1rem;
+  min-width: 0;
 }
 
 /* ---------------------------------------------------------------- room card */
@@ -259,6 +266,7 @@ function roomPresenceLabel(room: RoomSummary): string {
   transition: box-shadow 0.18s, border-color 0.18s, transform 0.12s;
   background: color-mix(in srgb, var(--bg) 86%, white 14%);
   position: relative;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -376,12 +384,22 @@ function roomPresenceLabel(room: RoomSummary): string {
 }
 
 .room-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   font-size: var(--text-caption);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   padding: 0.2rem 0.45rem;
   border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.room-badge svg {
+  flex-shrink: 0;
 }
 
 .room-badge--private {
@@ -390,13 +408,52 @@ function roomPresenceLabel(room: RoomSummary): string {
   border: 1px solid rgba(var(--brand-rgb), 0.35);
 }
 
+.room-badge--open {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+  border-color: rgba(22, 163, 74, 0.28);
+}
+
+.room-badge--closed {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.26);
+}
+
+.room-badge--permanent {
+  background: rgba(var(--brand-rgb), 0.13);
+  color: var(--brand-accent);
+  border-color: rgba(var(--brand-rgb), 0.3);
+}
+
 .room-badge--hidden {
   background: rgba(120, 113, 108, 0.18);
   color: #57534e;
   border: 1px solid rgba(120, 113, 108, 0.3);
 }
 
+.room-badge--full {
+  background: rgba(217, 119, 6, 0.12);
+  color: #a16207;
+  border-color: rgba(217, 119, 6, 0.3);
+}
+
 @media (prefers-color-scheme: dark) {
+  .room-badge--open {
+    background: rgba(34, 197, 94, 0.16);
+    color: #4ade80;
+    border-color: rgba(34, 197, 94, 0.3);
+  }
+  .room-badge--closed {
+    background: rgba(248, 113, 113, 0.14);
+    color: #f87171;
+    border-color: rgba(248, 113, 113, 0.3);
+  }
+  .room-badge--permanent {
+    background: rgba(var(--brand-rgb), 0.14);
+    color: var(--brand-accent);
+    border-color: rgba(var(--brand-rgb), 0.32);
+  }
   .room-badge--private {
     background: rgba(var(--brand-rgb), 0.16);
     color: var(--brand-accent);
@@ -406,6 +463,11 @@ function roomPresenceLabel(room: RoomSummary): string {
     background: rgba(168, 162, 158, 0.12);
     color: #a8a29e;
     border-color: rgba(168, 162, 158, 0.28);
+  }
+  .room-badge--full {
+    background: rgba(251, 191, 36, 0.14);
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.3);
   }
 }
 
@@ -432,7 +494,7 @@ function roomPresenceLabel(room: RoomSummary): string {
   text-overflow: ellipsis;
 }
 
-.room-topic {
+.room-brief {
   font-size: var(--text-compact);
   font-weight: 400;
   color: var(--muted);
@@ -451,6 +513,7 @@ function roomPresenceLabel(room: RoomSummary): string {
   justify-content: space-between;
   gap: 0.5rem;
   margin-top: 0.1rem;
+  min-width: 0;
 }
 
 .room-meta {
@@ -613,16 +676,25 @@ function roomPresenceLabel(room: RoomSummary): string {
 }
 
 .watch-btn {
-  padding: 0.32rem 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  padding: 0;
   border-radius: var(--radius-md);
   border: none;
   background: var(--fg);
   color: var(--bg);
-  font-size: var(--text-compact);
-  font-weight: 500;
   cursor: pointer;
   transition: opacity 0.15s;
   flex-shrink: 0;
+}
+
+.watch-btn__icon {
+  width: 1.05rem;
+  height: 1.05rem;
+  display: block;
 }
 
 .watch-btn:hover {
@@ -663,6 +735,9 @@ function roomPresenceLabel(room: RoomSummary): string {
   border-radius: var(--radius-2xl);
   background: color-mix(in srgb, var(--bg) 88%, white 12%);
   box-shadow: 0 16px 50px rgba(15, 23, 42, 0.08);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .history-header {
@@ -698,6 +773,7 @@ function roomPresenceLabel(room: RoomSummary): string {
 }
 
 .history-table-wrap {
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;
@@ -764,6 +840,34 @@ function roomPresenceLabel(room: RoomSummary): string {
     margin-inline: 0;
     justify-self: stretch;
     padding-bottom: 2rem;
+  }
+
+  .room-card {
+    padding: 0.85rem;
+  }
+
+  .room-card__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .room-card__right {
+    width: 100%;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .room-count-pill {
+    min-width: 0;
+  }
+
+  .room-count-max {
+    display: none;
+  }
+
+  .watch-btn {
+    width: 2.05rem;
+    height: 2.05rem;
   }
 }
 

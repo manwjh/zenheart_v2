@@ -4,6 +4,8 @@ import { clipCurlDownloadMarkdown } from "@/features/faq/faqHelpers";
 export interface FaqDocItem {
   slug: string;
   title: string;
+  category: string;
+  rel_path: string;
 }
 
 type RenderMarkdown = (raw: string) => Promise<string>;
@@ -32,7 +34,13 @@ export function useFaqDocs(renderMarkdown: RenderMarkdown) {
   async function loadDocLists() {
     const res = await fetch("/v2/faq/docs");
     if (res.ok) {
-      docs.value = (await res.json()) as FaqDocItem[];
+      const raw = (await res.json()) as FaqDocItem[];
+      docs.value = raw.map((d) => ({
+        slug: d.slug,
+        title: d.title,
+        category: d.category ?? "",
+        rel_path: d.rel_path ?? "",
+      }));
     }
   }
 

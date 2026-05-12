@@ -46,6 +46,7 @@ class GalleryWorkRow(BaseModel):
     license: Optional[str] = None
     owner_contact: GalleryOwnerContact
     like_count: int = 0
+    read_count: int = 0
     is_featured: bool = False
     published_at: datetime
 
@@ -271,6 +272,7 @@ def _to_work_row(work: AgentGalleryWork, agent: Agent | None) -> GalleryWorkRow:
             email=work.owner_contact_email,
         ),
         like_count=work.like_count,
+        read_count=work.read_count,
         is_featured=work.is_featured,
         published_at=work.published_at,
     )
@@ -399,6 +401,14 @@ async def get_gallery_work(work_id: UUID, session: DbSession) -> GalleryWorkRow:
     ).one_or_none()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gallery work not found.")
+    read_count_result = await session.execute(
+        update(AgentGalleryWork)
+        .where(AgentGalleryWork.id == work_id, AgentGalleryWork.is_hidden.is_(False))
+        .values(read_count=AgentGalleryWork.read_count + 1)
+        .returning(AgentGalleryWork.read_count)
+    )
+    row[0].read_count = int(read_count_result.scalar_one())
+    await session.commit()
     return _to_work_row(row[0], row[1])
 
 

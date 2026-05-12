@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { siteChromeByLocale } from "@/features/locale/siteChromeCopy";
 import { siteLocale, setSiteLocale, type SiteLocale } from "@/features/locale/siteLocale";
-import { faqUiByLocale } from "@/features/faq/faqCopy";
 
-const ui = computed(() => faqUiByLocale[siteLocale.value]);
+const ui = computed(() => siteChromeByLocale[siteLocale.value]);
 
 function select(loc: SiteLocale) {
   setSiteLocale(loc);

@@ -2,6 +2,7 @@ import { OpenClawWakeNotifier } from "../social/openclaw-wake-notifier.js";
 import { ZenlinkClient } from "../zenlink/index.js";
 import { fetchSocialRoomMessages } from "../zenlink/index.js";
 import type { WakeNotifierStatus } from "../social/openclaw-wake-notifier.js";
+import type { WakePolicyStatus } from "../social/wake-policy.js";
 
 type FramePredicate = string | ((frame: Record<string, unknown>) => boolean);
 
@@ -67,6 +68,7 @@ export interface ZenlinkSessionStatus {
   last_msgbox_ack_at: string | null;
   last_msgbox_ack_count: number;
   openclaw_push: WakeNotifierStatus;
+  wake_policy: WakePolicyStatus;
   process_pid: number;
 }
 
@@ -207,8 +209,21 @@ export class ZenlinkSession {
       last_msgbox_ack_at: this.lastMsgboxAckAt,
       last_msgbox_ack_count: this.lastMsgboxAckCount,
       openclaw_push: this.notifier.status(),
+      wake_policy: this.notifier.wakePolicyStatus(),
       process_pid: process.pid,
     };
+  }
+
+  wakePolicyStatus(): WakePolicyStatus {
+    return this.notifier.wakePolicyStatus();
+  }
+
+  setWakePolicyAllowlist(signals: string[]): WakePolicyStatus {
+    return this.notifier.setWakePolicyAllowlist(signals);
+  }
+
+  resetWakePolicy(): WakePolicyStatus {
+    return this.notifier.resetWakePolicy();
   }
 
   socialGrounding(): Record<string, unknown> {
@@ -509,11 +524,12 @@ export class ZenlinkSession {
     this.roomRestorePending = true;
     const roomId = this.currentRoomId;
     try {
-      await this.wsRpc(
+      const frame = await this.wsRpc(
         (frame) => isJoinRoomSuccess(frame, roomId),
         () => this.client.sendJson({ type: "join_room", room_id: roomId }),
         { skipRoomRestore: true },
       );
+      assertRestoredRoomMembership(frame, roomId, this.client.agentId);
       this.roomConfirmedAt = new Date().toISOString();
       this.roomNeedsRestore = false;
     } finally {
@@ -583,6 +599,12 @@ export class ZenlinkSession {
     });
     if (frame.type === "error" && frame.reason === "superseded") {
       this.wsSupersededTotal++;
+    }
+    if (frame.type === "room_door_closed" && frame.room_id === this.currentRoomId) {
+      this.currentRoomId = null;
+      this.roomConfirmedAt = null;
+      this.roomNeedsRestore = false;
+      this.roomRestorePending = false;
     }
 
     for (const waiter of this.waiters) {
@@ -774,12 +796,12 @@ function normalizePredicates(predicates: FramePredicate | FramePredicate[]): (fr
 
 function isJoinRoomSuccess(frame: Record<string, unknown>, roomId: string): boolean {
   if (frame.type === "room_joined") {
-    return frame.room_id === undefined || frame.room_id === roomId;
+    return frame.room_id === roomId;
   }
   if (frame.type !== "error" || frame.reason !== "already_in_room") {
     return false;
   }
-  return frame.room_id === undefined || frame.room_id === roomId;
+  return frame.room_id === roomId;
 }
 
 function normalizeJoinRoomSuccess(frame: Record<string, unknown>, roomId: string): Record<string, unknown> {
@@ -793,6 +815,24 @@ function normalizeJoinRoomSuccess(frame: Record<string, unknown>, roomId: string
     already_in_room: true,
     server_frame: frame,
   };
+}
+
+function assertRestoredRoomMembership(frame: Record<string, unknown>, roomId: string, agentId: string): void {
+  if (frame.type !== "room_joined") {
+    throw new Error(`restore join_room returned ${String(frame.type)} instead of room_joined`);
+  }
+  if (frame.room_id !== roomId) {
+    throw new Error(`restore join_room confirmed unexpected room_id: ${String(frame.room_id)}`);
+  }
+  if (!Array.isArray(frame.members)) {
+    throw new Error("restore join_room did not include live room members");
+  }
+  const hasSelf = frame.members.some(
+    (member) => isRecord(member) && member.agent_id === agentId,
+  );
+  if (!hasSelf) {
+    throw new Error(`restore join_room members did not include agent_id ${agentId}`);
+  }
 }
 
 function matchesRoomFilter(frame: Record<string, unknown>, roomId?: string | null): boolean {

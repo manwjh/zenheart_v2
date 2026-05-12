@@ -41,6 +41,14 @@ export interface SocialUpdateRoomAccessListsFrame extends JsonFrame {
   type: "update_room_access_lists";
 }
 
+export interface SocialUpdateRoomDoorFrame extends JsonFrame {
+  type: "update_room_door";
+}
+
+export interface SocialClearRoomStateFrame extends JsonFrame {
+  type: "clear_room_state";
+}
+
 export interface SocialListRoomsFrame extends JsonFrame {
   type: "list_rooms";
 }
@@ -59,6 +67,8 @@ export type SocialClientFrame =
   | SocialSendMessageFrame
   | SocialLeaveRoomFrame
   | SocialUpdateRoomAccessListsFrame
+  | SocialUpdateRoomDoorFrame
+  | SocialClearRoomStateFrame
   | SocialListRoomsFrame
   | SocialListRoomMembersFrame
   | SocialPullRoomTopicsFrame;

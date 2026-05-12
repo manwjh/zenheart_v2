@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 # Max pending visitor topic lines per room; oldest dropped when exceeded (FIFO cap).
 PENDING_TOPIC_SUGGESTIONS_CAP = 10
 
+# Visitor `submit_topic_suggestion` on `/v2/social/observe` (not A2A chat body limit).
+VISITOR_TOPIC_SUGGESTION_TEXT_MAX_LEN = 500
+
 
 async def create_room_record(
     session_factory: async_sessionmaker[AsyncSession],
@@ -59,7 +62,7 @@ async def create_room_record(
             session.add(SocialRoom(
                 room_id=room.room_id,
                 name=room.name,
-                topic=room.topic or None,
+                brief=room.brief or None,
                 rules=room.rules or None,
                 creator_agent_id=room.creator_id,
                 created_at=room.created_at,
@@ -69,6 +72,7 @@ async def create_room_record(
                 last_message_at=room.last_message_at,
                 is_private=room.is_private,
                 observable=room.observable,
+                door_closed=room.door_closed,
                 allowlist_agent_ids=sorted(room.allowlist_agent_ids) if room.is_private else None,
                 denylist_agent_ids=sorted(room.denylist_agent_ids) if room.denylist_agent_ids else None,
             ))
@@ -398,14 +402,14 @@ async def update_room_metadata(
     room_id: str,
     *,
     name: Optional[str] = None,
-    topic: Optional[str] = None,
+    brief: Optional[str] = None,
     rules: Optional[str] = None,
 ) -> bool:
     values: dict[str, Any] = {}
     if name is not None:
         values["name"] = name
-    if topic is not None:
-        values["topic"] = topic or None
+    if brief is not None:
+        values["brief"] = brief or None
     if rules is not None:
         values["rules"] = rules or None
     if not values:
@@ -427,11 +431,67 @@ async def update_room_metadata(
         return False
 
 
+async def update_room_door_state(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    *,
+    door_closed: bool,
+) -> bool:
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                update(SocialRoom)
+                .where(SocialRoom.room_id == room_id)
+                .values(door_closed=door_closed)
+            )
+            await session.commit()
+        return True
+    except Exception:
+        logger.exception(
+            "social_repository: failed to update room door state room_id=%s",
+            room_id,
+        )
+        return False
+
+
+async def clear_room_state(
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    *,
+    clear_messages: bool,
+    clear_signals: bool,
+) -> bool:
+    try:
+        async with session_factory() as session:
+            if clear_messages:
+                await session.execute(
+                    delete(SocialMessage).where(SocialMessage.room_id == room_id)
+                )
+                await session.execute(
+                    update(SocialRoom)
+                    .where(SocialRoom.room_id == room_id)
+                    .values(last_message_at=None, total_messages=0)
+                )
+            if clear_signals:
+                await session.execute(
+                    delete(SocialRoomTopicSuggestion).where(
+                        SocialRoomTopicSuggestion.room_id == room_id
+                    )
+                )
+            await session.commit()
+        return True
+    except Exception:
+        logger.exception("social_repository: failed to clear room state room_id=%s", room_id)
+        return False
+
+
 async def record_room_topic_suggestion(
     session_factory: async_sessionmaker[AsyncSession],
     room_id: str,
     text: str,
 ) -> bool:
+    if not (1 <= len(text) <= VISITOR_TOPIC_SUGGESTION_TEXT_MAX_LEN):
+        return False
     cap = PENDING_TOPIC_SUGGESTIONS_CAP
     try:
         async with session_factory() as session:

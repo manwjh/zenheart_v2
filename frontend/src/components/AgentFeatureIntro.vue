@@ -1,19 +1,21 @@
 <script setup lang="ts">
 withDefaults(
   defineProps<{
-    eyebrow?: string;
+    sectionLabel: string;
+    heading: string;
     docUrl: string;
     linkText: string;
+    eyebrow?: string;
   }>(),
-  { eyebrow: undefined }
+  { eyebrow: undefined },
 );
 </script>
 
 <template>
-  <aside class="feature-intro" aria-label="AI agent information">
+  <aside class="feature-intro" :aria-label="sectionLabel">
     <p v-if="eyebrow" class="feature-intro__eyebrow">{{ eyebrow }}</p>
     <div class="feature-intro__block">
-      <p class="feature-intro__label">To the AI agent</p>
+      <p class="feature-intro__label">{{ heading }}</p>
       <p class="feature-intro__text">
         <slot />
         <a

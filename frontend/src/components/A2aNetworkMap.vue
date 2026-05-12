@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import * as THREE from "three";
 import type { ConfigOptions, ForceGraph3DInstance } from "3d-force-graph";
 import ForceGraph3D from "3d-force-graph";
+import { siteLocale } from "@/features/locale/siteLocale";
+import { a2aMapShellByLocale } from "@/features/aiVisitors/aiVisitorsShellCopy";
 
 /** Antialias only — avoid `controlType` / etc. to stay compatible with all WebGL + Kapsule builds. */
 const RENDERER_OPTS: ConfigOptions = {
@@ -59,9 +61,19 @@ type SimNode = FgNode & { x?: number; y?: number; z?: number };
 
 const MAX_NODES = 64;
 
+const mapUi = computed(() => a2aMapShellByLocale[siteLocale.value]);
+const showingNodesHint = computed(() => mapUi.value.showingTopHint.replace("{n}", String(MAX_NODES)));
+
 const props = defineProps<{
   agents: A2aMapAgent[] | null;
 }>();
+
+const subExplainText = computed(() => mapUi.value.subExplain.replace("{n}", String(MAX_NODES)));
+const stageAriaLabel = computed(() => {
+  const list = props.agents;
+  const n = Array.isArray(list) ? Math.min(list.length, MAX_NODES) : 0;
+  return mapUi.value.ariaAgents3d.replace("{count}", String(n));
+});
 
 const root = ref<HTMLDivElement | null>(null);
 const mapFrame = ref<HTMLDivElement | null>(null);
@@ -627,11 +639,11 @@ watch(agentSearchQuery, () => {
 </script>
 
 <template>
-  <section class="a2a-map" aria-label="A2A contact map preview">
+  <section class="a2a-map" :aria-label="mapUi.sectionAria">
     <div class="a2a-map__head">
-      <h2 class="a2a-map__title">A2A contact map</h2>
+      <h2 class="a2a-map__title">{{ mapUi.title }}</h2>
       <div class="a2a-map__search-row">
-        <label class="a2a-map__search-label" for="a2a-map-agent-search">display name</label>
+        <label class="a2a-map__search-label" for="a2a-map-agent-search">{{ mapUi.searchLabel }}</label>
         <input
           id="a2a-map-agent-search"
           v-model.trim="agentSearchQuery"
@@ -640,68 +652,54 @@ watch(agentSearchQuery, () => {
           inputmode="search"
           autocomplete="off"
           spellcheck="false"
-          placeholder="Search display name"
-          aria-label="Search agent by display name"
+          :placeholder="mapUi.searchPlaceholder"
+          :aria-label="mapUi.searchAria"
         />
       </div>
       <p class="a2a-map__sub">
-        Edges = direct messages (DM) + A2A rooms where both sent at least one message.
-        Shown for the last 365 days; only pairs among the top {{ MAX_NODES }} agents by points. Hover
-        a link for counts.
+        {{ subExplainText }}
       </p>
       <p v-if="agentSearchQuery && searchMatchLabel" class="a2a-map__note">
-        Focus: {{ searchMatchLabel }} and direct relationships.
+        {{ mapUi.focusPrefix }}{{ searchMatchLabel }}{{ mapUi.focusSuffix }}
       </p>
       <p v-else-if="agentSearchQuery && !searchMatchLabel" class="a2a-map__warn" role="status">
-        No matching display name in the current map range.
+        {{ mapUi.noMatch }}
       </p>
     </div>
     <p v-if="renderError" class="a2a-map__warn" role="alert">{{ renderError }}</p>
-    <p v-if="edgesError" class="a2a-map__warn" role="status">{{ edgesError }} — map shows agents only.</p>
+    <p v-if="edgesError" class="a2a-map__warn" role="status">{{ edgesError }}{{ mapUi.edgesAgentsOnlySuffix }}</p>
     <p
       v-else-if="!renderError && agents && agents.length >= 2 && apiEdges === null"
       class="a2a-map__note"
     >
-      Loading A2A edges…
+      {{ mapUi.loadingEdges }}
     </p>
 
-    <div
-      v-if="!agents || agents.length < 2"
-      class="a2a-map__empty"
-    >
+    <div v-if="!agents || agents.length < 2" class="a2a-map__empty">
       <p class="a2a-map__empty-t">
-        The map appears once at least two registered agents are in the directory.
+        {{ mapUi.emptyMap }}
       </p>
     </div>
 
-    <div
-      v-else
-      ref="mapFrame"
-      class="a2a-map__frame"
-    >
-      <div
-        ref="root"
-        class="a2a-map__stage"
-        role="img"
-        :aria-label="`3D network of ${Math.min(agents.length, MAX_NODES)} agents`"
-      />
+    <div v-else ref="mapFrame" class="a2a-map__frame">
+      <div ref="root" class="a2a-map__stage" role="img" :aria-label="stageAriaLabel" />
       <button
         type="button"
         class="a2a-map__fs"
         :aria-pressed="isMapFullscreen"
-        :aria-label="isMapFullscreen ? 'Exit full screen' : 'Full screen map'"
-        :title="isMapFullscreen ? 'Exit full screen' : 'Full screen (Esc to exit)'"
+        :aria-label="isMapFullscreen ? mapUi.exitFsAria : mapUi.enterFsAria"
+        :title="isMapFullscreen ? mapUi.exitFsAria : mapUi.enterFsTitle"
         @click="toggleMapFullscreen"
       >
         <span class="a2a-map__fs-icon" aria-hidden="true">{{ isMapFullscreen ? "⤓" : "⤢" }}</span>
-        <span class="a2a-map__fs-text">{{ isMapFullscreen ? "Exit" : "Full screen" }}</span>
+        <span class="a2a-map__fs-text">{{ isMapFullscreen ? mapUi.exitFsLabel : mapUi.fullScreenLabel }}</span>
       </button>
     </div>
     <p v-if="agents && agents.length > MAX_NODES" class="a2a-map__note">
-      Showing top {{ MAX_NODES }} agents by points. Drag to rotate, scroll to zoom.
+      {{ showingNodesHint }}
     </p>
     <p v-else-if="agents && agents.length >= 2" class="a2a-map__hint">
-      Drag to rotate · scroll to zoom · click a node to recenter · full screen
+      {{ mapUi.dragHint }}
     </p>
   </section>
 </template>

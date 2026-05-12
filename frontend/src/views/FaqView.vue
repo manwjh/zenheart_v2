@@ -3,7 +3,6 @@ import { ref, computed, onMounted, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import SiteLocaleSwitcher from "@/components/locale/SiteLocaleSwitcher.vue";
 import FaqApplicationForm from "@/components/faq/FaqApplicationForm.vue";
 import FaqDocsSection from "@/components/faq/FaqDocsSection.vue";
 import FaqFeedbackSection from "@/components/faq/FaqFeedbackSection.vue";
@@ -12,6 +11,7 @@ import {
   clipCurlDownloadMarkdown,
   stripSkillFrontmatter,
 } from "@/features/faq/faqHelpers";
+import { openFaqDocModal } from "@/features/faq/faqDocModal";
 import { faqUiByLocale } from "@/features/faq/faqCopy";
 import { siteLocale } from "@/features/locale/siteLocale";
 import { scrollBehaviorPreference } from "@/utils/motionPreference";
@@ -20,6 +20,11 @@ import { useFaqDocs } from "@/features/faq/useFaqDocs";
 
 const route = useRoute();
 const faq = computed(() => faqUiByLocale[siteLocale.value]);
+
+const welcomeDocSlug = computed(() => (siteLocale.value === "zh" ? "welcome-zh" : "welcome"));
+const userAgentHandbookSlug = computed(() =>
+  siteLocale.value === "zh" ? "user-agent-handbook" : "user-agent-handbook-en",
+);
 
 /** When FAQ lists Zenlink URLs, use this host (third parties need real HTTPS origins, not /path-only). */
 const ZENLINK_FALLBACK_ORIGIN = "https://zenheart.net";
@@ -297,7 +302,6 @@ async function copySkillLink(slug: string) {
             {{ faq.heroNote }}
           </p>
         </div>
-        <SiteLocaleSwitcher class="faq-locale-switcher" />
       </div>
     </header>
 
@@ -373,9 +377,13 @@ async function copySkillLink(slug: string) {
         <div class="card-body">
           <p class="reg-welcome-hint">
             {{ faq.regWelcomePart1 }}
-            <a class="inline-doc-link" href="/v2/faq/docs/welcome" target="_blank" rel="noopener noreferrer"
-              ><code>welcome</code></a
+            <button
+              type="button"
+              class="inline-doc-link"
+              @click="openFaqDocModal(welcomeDocSlug)"
             >
+              <code>{{ welcomeDocSlug }}</code>
+            </button>
             {{ faq.regWelcomePart2 }}
           </p>
 
@@ -453,12 +461,17 @@ Content-Type: application/json
         <div class="card-body">
           <ul class="handbook-list" role="list">
             <li>
-              <a href="/v2/faq/docs/welcome" target="_blank" rel="noopener noreferrer"><code>welcome</code></a>
+              <button type="button" class="handbook-doc-link" @click="openFaqDocModal(welcomeDocSlug)">
+                <code>{{ welcomeDocSlug }}</code>
+              </button>
               {{ faq.handbookLi1 }}
             </li>
             <li>
-              <a href="/v2/faq/docs/user-agent-handbook" target="_blank" rel="noopener noreferrer"
-                ><code>user-agent-handbook</code></a
+              <a
+                :href="`/v2/faq/docs/${userAgentHandbookSlug}`"
+                target="_blank"
+                rel="noopener noreferrer"
+                ><code>{{ userAgentHandbookSlug }}</code></a
               >
               {{ faq.handbookLi2 }}
             </li>
@@ -588,18 +601,13 @@ Content-Type: application/json
 </template>
 
 <style>
-/* ── FAQ hero + locale ───────────────────────────────────────── */
+/* ── FAQ hero ───────────────────────────────────────── */
 .faq-hero__top {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 1rem 1.25rem;
-}
-
-.faq-locale-switcher {
-  flex-shrink: 0;
-  margin-left: auto;
 }
 
 /* ── Layout ─────────────────────────────────────────────────── */
@@ -1038,6 +1046,30 @@ Content-Type: application/json
 .inline-doc-link {
   color: inherit;
   font-weight: 600;
+  text-underline-offset: 2px;
+}
+
+button.inline-doc-link {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.handbook-doc-link {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
   text-underline-offset: 2px;
 }
 

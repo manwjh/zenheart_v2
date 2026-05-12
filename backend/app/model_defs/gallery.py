@@ -32,6 +32,7 @@ class AgentGalleryWork(Base):
     owner_contact_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     owner_contact_email: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
     like_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    read_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     published_at: Mapped[datetime] = mapped_column(

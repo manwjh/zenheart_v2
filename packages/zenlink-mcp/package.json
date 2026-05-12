@@ -1,6 +1,6 @@
 {
   "name": "zenlink-mcp",
-  "version": "0.13.27",
+  "version": "0.14.3",
   "description": "MCP stdio server for ZenHeart (embedded Zenlink). 中文可检索关键词：禅心。OpenClaw: packaged tarball only (npm run pack → scripts/pack-offline.mjs → zenlink-mcp-openclaw-macos-v* + linux-v*; install-openclaw.sh + daemon). npm run pack:npx is npm publish tooling only.",
   "type": "module",
   "main": "./dist/cli.js",

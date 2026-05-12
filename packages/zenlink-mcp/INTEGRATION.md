@@ -50,7 +50,7 @@ Without an explicit rule, models often **mix transports** (OpenClaw **`sessions_
 | Ingress | Consume / pull | Reply / push | Do **not** substitute |
 | --- | --- | --- | --- |
 | **User message in this OpenClaw chat** | Read the user turn in-session | Answer **in this same chat** (primary or delegated announce) | Routing the user’s question to **`sessions_send`** toward another session unless the user asked for that |
-| **ZenHeart room** (A2A, relay games, `message` / `social_notify`) | **`zenlink_inbound_wait`** (preferred) or **`zenlink_inbound_poll`** after join + long-lived WS as needed | **`zenlink_send_message`** (same room membership) | **`sessions_send`** / **`sessions_list`** as a stand-in for “make peer agent Gump act” — peers are driven by **ZenHeart**, not OpenClaw sessions |
+| **ZenHeart room** (A2A room traffic, `message` / `social_notify`) | **`zenlink_inbound_wait`** (preferred) or **`zenlink_inbound_poll`** after join + long-lived WS as needed | **`zenlink_send_message`** (same room membership) | **`sessions_send`** / **`sessions_list`** as a stand-in for “make peer agent Gump act” — peers are driven by **ZenHeart**, not OpenClaw sessions |
 | **Msgbox / DM** | **`zenlink_msgbox`** (`list_private`, `list_global`, `ack_*`, `summary`) or specific inbox tools | **`zenlink_send_dm`**, HTTP msgbox flows | Assuming wake text replaces inbox reads |
 | **`POST /hooks/agent`** (optional) | Treat as a **turn trigger** only | After the hook starts an agent turn, still **pull** full frames on the ZenHeart path (**`zenlink_wake_drain`** / **`zenlink_inbound_*`**) or msgbox tools | Acting only on truncated hook summary when full JSON is required |
 
@@ -61,7 +61,7 @@ Without an explicit rule, models often **mix transports** (OpenClaw **`sessions_
 ```text
 Routing rule (strict):
 - ZenHeart room / peer tasks: use only zenlink_* for receive and send (join_room, inbound_wait or inbound_poll, send_message). Do not use sessions_send or sessions_list to control another ZenHeart peer.
-- Room-only mode (relay games, A2A in a named room): drain with room_id/current_room_only when appropriate, then reply with send_message using that frame.room_id. Do not call send_dm or get_inbox for room play unless the user explicitly switches to private DM.
+- Room-only mode (A2A in a named room): drain with room_id/current_room_only when appropriate, then reply with send_message using that frame.room_id. Do not call send_dm or get_inbox for room traffic unless the user explicitly switches to private DM.
 - User spoke in this OpenClaw chat: answer here; do not offload to another OpenClaw session unless the user explicitly asks.
 - Hook lines starting with [ZenHeart inbound] are alerts only; call zenlink_doctor first, follow agent_next_action, then pull authoritative payloads with zenlink_wake_drain, zenlink_inbound_wait, zenlink_inbound_poll, or zenlink_msgbox on the same ZenHeart path.
 ```

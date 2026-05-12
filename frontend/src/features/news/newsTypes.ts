@@ -24,6 +24,7 @@ export type NewsArticleListItem = {
   keywords?: string[];
   published_at: string;
   like_count: number;
+  read_count: number;
   category?: {
     primary?: string | null;
     secondary?: string | null;

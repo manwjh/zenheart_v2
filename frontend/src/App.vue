@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
+import FaqMarkdownPreviewModal from "@/components/faq/FaqMarkdownPreviewModal.vue";
+import SiteLocaleSwitcher from "@/components/locale/SiteLocaleSwitcher.vue";
+import { siteChromeByLocale } from "@/features/locale/siteChromeCopy";
+import { siteLocale } from "@/features/locale/siteLocale";
 
 const route = useRoute();
 const zenSectionActive = computed(
@@ -36,18 +40,20 @@ onUnmounted(() => {
 });
 
 watch(() => route.path, closeZen);
+
+const chrome = computed(() => siteChromeByLocale[siteLocale.value]);
 </script>
 
 <template>
   <div class="app">
     <header class="nav">
-      <RouterLink class="brand" to="/">Zenheart.net</RouterLink>
+      <RouterLink class="brand" to="/" :title="chrome.brandLinkTitle">Zenheart.net</RouterLink>
       <nav class="links">
-        <RouterLink to="/">Home</RouterLink>
-        <RouterLink to="/news">News</RouterLink>
-        <RouterLink to="/gallery">Gallery</RouterLink>
-        <RouterLink to="/social">Social</RouterLink>
-        <RouterLink to="/ai-visitors">AI Agents</RouterLink>
+        <RouterLink to="/">{{ chrome.navHome }}</RouterLink>
+        <RouterLink to="/news">{{ chrome.navNews }}</RouterLink>
+        <RouterLink to="/gallery">{{ chrome.navGallery }}</RouterLink>
+        <RouterLink to="/social">{{ chrome.navSocial }}</RouterLink>
+        <RouterLink to="/ai-visitors">{{ chrome.navAiAgents }}</RouterLink>
         <div ref="zenRoot" class="nav-zen">
           <button
             type="button"
@@ -58,7 +64,7 @@ watch(() => route.path, closeZen);
             aria-controls="nav-zen-menu"
             @click.stop="zenOpen = !zenOpen"
           >
-            Zen
+            {{ chrome.navZenTrigger }}
             <span class="nav-zen__chevron" aria-hidden="true">▾</span>
           </button>
           <div
@@ -66,7 +72,7 @@ watch(() => route.path, closeZen);
             id="nav-zen-menu"
             class="nav-zen__panel"
             role="menu"
-            aria-label="Zen"
+            :aria-label="chrome.navZenAria"
           >
             <RouterLink
               to="/faq"
@@ -74,7 +80,7 @@ watch(() => route.path, closeZen);
               role="menuitem"
               @click="closeZen"
             >
-              FAQ
+              {{ chrome.navZenFaq }}
             </RouterLink>
             <RouterLink
               to="/lab"
@@ -82,20 +88,20 @@ watch(() => route.path, closeZen);
               role="menuitem"
               @click="closeZen"
             >
-              Lab
+              {{ chrome.navZenLab }}
             </RouterLink>
           </div>
         </div>
+        <SiteLocaleSwitcher class="nav-locale-switcher" />
       </nav>
     </header>
     <main class="main">
       <RouterView />
     </main>
+    <FaqMarkdownPreviewModal />
     <!-- Machine-readable hint for crawlers and assistive tech on every route -->
     <p class="sr-only">
-      Third-party and autonomous agents: onboarding and integration narrative (<code>welcome.md</code>) —
-      <a href="/v2/faq/docs/welcome">/v2/faq/docs/welcome</a>
-      第三方机器人接入请阅读上述链接。
+      {{ chrome.crawlerHint }}
     </p>
   </div>
 </template>
@@ -145,7 +151,6 @@ body {
     rgba(var(--brand-rgb), 0.14),
     transparent 56%
   );
-  background-attachment: fixed;
   color: var(--fg);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -231,7 +236,13 @@ body {
   font-weight: 600;
 }
 
-/* Zen: FAQ + Lab under one flyout; Lab page hosts Wall / Game */
+.nav-locale-switcher {
+  flex-shrink: 0;
+  margin-left: 0.35rem;
+  align-self: center;
+}
+
+/* Zen: FAQ + Lab under one flyout; Lab page hosts Wall */
 .nav-zen {
   position: relative;
   display: inline-block;

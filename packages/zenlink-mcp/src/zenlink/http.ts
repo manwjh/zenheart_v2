@@ -29,6 +29,87 @@ export type ParsedAgentImageBase64 = {
   contentType: ZenlinkAgentImageContentType;
 };
 
+function normalizeBase64Payload(raw: string): string {
+  const payload = raw.replace(/\s+/g, "");
+  if (!payload) {
+    throw new Error("image_base64 must not be empty");
+  }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(payload) || /=/.test(payload.slice(0, -2))) {
+    throw new Error("image_base64 must be valid base64");
+  }
+  const remainder = payload.length % 4;
+  if (remainder === 1) {
+    throw new Error("image_base64 has invalid base64 length");
+  }
+  if (remainder === 0) {
+    return payload;
+  }
+  return `${payload}${"=".repeat(4 - remainder)}`;
+}
+
+function hasPngTrailer(data: Uint8Array): boolean {
+  const trailer = [0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82];
+  if (data.byteLength < 8 + trailer.length) return false;
+  for (let i = 0; i < trailer.length; i += 1) {
+    if (data[data.byteLength - trailer.length + i] !== trailer[i]) return false;
+  }
+  return true;
+}
+
+function isCompleteImageBytes(
+  data: Uint8Array,
+  contentType: ZenlinkAgentImageContentType,
+): boolean {
+  if (contentType === "image/jpeg") {
+    return (
+      data.byteLength >= 4 &&
+      data[0] === 0xff &&
+      data[1] === 0xd8 &&
+      data[data.byteLength - 2] === 0xff &&
+      data[data.byteLength - 1] === 0xd9
+    );
+  }
+  if (contentType === "image/png") {
+    return (
+      data.byteLength >= 20 &&
+      data[0] === 0x89 &&
+      data[1] === 0x50 &&
+      data[2] === 0x4e &&
+      data[3] === 0x47 &&
+      data[4] === 0x0d &&
+      data[5] === 0x0a &&
+      data[6] === 0x1a &&
+      data[7] === 0x0a &&
+      hasPngTrailer(data)
+    );
+  }
+  if (contentType === "image/gif") {
+    const gif87a = [0x47, 0x49, 0x46, 0x38, 0x37, 0x61];
+    const gif89a = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61];
+    const headerOk = gif87a.every((b, i) => data[i] === b) || gif89a.every((b, i) => data[i] === b);
+    return data.byteLength >= 7 && headerOk && data[data.byteLength - 1] === 0x3b;
+  }
+  if (contentType === "image/webp") {
+    if (data.byteLength < 12) return false;
+    const riffOk = data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46;
+    const webpOk = data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50;
+    const declaredSize = data[4]! | (data[5]! << 8) | (data[6]! << 16) | (data[7]! << 24);
+    return riffOk && webpOk && declaredSize === data.byteLength - 8;
+  }
+  return true;
+}
+
+export function validateAgentImageBytes(
+  data: Uint8Array,
+  contentType: ZenlinkAgentImageContentType,
+): void {
+  if (!isCompleteImageBytes(data, contentType)) {
+    throw new Error(
+      `Image bytes do not match a complete ${contentType} file; upload may be truncated or content_type is wrong.`,
+    );
+  }
+}
+
 /**
  * Strip optional `data:image/...;base64,` prefix; pick MIME from the prefix when *explicitType* is omitted.
  * @throws if decoded type is not allowed on the server
@@ -43,9 +124,9 @@ export function parseAgentImageBase64Argument(
   let inferred: string | undefined;
   if (m) {
     inferred = m[1]!.toLowerCase().split(";")[0]!.trim();
-    payload = m[2]!;
+    payload = normalizeBase64Payload(m[2]!);
   } else {
-    payload = s;
+    payload = normalizeBase64Payload(s);
   }
   const ct = ((explicitType ?? inferred ?? "image/png") as string).toLowerCase();
   if (!_ALLOWED_IMAGE_CT_SET.has(ct)) {
@@ -94,7 +175,13 @@ function adminAuthHeaders(opts: ZenlinkAdminHttpOptions): HeadersInit {
 /** Public `GET /v2/social/*` routes — server ignores agent headers; `baseUrl` (+ optional `fetchImpl`) is enough. */
 export type ZenlinkPublicHttpOptions = Pick<ZenlinkHttpOptions, "baseUrl" | "fetchImpl">;
 
-function agentHeaders(opts: ZenlinkHttpOptions): HeadersInit {
+export type AgentNativeProtocolArtifact =
+  | "binding_manifest"
+  | "schemas"
+  | "asyncapi"
+  | "conformance_fixtures";
+
+function agentHeaders(opts: ZenlinkHttpOptions): Record<string, string> {
   return {
     "X-Agent-Id": opts.agentId,
     "X-Agent-Token": opts.token,
@@ -132,6 +219,33 @@ function parseHttpErrorText(text: string, errorLabel: string): string | null {
 
 function resolveFetch(opts: { fetchImpl?: typeof fetch }): typeof fetch {
   return opts.fetchImpl ?? fetch;
+}
+
+/**
+ * `GET /v2/protocol/agent-native-site-world/v0.1` — protocol discovery and operation bindings.
+ */
+export async function fetchAgentNativeProtocolDiscovery(
+  opts: ZenlinkPublicHttpOptions,
+): Promise<unknown> {
+  const u = new URL("/v2/protocol/agent-native-site-world/v0.1", opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), undefined, "agent-native protocol discovery failed");
+}
+
+/**
+ * Fetch one machine-readable agent-native-site-world/v0.1 artifact.
+ */
+export async function fetchAgentNativeProtocolArtifact(
+  opts: ZenlinkPublicHttpOptions,
+  artifact: AgentNativeProtocolArtifact,
+): Promise<unknown> {
+  const pathByArtifact: Record<AgentNativeProtocolArtifact, string> = {
+    binding_manifest: "/v2/protocol/agent-native-site-world/v0.1/binding-manifest",
+    schemas: "/v2/protocol/agent-native-site-world/v0.1/schemas",
+    asyncapi: "/v2/protocol/agent-native-site-world/v0.1/asyncapi",
+    conformance_fixtures: "/v2/protocol/agent-native-site-world/v0.1/conformance-fixtures",
+  };
+  const u = new URL(pathByArtifact[artifact], opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), undefined, `agent-native protocol ${artifact} failed`);
 }
 
 /**
@@ -193,6 +307,128 @@ export async function fetchSocialRoomMessages(
     { headers: agentHeaders(opts) },
     "social room messages failed",
   );
+}
+
+export type ZenlinkRoomMetadataPatch = {
+  name?: string;
+  brief?: string;
+  rules?: string;
+};
+
+export type ZenlinkRoomAccessListsPatch = {
+  allowed_agent_ids?: string[] | null;
+  denied_agent_ids?: string[] | null;
+};
+
+export type ZenlinkRoomDoorPatch = {
+  door_state: "open" | "closed";
+};
+
+export type ZenlinkRoomStateClear = {
+  clear_messages: boolean;
+  clear_signals: boolean;
+};
+
+function jsonHeaders(opts: ZenlinkHttpOptions): Record<string, string> {
+  return { ...agentHeaders(opts), "content-type": "application/json" };
+}
+
+/**
+ * `GET /v2/agent/social/rooms` — authenticated full active-room snapshot.
+ */
+export async function fetchAgentSocialRooms(
+  opts: ZenlinkHttpOptions,
+): Promise<{ rooms: unknown[]; agent_id: string }> {
+  const u = new URL("/v2/agent/social/rooms", opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), { headers: agentHeaders(opts) }, "agent social rooms failed");
+}
+
+/**
+ * `GET /v2/agent/social/rooms/current/members` — current room member snapshot.
+ */
+export async function fetchCurrentRoomMembers(opts: ZenlinkHttpOptions): Promise<unknown> {
+  const u = new URL("/v2/agent/social/rooms/current/members", opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), { headers: agentHeaders(opts) }, "room members list failed");
+}
+
+/**
+ * `POST /v2/agent/social/rooms/{room_id}/topics/pull`
+ */
+export async function pullRoomTopicsHttp(
+  opts: ZenlinkHttpOptions,
+  roomId: string,
+  limit?: number,
+): Promise<unknown> {
+  const u = new URL(`/v2/agent/social/rooms/${encodeURIComponent(roomId)}/topics/pull`, opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), {
+    method: "POST",
+    headers: jsonHeaders(opts),
+    body: JSON.stringify(limit !== undefined ? { limit } : {}),
+  }, "room topics pull failed");
+}
+
+/**
+ * `PATCH /v2/agent/social/rooms/{room_id}/metadata`
+ */
+export async function updateRoomMetadataHttp(
+  opts: ZenlinkHttpOptions,
+  roomId: string,
+  body: ZenlinkRoomMetadataPatch,
+): Promise<unknown> {
+  const u = new URL(`/v2/agent/social/rooms/${encodeURIComponent(roomId)}/metadata`, opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), {
+    method: "PATCH",
+    headers: jsonHeaders(opts),
+    body: JSON.stringify(body),
+  }, "room metadata update failed");
+}
+
+/**
+ * `PATCH /v2/agent/social/rooms/{room_id}/access-lists`
+ */
+export async function updateRoomAccessListsHttp(
+  opts: ZenlinkHttpOptions,
+  roomId: string,
+  body: ZenlinkRoomAccessListsPatch,
+): Promise<unknown> {
+  const u = new URL(`/v2/agent/social/rooms/${encodeURIComponent(roomId)}/access-lists`, opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), {
+    method: "PATCH",
+    headers: jsonHeaders(opts),
+    body: JSON.stringify(body),
+  }, "room access lists update failed");
+}
+
+/**
+ * `PATCH /v2/agent/social/rooms/{room_id}/door`
+ */
+export async function updateRoomDoorHttp(
+  opts: ZenlinkHttpOptions,
+  roomId: string,
+  body: ZenlinkRoomDoorPatch,
+): Promise<unknown> {
+  const u = new URL(`/v2/agent/social/rooms/${encodeURIComponent(roomId)}/door`, opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), {
+    method: "PATCH",
+    headers: jsonHeaders(opts),
+    body: JSON.stringify(body),
+  }, "room door update failed");
+}
+
+/**
+ * `POST /v2/agent/social/rooms/{room_id}/clear-state`
+ */
+export async function clearRoomStateHttp(
+  opts: ZenlinkHttpOptions,
+  roomId: string,
+  body: ZenlinkRoomStateClear,
+): Promise<unknown> {
+  const u = new URL(`/v2/agent/social/rooms/${encodeURIComponent(roomId)}/clear-state`, opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), {
+    method: "POST",
+    headers: jsonHeaders(opts),
+    body: JSON.stringify(body),
+  }, "room state clear failed");
 }
 
 /** Query for `GET /v2/news/articles` (public read surface). */
@@ -278,6 +514,7 @@ export async function uploadAgentImage(
       `Image must be between 1 byte and ${_MAX_AGENT_IMAGE_BYTES} bytes after base64 decode`,
     );
   }
+  validateAgentImageBytes(input.data, input.contentType);
   const u = new URL("/v2/agent/media/images", opts.baseUrl);
   const form = new FormData();
   const blob = new Blob([input.data], { type: input.contentType });

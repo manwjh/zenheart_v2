@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { siteLocale } from "@/features/locale/siteLocale";
+import { socialObservePanelShellByLocale } from "@/features/social/socialShellCopy";
 
 type RoomSummaryLike = {
   room_id: string;
   name: string;
-  topic: string;
+  brief: string;
   rules: string;
   is_permanent?: boolean;
   is_private?: boolean;
+  door_state?: "open" | "closed";
 };
 
 type RoomMemberLike = {
@@ -51,15 +54,22 @@ const props = withDefaults(
   { showObserveRetry: false },
 );
 
+const panelUi = computed(() => socialObservePanelShellByLocale[siteLocale.value]);
+
+const memberSummary = computed(() => {
+  const n = props.observeMembers.length;
+  const tpl = n === 1 ? panelUi.value.memberSingular : panelUi.value.memberPlural;
+  return tpl.replace("{n}", String(n));
+});
+
 const emit = defineEmits<{
   "update:queueExpanded": [value: boolean];
   "update:topicDraft": [value: string];
   "submit-topic": [];
-  "topic-keydown": [event: KeyboardEvent];
   "retry-connection": [];
 }>();
 
-/** Topic, rules, members, and visitor suggestions — collapsed by default so the feed uses vertical space. */
+/** Brief, rules, members, and visitor suggestions — collapsed by default so the feed uses vertical space. */
 const roomDetailsExpanded = ref(false);
 const topicComposerExpanded = ref(false);
 const failedImageMessageIds = ref<Set<string>>(new Set());
@@ -97,7 +107,7 @@ function displayAgentName(msg: ChatMessageLike): string {
     const memberName = memberNameById.value.get(msg.agent_id);
     if (memberName) return memberName;
   }
-  return msg.agent_name.trim() || msg.agent_id || "Unknown";
+  return msg.agent_name.trim() || msg.agent_id || panelUi.value.unknownAgent;
 }
 
 function agentToneStyle(msg: ChatMessageLike): Record<string, string> {
@@ -110,19 +120,28 @@ function agentToneStyle(msg: ChatMessageLike): Record<string, string> {
 }
 
 function submitTopicSuggestionFromComposer(): void {
-  if (!props.topicDraft.trim()) return;
+  if (!props.topicDraft.trim()) {
+    emit("update:topicDraft", "");
+  }
   emit("submit-topic");
   topicComposerExpanded.value = false;
+}
+
+function onTopicInputKeydown(ev: KeyboardEvent): void {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    submitTopicSuggestionFromComposer();
+  }
 }
 
 const hasRoomDetails = computed(() => {
   const r = props.observingRoom;
   if (!r) return false;
-  const hasTopic = !!(r.topic || "").trim();
+  const hasBrief = !!(r.brief || "").trim();
   const hasRules = !!(r.rules || "").trim();
   const hasMembers = props.observeMembers.length > 0;
   const hasQueue = !r.is_private && props.observePendingTopics.length > 0;
-  return hasTopic || hasRules || hasMembers || hasQueue;
+  return hasBrief || hasRules || hasMembers || hasQueue;
 });
 
 watch(
@@ -156,7 +175,7 @@ watch(
             aria-hidden="true"
           />
           <span class="observe-details__label">{{
-            roomDetailsExpanded ? "Hide room details" : "Room details"
+            roomDetailsExpanded ? panelUi.hideRoomDetails : panelUi.showRoomDetails
           }}</span>
           <span
             v-if="!observingRoom.is_private && observePendingTopics.length > 0"
@@ -166,13 +185,23 @@ watch(
         </button>
         <div class="observe-meta">
           <span class="badge" :class="observeConnected ? 'badge--live' : 'badge--off'">
-            {{ observeConnected ? "Live" : "Connecting..." }}
+            {{ observeConnected ? panelUi.live : panelUi.connecting }}
           </span>
-          <span v-if="observingRoom.is_permanent" class="badge badge--permanent">permanent</span>
-          <span v-if="observingRoom.is_private" class="badge badge--private">private</span>
-          <span class="member-pill"
-            >{{ observeMembers.length }} agent{{ observeMembers.length !== 1 ? "s" : "" }}</span
+          <span v-if="observingRoom.is_permanent" class="badge badge--permanent">{{ panelUi.permanent }}</span>
+          <span v-if="observingRoom.is_private" class="badge badge--private">{{ panelUi.priv }}</span>
+          <span
+            v-if="observingRoom.door_state === 'closed'"
+            class="badge badge--closed"
+            :title="panelUi.closedTitle"
+            >{{ panelUi.closed }}</span
           >
+          <span
+            v-else-if="observingRoom.door_state === 'open'"
+            class="badge badge--open"
+            :title="panelUi.openTitle"
+            >{{ panelUi.open }}</span
+          >
+          <span class="member-pill">{{ memberSummary }}</span>
         </div>
       </div>
     </div>
@@ -183,22 +212,22 @@ watch(
       class="observe-details-panel"
     >
       <div
-        v-if="(observingRoom.topic || '').trim()"
+        v-if="(observingRoom.brief || '').trim()"
         class="observe-title-group observe-title-group--in-details"
       >
-        <p class="observe-intro" :title="observingRoom.topic.trim()">
-          {{ observingRoom.topic.trim() }}
+        <p class="observe-intro" :title="observingRoom.brief.trim()">
+          {{ observingRoom.brief.trim() }}
         </p>
       </div>
 
       <div v-if="observingRoom.rules" class="observe-rules">
-        <p class="observe-rules__label">Room Rules</p>
+        <p class="observe-rules__label">{{ panelUi.roomRules }}</p>
         <p class="observe-rules__text">{{ observingRoom.rules }}</p>
       </div>
 
       <div class="observe-members">
         <span v-for="m in observeMembers" :key="m.agent_id" class="agent-chip">{{ m.agent_name }}</span>
-        <span v-if="observeMembers.length === 0" class="muted-small">No agents yet</span>
+        <span v-if="observeMembers.length === 0" class="muted-small">{{ panelUi.noAgentsYet }}</span>
       </div>
 
       <div
@@ -217,7 +246,7 @@ watch(
             :class="{ 'observe-topic-queue__chevron--open': observeTopicQueueExpanded }"
             aria-hidden="true"
           />
-          <span class="observe-topic-queue__label">Suggestions list</span>
+          <span class="observe-topic-queue__label">{{ panelUi.suggestionsList }}</span>
           <span class="observe-topic-queue__badge">{{ observePendingTopics.length }}</span>
         </button>
         <div
@@ -234,7 +263,7 @@ watch(
             </li>
           </ul>
           <p class="observe-topic-queue__hint">
-            These disappear after the owner pulls them (not agent chat).
+            {{ panelUi.suggestionsHint }}
           </p>
         </div>
       </div>
@@ -246,8 +275,8 @@ watch(
         v-if="showObserveRetry"
         type="button"
         class="obs-retry"
-        title="Retry observer connection"
-        aria-label="Retry observer connection"
+        :title="panelUi.retryTitle"
+        :aria-label="panelUi.retryAria"
         @click="emit('retry-connection')"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -284,7 +313,7 @@ watch(
                   v-if="msg.image_url && !isImageFailed(msg)"
                   class="msg-image"
                   :src="msg.image_url"
-                  alt="Shared image"
+                  :alt="panelUi.sharedImageAlt"
                   loading="lazy"
                   @error="markImageFailed(msg)"
                 />
@@ -295,7 +324,7 @@ watch(
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Image unavailable. Open original.
+                  {{ panelUi.imageUnavailable }}
                 </a>
                 <p v-if="msg.text" class="msg-text" v-html="messageMentionHtml(msg)"></p>
               </div>
@@ -305,7 +334,7 @@ watch(
             </template>
           </div>
           <div v-if="observeMessagesCount === 0 && observeConnected" class="feed-empty">
-            Waiting for the agents to speak...
+            {{ panelUi.feedEmpty }}
           </div>
         </div>
       </div>
@@ -319,8 +348,8 @@ watch(
       <button
         class="observe-composer__quick"
         type="button"
-        title="Suggest a topic"
-        aria-label="Suggest a topic"
+        :title="panelUi.suggestTopicTitle"
+        :aria-label="panelUi.suggestTopicAria"
         @click="topicComposerExpanded = true"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -332,31 +361,19 @@ watch(
           :value="topicDraft"
           class="observe-input"
           type="text"
-          maxlength="4000"
-          placeholder="Suggest a topic"
-          title="Visitor topic queue for the creator"
+          maxlength="500"
+          :placeholder="panelUi.suggestTopicPlaceholder"
+          :title="panelUi.topicFieldTitle"
           @input="emit('update:topicDraft', ($event.target as HTMLInputElement).value)"
-          @keydown="emit('topic-keydown', $event)"
+          @keydown="onTopicInputKeydown"
         />
-        <p class="observe-composer__hint">Sent to the room owner, not into agent chat.</p>
       </div>
       <button
-        class="observe-composer__collapse"
-        type="button"
-        title="Hide topic input"
-        aria-label="Hide topic input"
-        @click="topicComposerExpanded = false"
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-        </svg>
-      </button>
-      <button
         class="watch-btn"
-        :disabled="!observeConnected || sendingTopicSubmission || !topicDraft.trim()"
+        :disabled="!observeConnected || sendingTopicSubmission"
         type="button"
-        title="Submit topic"
-        aria-label="Submit topic suggestion"
+        :title="panelUi.submitTopicTitle"
+        :aria-label="panelUi.submitTopicAria"
         @click="submitTopicSuggestionFromComposer"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -606,15 +623,10 @@ watch(
   .observe-input {
     min-height: 2.5rem;
     padding: 0.55rem 0.7rem;
-    font-size: var(--text-compact);
-  }
-
-  .observe-composer__hint {
-    font-size: var(--text-caption);
+    font-size: 16px;
   }
 
   .observe-composer:not(.observe-composer--expanded) .observe-composer__field,
-  .observe-composer:not(.observe-composer--expanded) .observe-composer__collapse,
   .observe-composer:not(.observe-composer--expanded) .watch-btn {
     display: none;
   }
@@ -727,6 +739,16 @@ watch(
   color: var(--brand-accent);
 }
 
+.badge--open {
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+}
+
+.badge--closed {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
 @media (prefers-color-scheme: dark) {
   .badge--live {
     background: #16a34a33;
@@ -739,6 +761,14 @@ watch(
   .badge--private {
     background: rgba(var(--brand-rgb), 0.16);
     color: var(--brand-accent);
+  }
+  .badge--open {
+    background: rgba(34, 197, 94, 0.16);
+    color: #4ade80;
+  }
+  .badge--closed {
+    background: rgba(248, 113, 113, 0.14);
+    color: #f87171;
   }
 }
 
@@ -1007,15 +1037,8 @@ watch(
   min-width: 0;
 }
 
-.observe-composer__quick,
-.observe-composer__collapse {
+.observe-composer__quick {
   display: none;
-}
-
-.observe-composer__hint {
-  margin: 0.32rem 0 0;
-  font-size: var(--text-meta);
-  color: var(--muted);
 }
 
 .observe-input {
@@ -1321,12 +1344,38 @@ watch(
     justify-content: center;
     width: 2.75rem;
     height: 2.75rem;
-    border: 1px solid rgba(var(--brand-rgb), 0.28);
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    border: 1px solid color-mix(in srgb, var(--brand-accent) 62%, white 38%);
     border-radius: 50%;
-    background: color-mix(in srgb, var(--fg) 90%, var(--brand-accent) 10%);
-    color: var(--bg);
-    box-shadow: 0 0.75rem 1.8rem rgba(0, 0, 0, 0.28);
+    background:
+      radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.42), transparent 52%),
+      linear-gradient(
+        155deg,
+        var(--brand-accent),
+        color-mix(in srgb, var(--brand-accent) 58%, #0f766e)
+      );
+    color: #fff;
+    -webkit-tap-highlight-color: transparent;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.28),
+      0 1px 2px rgba(0, 0, 0, 0.24),
+      0 4px 16px rgba(0, 0, 0, 0.32);
     pointer-events: auto;
+  }
+
+  .observe-composer__quick:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--brand-accent) 88%, white 12%);
+    outline-offset: 2px;
+  }
+
+  .observe-composer__quick:active {
+    transform: scale(0.96);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      0 1px 1px rgba(0, 0, 0, 0.2),
+      0 2px 10px rgba(0, 0, 0, 0.26);
   }
 
   .observe-composer--expanded .observe-composer__quick {
@@ -1334,32 +1383,14 @@ watch(
   }
 
   .observe-composer:not(.observe-composer--expanded) .observe-composer__field,
-  .observe-composer:not(.observe-composer--expanded) .observe-composer__collapse,
   .observe-composer:not(.observe-composer--expanded) .watch-btn {
     display: none;
-  }
-
-  .observe-composer__collapse {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 2.5rem;
-    height: 2.5rem;
-    border: 1px solid var(--border);
-    border-radius: 50%;
-    background: rgba(127, 127, 127, 0.08);
-    color: var(--muted);
-    flex-shrink: 0;
   }
 
   .observe-input {
     min-height: 2.5rem;
     padding: 0.55rem 0.7rem;
-    font-size: var(--text-compact);
-  }
-
-  .observe-composer__hint {
-    font-size: var(--text-caption);
+    font-size: 16px;
   }
 
   .watch-btn {

@@ -13,7 +13,8 @@ from app.routers import (
     wall_admin,
 )
 from app.routers.agent_profile import router as agent_profile_router
-from app.routers.games_live import router as games_live_router
+from app.routers.agent_native_protocol import router as agent_native_protocol_router
+from app.routers.agent_space_self import router as agent_space_self_router
 from app.routers.media_admin import router as media_admin_router
 from app.routers.media_agent import router as media_agent_router
 from app.routers.msgbox_agent import router as msgbox_agent_router
@@ -40,10 +41,11 @@ def register_http_routes(app: FastAPI) -> None:
     app.include_router(submissions.agent_router)
     app.include_router(submissions.admin_router)
     app.include_router(social_router)
+    app.include_router(agent_native_protocol_router)
     app.include_router(points_router)
     app.include_router(agent_profile_router)
+    app.include_router(agent_space_self_router)
     app.include_router(msgbox_agent_router)
     app.include_router(msgbox_public_router)
     app.include_router(wall_public_router)
     app.include_router(wall_admin.router)
-    app.include_router(games_live_router)

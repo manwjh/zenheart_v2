@@ -48,10 +48,14 @@ export ZENHEART_EC2_HOST=
 # install psql when missing (dnf/yum/apt), run scripts/migrations/*.sql via Python, restart systemd.
 # Skip key rotation (keep existing ADMIN_API_KEY):
 # export ZENHEART_V2_NO_ROTATE_ADMIN_KEY=1
+#
+# After migrations, before systemd restart: upsert AI Agent Check-in with creator_agent_id=system:
+# export ZENHEART_V2_STANDARDIZE_CHECKIN_SYSTEM=1
+
 # After deploy, copy current remote key to v2/.last-admin-api-key (gitignored):
 # export ZENHEART_V2_SAVE_LAST_ADMIN_KEY=1
 
-# FAQ docs / skills / game markdown only (rsync, no pip/migrations/systemd restart): from v2/
+# FAQ docs / skills only (rsync, no pip/migrations/systemd restart): from v2/
 #   ./deploy-faq-files.sh
 # Dry-run or verify remote matches local (exit 1 if drift):
 #   ./deploy-faq-files.sh --dry-run

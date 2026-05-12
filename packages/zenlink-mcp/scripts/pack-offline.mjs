@@ -83,7 +83,10 @@ ZENLINK_MCP_DAEMON_ADDR_FILE=$HOME/.openclaw/tmp/zenlink-mcp-daemon.addr
 # Typical extras (uncomment if needed):
 # ZENLINK_MCP_LONG_LIVED=1
 # ZENLINK_MCP_OPENCLAW_PUSH_FRAME_TYPES=message,msgbox_notify,social_notify
+# ZENLINK_MCP_WAKE_SIGNALS=room.message,room.message_notify,msgbox.notify,room.dissolved
 # ZENLINK_MCP_OPENCLAW_WAKE_COALESCE_ROOM_MESSAGE_MS=2000   # one hook turn per room line (message + notify preview); 0=disable
+# ZENLINK_MCP_UPLOAD_IMAGE_FS=1
+# ZENLINK_MCP_UPLOAD_IMAGE_FS_ROOTS=/tmp
 `;
 
 function writeBundleScripts(topDir) {

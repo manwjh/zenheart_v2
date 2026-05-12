@@ -22,11 +22,13 @@ from app.services.permission_service import check_permission, get_limit_value
 from app.services.points_service import award_points
 from app.services.image_check import is_trusted_media_url
 from app.domains.social.persistence.social_repository import (
+    clear_room_state as db_clear_room_state,
     count_active_rooms_created_by,
     count_rooms_today,
     create_room_record,
     update_room_metadata as db_update_room_metadata,
     update_room_access_lists as db_update_room_access_lists,
+    update_room_door_state as db_update_room_door_state,
     fetch_and_pop_topic_suggestions_for_creator,
     get_room_messages,
     list_pending_topic_suggestions,
@@ -102,7 +104,7 @@ def _room_join_payload(
         "room_id": room.room_id,
         "status": "active",
         "name": room.name,
-        "topic": room.topic,
+        "brief": room.brief,
         "rules": room.rules,
         "creator_agent_id": room.creator_id,
         "creator_agent_name": room.creator_name,
@@ -115,6 +117,7 @@ def _room_join_payload(
         "recent_messages": recent_messages,
         "is_private": room.is_private,
         "observable": room.observable,
+        "door_state": "closed" if room.door_closed else "open",
     }
     if room.is_private:
         payload["allowed_agent_ids"] = sorted(room.allowlist_agent_ids)
@@ -178,11 +181,11 @@ async def _handle_create_room(
         }))
         return
 
-    topic = data.get("topic", "")
-    if not isinstance(topic, str) or not (1 <= len(topic.strip()) <= 300):
+    brief = data.get("brief", "")
+    if not isinstance(brief, str) or not (1 <= len(brief.strip()) <= 300):
         await ws.send_text(_jdump({
             "type": "error", "reason": "invalid_create_room_payload",
-            "detail": "topic is required and must be 1-300 chars",
+            "detail": "brief is required and must be 1-300 chars",
         }))
         return
 
@@ -254,7 +257,7 @@ async def _handle_create_room(
 
     result = await social.create_room(
         name=name.strip(),
-        topic=topic.strip(),
+        brief=brief.strip(),
         rules=rules,
         creator_id=agent_id,
         creator_name=agent_name,
@@ -308,7 +311,7 @@ async def _handle_create_room(
         "room_id": room.room_id,
         "status": "active",
         "name": room.name,
-        "topic": room.topic,
+        "brief": room.brief,
         "rules": room.rules,
         "creator_agent_id": room.creator_id,
         "creator_agent_name": room.creator_name,
@@ -321,6 +324,7 @@ async def _handle_create_room(
         "recent_messages": [],
         "is_private": room.is_private,
         "observable": room.observable,
+        "door_state": "open",
     }
     if room.is_private:
         _created["allowed_agent_ids"] = sorted(room.allowlist_agent_ids)
@@ -330,7 +334,7 @@ async def _handle_create_room(
     await record_agent_event(
         session_factory, event="a2a_room_created", agent_id=agent_id,
         detail={
-            "room_id": room.room_id, "name": room.name, "topic": room.topic,
+            "room_id": room.room_id, "name": room.name, "brief": room.brief,
         },
     )
     await award_points(session_factory, agent_id, "create_room")
@@ -398,7 +402,14 @@ async def _handle_join_room(
         room_id=room_id, agent_id=agent_id, agent_name=agent_name, ws=ws
     )
     if isinstance(result, str):
-        await ws.send_text(_jdump({"type": "error", "reason": result}))
+        payload = {"type": "error", "reason": result}
+        if result == "room_door_closed":
+            payload.update({
+                "room_id": room_id,
+                "door_state": "closed",
+                "detail": "Room door is closed by the owner.",
+            })
+        await ws.send_text(_jdump(payload))
         return
 
     room: ChatRoom = result
@@ -894,17 +905,17 @@ async def _handle_update_room_metadata(
         }))
         return
 
-    updates_seen = {"name", "topic", "rules"}.intersection(data.keys())
+    updates_seen = {"name", "brief", "rules"}.intersection(data.keys())
     if not updates_seen:
         await ws.send_text(_jdump({
             "type": "error",
             "reason": "invalid_update_room_metadata_payload",
-            "detail": "at least one of name, topic, rules is required",
+            "detail": "at least one of name, brief, rules is required",
         }))
         return
 
     name: str | None = None
-    topic: str | None = None
+    brief: str | None = None
     rules: str | None = None
     if "name" in data:
         raw_name = data.get("name")
@@ -916,16 +927,16 @@ async def _handle_update_room_metadata(
             }))
             return
         name = raw_name.strip()
-    if "topic" in data:
-        raw_topic = data.get("topic")
-        if not isinstance(raw_topic, str) or not (1 <= len(raw_topic.strip()) <= 300):
+    if "brief" in data:
+        raw_brief = data.get("brief")
+        if not isinstance(raw_brief, str) or not (1 <= len(raw_brief.strip()) <= 300):
             await ws.send_text(_jdump({
                 "type": "error",
                 "reason": "invalid_update_room_metadata_payload",
-                "detail": "topic must be 1-300 chars",
+                "detail": "brief must be 1-300 chars",
             }))
             return
-        topic = raw_topic.strip()
+        brief = raw_brief.strip()
     if "rules" in data:
         raw_rules = data.get("rules")
         if not isinstance(raw_rules, str) or len(raw_rules.strip()) > 2000:
@@ -950,7 +961,7 @@ async def _handle_update_room_metadata(
         session_factory,
         room_id,
         name=name,
-        topic=topic,
+        brief=brief,
         rules=rules,
     ):
         await ws.send_text(_jdump({
@@ -964,7 +975,7 @@ async def _handle_update_room_metadata(
         room_id,
         agent_id,
         name=name,
-        topic=topic,
+        brief=brief,
         rules=rules,
     )
     if isinstance(updated, str):
@@ -975,7 +986,7 @@ async def _handle_update_room_metadata(
         "type": "room_metadata_updated",
         "room_id": updated.room_id,
         "name": updated.name,
-        "topic": updated.topic,
+        "brief": updated.brief,
         "rules": updated.rules,
         "creator_agent_id": updated.creator_id,
         "creator_agent_name": updated.creator_name,
@@ -993,6 +1004,180 @@ async def _handle_update_room_metadata(
             "updated_fields": sorted(updates_seen),
         },
     )
+
+
+async def _handle_update_room_door(
+    ws: WebSocket,
+    social: SocialRoomRegistry,
+    session_factory: object,
+    agent_id: str,
+    data: dict,
+) -> None:
+    room_id = data.get("room_id", "")
+    if not isinstance(room_id, str) or not room_id:
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_update_room_door_payload",
+            "detail": "room_id required",
+        }))
+        return
+    door_state = data.get("door_state")
+    if door_state not in ("open", "closed"):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_update_room_door_payload",
+            "detail": "door_state must be open or closed",
+        }))
+        return
+
+    validation_error = await social.validate_room_door_update(room_id, agent_id)
+    if validation_error:
+        await ws.send_text(_jdump({"type": "error", "reason": validation_error}))
+        return
+
+    door_closed = door_state == "closed"
+    if not await db_update_room_door_state(
+        session_factory,
+        room_id,
+        door_closed=door_closed,
+    ):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "persistence_failed",
+            "detail": "Could not update room door.",
+        }))
+        return
+
+    room, kicked_members, apply_error = await social.apply_room_door_after_persist(
+        room_id,
+        agent_id,
+        door_closed=door_closed,
+    )
+    if apply_error or room is None:
+        await ws.send_text(_jdump({"type": "error", "reason": apply_error or "room_not_found"}))
+        return
+
+    frame = {
+        "type": "room_door_updated",
+        "room_id": room.room_id,
+        "door_state": door_state,
+        "creator_agent_id": room.creator_id,
+        "kicked_agent_ids": [member.agent_id for member in kicked_members],
+    }
+    await ws.send_text(_jdump(frame))
+
+    now = datetime.now(timezone.utc)
+    kicked_frame = {
+        "type": "room_door_closed",
+        "room_id": room.room_id,
+        "door_state": "closed",
+        "reason": "room_door_closed",
+        "detail": "Room owner closed the door; you were removed from the room.",
+        "closed_at": now.isoformat(),
+    }
+    if door_closed:
+        for member in kicked_members:
+            await record_member_leave(session_factory, room.room_id, member.agent_id, now)
+            if member.ws is None:
+                continue
+            try:
+                await member.ws.send_text(_jdump(kicked_frame))
+            except (RuntimeError, OSError):
+                pass
+
+    await social.broadcast_to_room(room_id, frame, exclude_agent=agent_id)
+    await record_agent_event(
+        session_factory,
+        event="a2a_room_door_updated",
+        agent_id=agent_id,
+        detail={
+            "room_id": room.room_id,
+            "door_state": door_state,
+            "kicked_agent_ids": [member.agent_id for member in kicked_members],
+        },
+    )
+
+
+async def _handle_clear_room_state(
+    ws: WebSocket,
+    social: SocialRoomRegistry,
+    session_factory: object,
+    agent_id: str,
+    data: dict,
+) -> None:
+    room_id = data.get("room_id", "")
+    if not isinstance(room_id, str) or not room_id:
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_clear_room_state_payload",
+            "detail": "room_id required",
+        }))
+        return
+    clear_messages = data.get("clear_messages")
+    clear_signals = data.get("clear_signals")
+    if not isinstance(clear_messages, bool) or not isinstance(clear_signals, bool):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_clear_room_state_payload",
+            "detail": "clear_messages and clear_signals must be booleans",
+        }))
+        return
+    if not clear_messages and not clear_signals:
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "invalid_clear_room_state_payload",
+            "detail": "at least one clear flag must be true",
+        }))
+        return
+
+    validation_error = await social.validate_room_door_update(room_id, agent_id)
+    if validation_error:
+        await ws.send_text(_jdump({"type": "error", "reason": validation_error}))
+        return
+
+    if not await db_clear_room_state(
+        session_factory,
+        room_id,
+        clear_messages=clear_messages,
+        clear_signals=clear_signals,
+    ):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "persistence_failed",
+            "detail": "Could not clear room state.",
+        }))
+        return
+
+    room = await social.apply_room_state_cleared_after_persist(
+        room_id,
+        agent_id,
+        clear_messages=clear_messages,
+    )
+    if isinstance(room, str):
+        await ws.send_text(_jdump({"type": "error", "reason": room}))
+        return
+
+    frame = {
+        "type": "room_state_cleared",
+        "room_id": room.room_id,
+        "creator_agent_id": room.creator_id,
+        "cleared_messages": clear_messages,
+        "cleared_signals": clear_signals,
+    }
+    await ws.send_text(_jdump(frame))
+    await social.broadcast_to_room(room_id, frame, exclude_agent=agent_id)
+    await record_agent_event(
+        session_factory,
+        event="a2a_room_state_cleared",
+        agent_id=agent_id,
+        detail={
+            "room_id": room.room_id,
+            "cleared_messages": clear_messages,
+            "cleared_signals": clear_signals,
+        },
+    )
+    if clear_signals:
+        await social.notify_topic_suggestions_pending(session_factory, room_id)
 
 
 async def _handle_list_room_members(
@@ -1147,6 +1332,24 @@ async def dispatch_room_inbound_frame(
         return True
     if mt == "update_room_metadata":
         await _handle_update_room_metadata(
+            websocket,
+            social,
+            session_factory,
+            agent_id,
+            data,
+        )
+        return True
+    if mt == "update_room_door":
+        await _handle_update_room_door(
+            websocket,
+            social,
+            session_factory,
+            agent_id,
+            data,
+        )
+        return True
+    if mt == "clear_room_state":
+        await _handle_clear_room_state(
             websocket,
             social,
             session_factory,

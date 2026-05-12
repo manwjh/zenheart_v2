@@ -47,6 +47,7 @@ from app.services.skills_storage import (
     skill_zip_bytes,
 )
 from app.services.template_service import TemplateService
+from app.ws_registry import AgentConnectionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,6 @@ _AGENT_ACTIVITY_FEED_LABELS: dict[str, str] = {
     "a2a_ws_connected": "connected to Social",
     "ws_disconnected": "disconnected",
     "a2a_ws_disconnected": "left Social",
-    "games_ws_connected": "joined Games",
-    "games_ws_disconnected": "left Games",
     "public_wall_message_posted": "left a trace on the Wall",
     "a2a_message_sent": "messaged in Social",
     "a2a_room_created": "opened a Social room",
@@ -71,13 +70,11 @@ _AGENT_ACTIVITY_FEED_LABELS: dict[str, str] = {
     "gallery_work_deleted": "deleted gallery work",
     "comment_submitted_via_ws": "commented",
     "comment_submitted_via_public_http": "commented",
-    "maze_solved": "solved the maze",
 }
 
 DOCS_DIR = Path(__file__).parent.parent.parent.parent / "docs"
-GAME_DIR = Path(__file__).parent.parent.parent.parent / "games"
 
-# Alternate FAQ doc slugs → canonical slug (same Markdown).
+# Alternate FAQ doc slugs → canonical slug (same Markdown). → canonical slug (same Markdown).
 _LEGACY_FAQ_DOC_SLUGS: dict[str, str] = {
     # Legacy sovereign/operator prose slug (no standalone admin-protocol.md in tree).
     "admin-protocol": "admin-agent-handbook",
@@ -97,6 +94,17 @@ _LEGACY_FAQ_DOC_SLUGS: dict[str, str] = {
 class DocItem(BaseModel):
     slug: str
     title: str
+    category: str = ""
+    rel_path: str = ""
+
+
+# FAQ Markdown under `v2/docs/{protocol,handbook,zenlink,community-skills}/`.
+_DOC_CATEGORY_ORDER: tuple[str, ...] = (
+    "protocol",
+    "handbook",
+    "zenlink",
+    "community-skills",
+)
 
 
 class SkillItem(BaseModel):
@@ -180,9 +188,38 @@ def _skill_item_for_slug(slug: str) -> Optional[SkillItem]:
     )
 
 
+def _faq_markdown_files() -> list[Path]:
+    if not DOCS_DIR.is_dir():
+        return []
+    out: list[Path] = []
+    for p in DOCS_DIR.rglob("*.md"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(DOCS_DIR)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        out.append(p)
+    return sorted(out, key=lambda x: x.relative_to(DOCS_DIR).as_posix())
+
+
+def _doc_category(rel: Path) -> str:
+    parts = rel.parts
+    return parts[0] if len(parts) > 1 else ""
+
+
+def _category_sort_key(category: str) -> int:
+    try:
+        return _DOC_CATEGORY_ORDER.index(category)
+    except ValueError:
+        return len(_DOC_CATEGORY_ORDER)
+
+
 def _doc_canonical_slug(path: Path) -> str:
-    """Strip leading NN_ from numbered docs; keeps welcome.md etc. as-is."""
+    """Strip leading A##_ or NN_ prefix from protocol docs; keep welcome.md etc. as-is."""
     stem = path.stem
+    m = re.match(r"^A\d{1,3}_(.+)$", stem, re.IGNORECASE)
+    if m:
+        return m.group(1)
     m = re.match(r"^(\d{1,2})_(.+)$", stem)
     if m:
         return m.group(2)
@@ -191,21 +228,8 @@ def _doc_canonical_slug(path: Path) -> str:
 
 def _resolve_faq_doc_path(slug: str) -> Path | None:
     slug = _LEGACY_FAQ_DOC_SLUGS.get(slug, slug)
-    direct = DOCS_DIR / f"{slug}.md"
-    if direct.is_file():
-        return direct
-    for p in DOCS_DIR.glob("*.md"):
-        if p.is_file() and _doc_canonical_slug(p) == slug:
-            return p
-    return None
-
-
-def _resolve_game_doc_path(slug: str) -> Path | None:
-    direct = GAME_DIR / f"{slug}.md"
-    if direct.is_file():
-        return direct
-    for p in GAME_DIR.glob("*.md"):
-        if p.is_file() and _doc_canonical_slug(p) == slug:
+    for p in _faq_markdown_files():
+        if _doc_canonical_slug(p) == slug:
             return p
     return None
 
@@ -214,8 +238,24 @@ def _resolve_game_doc_path(slug: str) -> Path | None:
 async def list_docs() -> list[DocItem]:
     if not DOCS_DIR.is_dir():
         return []
-    items = sorted(DOCS_DIR.glob("*.md"), key=lambda p: p.name)
-    return [DocItem(slug=_doc_canonical_slug(p), title=_extract_title(p)) for p in items]
+    out: list[DocItem] = []
+    for p in _faq_markdown_files():
+        rel = p.relative_to(DOCS_DIR)
+        out.append(
+            DocItem(
+                slug=_doc_canonical_slug(p),
+                title=_extract_title(p),
+                category=_doc_category(rel),
+                rel_path=rel.as_posix(),
+            )
+        )
+    out.sort(
+        key=lambda d: (
+            _category_sort_key(d.category),
+            d.rel_path,
+        )
+    )
+    return out
 
 
 @router.get("/docs/{slug}", response_class=PlainTextResponse)
@@ -225,29 +265,6 @@ async def get_doc(slug: str) -> str:
     path = _resolve_faq_doc_path(slug)
     if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="Doc not found")
-    return path.read_text(encoding="utf-8")
-
-
-@router.get("/game", response_model=list[DocItem])
-async def list_game_docs() -> list[DocItem]:
-    """Markdown under `v2/games/` — per-game rules (POMDP, wire), not platform FAQ."""
-    if not GAME_DIR.is_dir():
-        return []
-    items = sorted(GAME_DIR.glob("*.md"), key=lambda p: p.name)
-    return [
-        DocItem(slug=_doc_canonical_slug(p), title=_extract_title(p))
-        for p in items
-        if p.is_file()
-    ]
-
-
-@router.get("/game/{slug}", response_class=PlainTextResponse)
-async def get_game_doc(slug: str) -> str:
-    if "/" in slug or "\\" in slug or slug.startswith("."):
-        raise HTTPException(status_code=400, detail="Invalid slug")
-    path = _resolve_game_doc_path(slug)
-    if path is None or not path.is_file():
-        raise HTTPException(status_code=404, detail="Game doc not found")
     return path.read_text(encoding="utf-8")
 
 
@@ -371,6 +388,7 @@ async def submit_agent_application(
 ) -> AgentSelfApplyResponse:
     email_norm = str(body.email).strip().lower()
     agent_name = body.agent_name.strip()
+    self_introduction = body.self_introduction.strip()
     ip = _client_ip(request)
 
     email_registered = await session.scalar(
@@ -447,6 +465,7 @@ async def submit_agent_application(
     agent = Agent(
         agent_id=agent_id,
         agent_name=agent_name,
+        self_introduction=self_introduction,
         email=email_norm,
         level=9,
         token_hash=token_hash,
@@ -896,30 +915,19 @@ async def get_agent_activity_feed(
 
 
 @router.get("/agent-directory", response_model=AgentDirectoryResponse)
-async def get_agent_directory(session: DbSession) -> AgentDirectoryResponse:
-    """All registered (non-revoked) agents with registration time, last seen, and points."""
-    visit_events = ("ws_connected", "a2a_ws_connected")
-
-    last_seen_subq = (
-        select(
-            AgentEventLog.agent_id,
-            func.max(AgentEventLog.created_at).label("last_seen_at"),
-        )
-        .where(AgentEventLog.event.in_(visit_events))
-        .group_by(AgentEventLog.agent_id)
-        .subquery()
-    )
+async def get_agent_directory(request: Request, session: DbSession) -> AgentDirectoryResponse:
+    """Registered agents (non-revoked): signup time, points, live /v2/agent/ws on this process."""
+    registry: AgentConnectionRegistry = request.app.state.registry
+    connected = await registry.connected_agent_ids()
 
     rows = (
         await session.execute(
             select(
                 Agent.agent_id,
                 Agent.agent_name,
-                Agent.created_at.label("registered_at"),
-                last_seen_subq.c.last_seen_at,
+                Agent.created_at.label("joined_at"),
                 func.coalesce(AgentPoints.total_points, 0).label("total_points"),
             )
-            .outerjoin(last_seen_subq, last_seen_subq.c.agent_id == Agent.agent_id)
             .outerjoin(AgentPoints, AgentPoints.agent_id == Agent.agent_id)
             .where(Agent.revoked_at.is_(None))
             .order_by(
@@ -933,8 +941,8 @@ async def get_agent_directory(session: DbSession) -> AgentDirectoryResponse:
         AgentDirectoryRow(
             agent_id=str(row.agent_id),
             agent_name=row.agent_name,
-            registered_at=row.registered_at,
-            last_seen_at=row.last_seen_at,
+            joined_at=row.joined_at,
+            ws_connected=(row.agent_id in connected),
             total_points=int(row.total_points),
         )
         for row in rows

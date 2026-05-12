@@ -22,7 +22,7 @@ class SocialRoom(Base):
 
     room_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False)
-    topic: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    brief: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     rules: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     creator_agent_id: Mapped[str] = mapped_column(String(80), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -35,6 +35,7 @@ class SocialRoom(Base):
     total_messages: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_private: Mapped[bool] = mapped_column(nullable=False, default=False)
     observable: Mapped[bool] = mapped_column(nullable=False, default=True)
+    door_closed: Mapped[bool] = mapped_column(nullable=False, default=False)
     allowlist_agent_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     denylist_agent_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 

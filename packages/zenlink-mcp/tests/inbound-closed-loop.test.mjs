@@ -272,7 +272,23 @@ test("send_message with trusted current room skips redundant join", async () => 
 
 test("zenlink_doctor tells agent to drain queued inbound frames", async () => {
   const previous = process.env.ZENLINK_MCP_LONG_LIVED;
+  const previousFetch = globalThis.fetch;
   process.env.ZENLINK_MCP_LONG_LIVED = "0";
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.endsWith("/v2/protocol/agent-native-site-world/v0.1")) {
+      return new Response(JSON.stringify({
+        protocol: "agent-native-site-world/v0.1",
+        drafter: "www.zenheart.net",
+        bindings: {},
+        artifacts: {},
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return previousFetch(url);
+  };
   try {
     const client = new ZenlinkClient({
       agentId: "agent-a",
@@ -307,7 +323,188 @@ test("zenlink_doctor tells agent to drain queued inbound frames", async () => {
     assert.ok(report.findings.some((finding) => finding.id === "inbound_waiting_for_drain"));
     assert.equal(report.status_evidence.inbound_queue_depth, 1);
     assert.equal(report.status_evidence.openclaw_push.delivery_mode, "agent");
+    assert.equal(report.status_evidence.wake_policy.mode, "default");
+    assert.equal(report.config.wake_policy.mode, "default");
+    assert.equal(report.status_evidence.agent_native_protocol.available, true);
   } finally {
+    globalThis.fetch = previousFetch;
+    if (previous === undefined) {
+      delete process.env.ZENLINK_MCP_LONG_LIVED;
+    } else {
+      process.env.ZENLINK_MCP_LONG_LIVED = previous;
+    }
+  }
+});
+
+test("wake_policy facade controls runtime policy and status", async () => {
+  const previous = process.env.ZENLINK_MCP_LONG_LIVED;
+  process.env.ZENLINK_MCP_LONG_LIVED = "0";
+  try {
+    const client = new ZenlinkClient({
+      agentId: "agent-a",
+      token: "token-a",
+      host: "example.invalid",
+      useTls: false,
+      wsTimeoutMs: 100,
+    });
+    const session = new ZenlinkSession(
+      client,
+      new OpenClawWakeNotifier({ hookBase: "", hookToken: "" }),
+    );
+
+    const setResult = await dispatchZenlinkTool(session, "zenlink_connection", {
+      action: "wake_policy",
+      payload: {
+        action: "set",
+        wake_signals: ["room.message", "msgbox.notify"],
+      },
+    });
+    const setPayload = JSON.parse(setResult.content[0].text);
+    assert.equal(setPayload.policy.mode, "allowlist");
+    assert.deepEqual(setPayload.policy.wake_signals, ["msgbox.notify", "room.message"]);
+    assert.equal(setPayload.policy.updated_by, "mcp");
+    assert.equal(session.status().wake_policy.mode, "allowlist");
+
+    const getResult = await dispatchZenlinkTool(session, "zenlink_connection", {
+      action: "wake_policy",
+      payload: { action: "get" },
+    });
+    const getPayload = JSON.parse(getResult.content[0].text);
+    assert.deepEqual(getPayload.policy.wake_signals, ["msgbox.notify", "room.message"]);
+
+    const resetResult = await dispatchZenlinkTool(session, "zenlink_connection", {
+      action: "wake_policy",
+      payload: { action: "reset" },
+    });
+    const resetPayload = JSON.parse(resetResult.content[0].text);
+    assert.equal(resetPayload.policy.mode, "default");
+    assert.equal(resetPayload.policy.wake_signals, null);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ZENLINK_MCP_LONG_LIVED;
+    } else {
+      process.env.ZENLINK_MCP_LONG_LIVED = previous;
+    }
+  }
+});
+
+test("wake_drain remains controlled by per-call tool arguments", async () => {
+  const previous = process.env.ZENLINK_MCP_LONG_LIVED;
+  process.env.ZENLINK_MCP_LONG_LIVED = "0";
+  try {
+    const client = new ZenlinkClient({
+      agentId: "agent-a",
+      token: "token-a",
+      host: "example.invalid",
+      useTls: false,
+      wsTimeoutMs: 100,
+    });
+    client.socket = { readyState: 1 };
+    client.markAuthenticatedForTest();
+    const session = new ZenlinkSession(
+      client,
+      new OpenClawWakeNotifier({ hookBase: "", hookToken: "" }),
+    );
+
+    session.injectInboundForTest({
+      type: "message",
+      room_id: "room-1",
+      agent_id: "peer-agent",
+      text: "first",
+    });
+    session.injectInboundForTest({
+      type: "social_notify",
+      kind: "message",
+      room_id: "room-1",
+      agent_id: "peer-agent",
+      text: "preview",
+    });
+
+    const result = await dispatchZenlinkTool(session, "zenlink_connection", {
+      action: "wake_drain",
+      payload: {
+        timeout_ms: 0,
+        limit: 1,
+        types: ["message"],
+        include_inbox: false,
+      },
+    });
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.inbound.frames.length, 1);
+    assert.equal(payload.inbound.frames[0].type, "message");
+    assert.equal(payload.inbox_summary, null);
+    assert.equal(payload.inbox, null);
+    assert.equal(payload.remaining_inbound_queue_depth, 1);
+    assert.equal(payload.continue_drain, true);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ZENLINK_MCP_LONG_LIVED;
+    } else {
+      process.env.ZENLINK_MCP_LONG_LIVED = previous;
+    }
+  }
+});
+
+test("zenlink_connection exposes agent-native protocol discovery and artifacts", async () => {
+  const previous = process.env.ZENLINK_MCP_LONG_LIVED;
+  const previousFetch = globalThis.fetch;
+  process.env.ZENLINK_MCP_LONG_LIVED = "0";
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    requests.push(href);
+    if (href.endsWith("/v2/protocol/agent-native-site-world/v0.1")) {
+      return new Response(JSON.stringify({
+        protocol: "agent-native-site-world/v0.1",
+        drafter: "www.zenheart.net",
+        artifacts: {
+          schemas: "/v2/protocol/agent-native-site-world/v0.1/schemas",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (href.endsWith("/v2/protocol/agent-native-site-world/v0.1/schemas")) {
+      return new Response(JSON.stringify({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": { AuthFrame: {} },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  };
+  try {
+    const client = new ZenlinkClient({
+      agentId: "agent-a",
+      token: "token-a",
+      host: "example.invalid",
+      useTls: false,
+      wsTimeoutMs: 100,
+    });
+    const session = new ZenlinkSession(client);
+
+    const discoveryResult = await dispatchZenlinkTool(session, "zenlink_connection", {
+      action: "protocol_discovery",
+    });
+    const discovery = JSON.parse(discoveryResult.content[0].text);
+    assert.equal(discovery.protocol, "agent-native-site-world/v0.1");
+    assert.equal(discovery.drafter, "www.zenheart.net");
+
+    const artifactResult = await dispatchZenlinkTool(session, "zenlink_connection", {
+      action: "protocol_artifact",
+      payload: { artifact: "schemas" },
+    });
+    const artifact = JSON.parse(artifactResult.content[0].text);
+    assert.equal(artifact.$schema, "https://json-schema.org/draft/2020-12/schema");
+    assert.deepEqual(requests, [
+      "http://example.invalid/v2/protocol/agent-native-site-world/v0.1",
+      "http://example.invalid/v2/protocol/agent-native-site-world/v0.1/schemas",
+    ]);
+  } finally {
+    globalThis.fetch = previousFetch;
     if (previous === undefined) {
       delete process.env.ZENLINK_MCP_LONG_LIVED;
     } else {
@@ -392,6 +589,88 @@ test("join_room ignores already_in_room for a different room", async () => {
 
     await assert.rejects(joinPromise, /timeout waiting for ZenHeart frame/);
     assert.equal(session.status().current_room_id, null);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ZENLINK_MCP_LONG_LIVED;
+    } else {
+      process.env.ZENLINK_MCP_LONG_LIVED = previous;
+    }
+  }
+});
+
+test("room restore rejects when joined roster does not include self", async () => {
+  const previous = process.env.ZENLINK_MCP_LONG_LIVED;
+  process.env.ZENLINK_MCP_LONG_LIVED = "0";
+  let closeHandler = null;
+  let session;
+  try {
+    const sent = [];
+    let restoring = false;
+    const client = {
+      agentId: "agent-a",
+      wsTimeoutMs: 100,
+      httpBaseUrl: "http://example.invalid",
+      onMessage: () => () => {},
+      onClose: (handler) => {
+        closeHandler = handler;
+        return () => {};
+      },
+      onError: () => () => {},
+      isOnline: () => true,
+      connectionState: () => "authenticated",
+      sendJson: (frame) => {
+        sent.push(frame);
+        if (frame.type === "join_room" && !restoring) {
+          setTimeout(() => {
+            session.injectInboundForTest({
+              type: "room_joined",
+              room_id: frame.room_id,
+              members: [{ agent_id: "agent-a", agent_name: "Agent A" }],
+            });
+          }, 0);
+          return;
+        }
+        if (frame.type === "join_room" && restoring) {
+          setTimeout(() => {
+            session.injectInboundForTest({
+              type: "room_joined",
+              room_id: frame.room_id,
+              members: [{ agent_id: "agent-b", agent_name: "Agent B" }],
+            });
+          }, 0);
+          return;
+        }
+        if (frame.type === "send_message") {
+          setTimeout(() => {
+            session.injectInboundForTest({
+              type: "message",
+              room_id: "room-1",
+              agent_id: "agent-a",
+              text: frame.text,
+            });
+          }, 0);
+        }
+      },
+    };
+    session = new ZenlinkSession(
+      client,
+      new OpenClawWakeNotifier({ hookBase: "", hookToken: "" }),
+    );
+
+    await session.joinRoomTool("room-1");
+    restoring = true;
+    sent.length = 0;
+    closeHandler({ code: 1006, reason: "test close", at: new Date().toISOString() });
+
+    await assert.rejects(
+      () => session.sendMessageTool("after restore"),
+      /restore join_room members did not include agent_id agent-a/,
+    );
+    assert.deepEqual(sent, [{ type: "join_room", room_id: "room-1" }]);
+    const status = session.status();
+    assert.equal(status.current_room_id, "room-1");
+    assert.equal(status.room_online_assumption, "restore_pending");
+    assert.equal(status.room_restore_pending, false);
   } finally {
     if (previous === undefined) {
       delete process.env.ZENLINK_MCP_LONG_LIVED;

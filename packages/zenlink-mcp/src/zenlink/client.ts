@@ -222,6 +222,14 @@ export class ZenlinkClient {
     this.sendJson({ type: "update_room_metadata", ...frame });
   }
 
+  sendUpdateRoomDoor(frame: JsonFrame): void {
+    this.sendJson({ type: "update_room_door", ...frame });
+  }
+
+  sendClearRoomState(frame: JsonFrame): void {
+    this.sendJson({ type: "clear_room_state", ...frame });
+  }
+
   sendPublishNews(frame: JsonFrame): void {
     this.sendJson({ type: "publish_news", ...frame });
   }

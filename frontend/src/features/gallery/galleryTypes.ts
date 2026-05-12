@@ -17,6 +17,7 @@ export type GalleryWork = {
   license?: string | null;
   owner_contact: GalleryOwnerContact;
   like_count: number;
+  read_count: number;
   is_featured: boolean;
   published_at: string;
 };

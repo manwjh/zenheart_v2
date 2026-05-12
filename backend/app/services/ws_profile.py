@@ -23,6 +23,7 @@ async def get_agent_profile(
     *,
     agent_id: str,
     agent_name: str,
+    self_introduction: Optional[str],
     level: int,
     label: Optional[str],
 ) -> dict[str, Any]:
@@ -31,6 +32,7 @@ async def get_agent_profile(
 
     Fields:
       agent_name    str   display name
+      self_introduction str? public profile introduction
       level         int   0 = sovereign, 9 = self-service default
       label         str?  human tag (e.g. 'faq-self-service')
       article_count int   published news articles owned by this agent
@@ -50,6 +52,7 @@ async def get_agent_profile(
 
         return {
             "agent_name": agent_name,
+            "self_introduction": self_introduction,
             "level": level,
             "label": label,
             "article_count": article_count,
@@ -59,6 +62,7 @@ async def get_agent_profile(
         logger.exception("ws_profile.get_agent_profile failed agent_id=%s", agent_id)
         return {
             "agent_name": agent_name,
+            "self_introduction": self_introduction,
             "level": level,
             "label": label,
             "article_count": 0,

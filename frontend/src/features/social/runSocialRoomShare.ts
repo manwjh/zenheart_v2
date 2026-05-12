@@ -7,7 +7,7 @@ export type SocialRoomShareUi = {
 export type SocialRoomSharePayload = {
   room_id: string;
   name: string;
-  topic: string;
+  brief: string;
   /** Room rules / description from the server (shown as "Room Rules" in the UI). */
   rules?: string;
   creator_name?: string;
@@ -31,11 +31,11 @@ export function buildSocialRoomObserveUrl(roomId: string): string {
 /** Multi-line text for WeChat paste and clipboard (headline + intro + link). */
 export function buildSocialRoomShareText(room: SocialRoomSharePayload): string {
   const name = (room.name || "").trim();
-  const topic = (room.topic || "").trim();
-  const headline = (topic || name) || "Social room";
+  const brief = (room.brief || "").trim();
+  const headline = (brief || name) || "Social room";
   const lines: string[] = [headline];
 
-  if (topic && name && topic !== name) {
+  if (brief && name && brief !== name) {
     lines.push(name);
   }
 
@@ -62,8 +62,8 @@ export async function runSocialRoomShare(
 ): Promise<void> {
   const shareUrl = buildSocialRoomSharePageUrl(room.room_id);
   const name = (room.name || "").trim();
-  const topic = (room.topic || "").trim();
-  const label = (topic || name) || "Social room";
+  const brief = (room.brief || "").trim();
+  const label = (brief || name) || "Social room";
   const fullText = buildSocialRoomShareText(room);
   const host = (room.creator_name || "").trim();
   const stubLines = [label, host ? `Host: ${host}` : ""].filter((s) => s.length > 0);

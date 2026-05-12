@@ -1,4 +1,6 @@
 import { formatZenlinkHttpErrorBody } from "../zenlink/errors.js";
+import { WakePolicy, frameTypeOf, parseSignalList, signalOf } from "./wake-policy.js";
+import type { WakePolicyStatus } from "./wake-policy.js";
 
 export interface WakeNotifierStatus {
   enabled: boolean;
@@ -16,9 +18,12 @@ export interface WakeNotifierStatus {
   last_http_status: number | null;
   sent_total: number;
   sent_total_by_type: Record<string, number>;
+  sent_total_by_signal: Record<string, number>;
   skipped_frame_type_filter_by_type: Record<string, number>;
+  skipped_signal_policy_by_signal: Record<string, number>;
   skipped_dedupe_by_type: Record<string, number>;
   skipped_room_line_coalesce_by_type: Record<string, number>;
+  wake_policy: WakePolicyStatus;
   last_ok_frame: unknown | null;
   last_failed_frame: unknown | null;
 }
@@ -30,6 +35,8 @@ export interface WakeNotifierOptions {
   openClawAgentId?: string;
   sessionKey?: string;
   frameTypes?: string[];
+  wakeSignals?: string[];
+  wakePolicy?: WakePolicy;
   dedupeMs?: number;
   roomLineCoalesceMs?: number;
   maxPending?: number;
@@ -41,6 +48,7 @@ export interface WakeNotifierOptions {
 interface PendingWake {
   frame: unknown;
   frameType: string;
+  signal: string;
   text: string;
   attempt: number;
 }
@@ -63,6 +71,7 @@ export class OpenClawWakeNotifier {
   private readonly openClawAgentId: string;
   private readonly sessionKey: string;
   private readonly frameTypes: Set<string> | null;
+  private readonly wakePolicy: WakePolicy;
   private readonly dedupeMs: number;
   private readonly roomLineCoalesceMs: number;
   private readonly maxPending: number;
@@ -71,7 +80,9 @@ export class OpenClawWakeNotifier {
   private readonly fetchImpl: typeof fetch;
   private readonly pending: PendingWake[] = [];
   private readonly sentTotalByType: Record<string, number> = {};
+  private readonly sentTotalBySignal: Record<string, number> = {};
   private readonly skippedFrameTypeByType: Record<string, number> = {};
+  private readonly skippedSignalPolicyBySignal: Record<string, number> = {};
   private readonly skippedDedupeByType: Record<string, number> = {};
   private readonly skippedRoomLineByType: Record<string, number> = {};
   private readonly recentKeys = new Map<string, number>();
@@ -95,6 +106,16 @@ export class OpenClawWakeNotifier {
       options.openClawAgentId ?? process.env.ZENLINK_MCP_OPENCLAW_AGENT_ID?.trim() ?? DEFAULT_OPENCLAW_AGENT_ID;
     this.sessionKey = options.sessionKey ?? process.env.ZENLINK_MCP_OPENCLAW_SESSION_KEY?.trim() ?? "";
     this.frameTypes = resolveFrameTypes(options.frameTypes);
+    this.wakePolicy =
+      options.wakePolicy ??
+      new WakePolicy({
+        wakeSignals: options.wakeSignals ?? parseSignalList(process.env.ZENLINK_MCP_WAKE_SIGNALS),
+        updatedBy: options.wakeSignals
+          ? "options"
+          : process.env.ZENLINK_MCP_WAKE_SIGNALS?.trim()
+            ? "startup_env"
+            : "reset",
+      });
     this.dedupeMs = options.dedupeMs ?? parseEnvInt("ZENLINK_MCP_OPENCLAW_PUSH_DEDUPE_MS", DEFAULT_DEDUPE_MS);
     this.roomLineCoalesceMs = options.roomLineCoalesceMs ?? parseEnvInt("ZENLINK_MCP_OPENCLAW_WAKE_COALESCE_ROOM_MESSAGE_MS", DEFAULT_ROOM_LINE_COALESCE_MS);
     this.maxPending = options.maxPending ?? parseEnvInt("ZENLINK_MCP_OPENCLAW_WAKE_MAX_PENDING", DEFAULT_MAX_PENDING);
@@ -124,12 +145,27 @@ export class OpenClawWakeNotifier {
       last_http_status: this.lastHttpStatus,
       sent_total: this.sentTotal,
       sent_total_by_type: { ...this.sentTotalByType },
+      sent_total_by_signal: { ...this.sentTotalBySignal },
       skipped_frame_type_filter_by_type: { ...this.skippedFrameTypeByType },
+      skipped_signal_policy_by_signal: { ...this.skippedSignalPolicyBySignal },
       skipped_dedupe_by_type: { ...this.skippedDedupeByType },
       skipped_room_line_coalesce_by_type: { ...this.skippedRoomLineByType },
+      wake_policy: this.wakePolicy.status(),
       last_ok_frame: this.lastOkFrame,
       last_failed_frame: this.lastFailedFrame,
     };
+  }
+
+  wakePolicyStatus(): WakePolicyStatus {
+    return this.wakePolicy.status();
+  }
+
+  setWakePolicyAllowlist(signals: string[]): WakePolicyStatus {
+    return this.wakePolicy.setAllowlist(signals, "mcp");
+  }
+
+  resetWakePolicy(): WakePolicyStatus {
+    return this.wakePolicy.reset("reset");
   }
 
   async enqueue(frame: unknown): Promise<void> {
@@ -137,6 +173,11 @@ export class OpenClawWakeNotifier {
     const frameType = frameTypeOf(frame);
     if (this.frameTypes && !this.frameTypes.has(frameType)) {
       increment(this.skippedFrameTypeByType, frameType);
+      return;
+    }
+    const signal = signalOf(frame);
+    if (!this.shouldWakeSignal(signal)) {
+      increment(this.skippedSignalPolicyBySignal, signal);
       return;
     }
     const key = wakeDedupeKey(frame);
@@ -159,10 +200,11 @@ export class OpenClawWakeNotifier {
     this.pending.push({
       frame,
       frameType,
+      signal,
       text: summarizeWakeFrame(frame, this.safeInboundQueueDepth()),
       attempt: 0,
     });
-    emitWakeEvent("wake_enqueued", { frame_type: frameType, pending_wake_count: this.pending.length });
+    emitWakeEvent("wake_enqueued", { frame_type: frameType, signal, pending_wake_count: this.pending.length });
     await this.flush();
   }
 
@@ -181,8 +223,10 @@ export class OpenClawWakeNotifier {
           this.sentTotal++;
           this.lastOkFrame = current.frame;
           increment(this.sentTotalByType, current.frameType);
+          increment(this.sentTotalBySignal, current.signal);
           emitWakeEvent("wake_post_ok", {
             frame_type: current.frameType,
+            signal: current.signal,
             http_status: this.lastHttpStatus,
             pending_wake_count: this.pending.length,
           });
@@ -193,6 +237,7 @@ export class OpenClawWakeNotifier {
           this.lastError = error instanceof Error ? error.message : String(error);
           emitWakeEvent("wake_post_failed", {
             frame_type: current.frameType,
+            signal: current.signal,
             error: this.lastError,
             http_status: this.lastHttpStatus,
             attempt: current.attempt,
@@ -271,6 +316,10 @@ export class OpenClawWakeNotifier {
       return null;
     }
   }
+
+  private shouldWakeSignal(signal: string): boolean {
+    return this.wakePolicy.shouldWakeSignal(signal);
+  }
 }
 
 function resolveFrameTypes(explicit?: string[]): Set<string> | null {
@@ -291,11 +340,6 @@ function parseEnvInt(name: string, fallback: number): number {
     throw new Error(`${name} must be a non-negative integer`);
   }
   return Math.floor(value);
-}
-
-function frameTypeOf(frame: unknown): string {
-  if (isRecord(frame) && typeof frame.type === "string") return frame.type;
-  return "unknown";
 }
 
 function wakeDedupeKey(frame: unknown): string {
@@ -319,6 +363,23 @@ function summarizeWakeFrame(frame: unknown, inboundQueueDepth: number | null): s
     inboundQueueDepth === null ? "" : `\nQueued inbound frames now: ${inboundQueueDepth}.`;
   if (isRecord(frame)) {
     const type = frameTypeOf(frame);
+    if (type === "topic_suggestions_pending") {
+      const roomId = typeof frame.room_id === "string" ? ` room=${frame.room_id}` : "";
+      const topics = frame.topics;
+      if (Array.isArray(topics) && topics.length > 0) {
+        const lines: string[] = [];
+        for (let i = 0; i < topics.length; i += 1) {
+          const row = topics[i];
+          if (isRecord(row) && typeof row.text === "string") {
+            lines.push(`#${i + 1}: ${truncate(row.text, 220)}`);
+          } else {
+            lines.push(`#${i + 1}: (no text)`);
+          }
+        }
+        return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${type}${roomId}\n${lines.join("\n")}`;
+      }
+      return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${type}${roomId} (no pending lines)`;
+    }
     const roomId = typeof frame.room_id === "string" ? ` room=${frame.room_id}` : "";
     const sender = typeof frame.agent_id === "string" ? ` from=${frame.agent_id}` : "";
     const text = typeof frame.text === "string" ? ` ${truncate(frame.text, 280)}` : "";

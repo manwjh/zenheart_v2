@@ -22,12 +22,18 @@ import { runNewsArticleShare } from "@/features/news/runNewsArticleShare";
 import { useArticleCover } from "@/features/news/useArticleCover";
 import { useNewsArticleLike } from "@/features/news/useNewsArticleLike";
 import { useNewsComments } from "@/features/news/useNewsComments";
+import { newsShellByLocale } from "@/features/news/newsShellCopy";
+import { shellCommonByLocale } from "@/features/locale/shellCommon";
+import { siteLocale } from "@/features/locale/siteLocale";
 
 const props = defineProps<{
   articleId: string;
 }>();
 
 const router = useRouter();
+
+const newsUi = computed(() => newsShellByLocale[siteLocale.value]);
+const commonShell = computed(() => shellCommonByLocale[siteLocale.value]);
 
 type ArticleDetailExposed = { shareCaptureRoot: HTMLElement | null };
 const articleDetailRef = ref<(ComponentPublicInstance & ArticleDetailExposed) | null>(null);
@@ -116,7 +122,7 @@ async function loadArticle(articleId: string) {
     if (seq !== loadSeq) return;
     if (!res.ok) {
       detailError.value =
-        res.status === 404 ? "Article not found." : "Failed to load article detail.";
+        res.status === 404 ? commonShell.value.articleNotFound : commonShell.value.failedToLoadArticle;
       return;
     }
     selectedArticle.value = data as NewsArticleDetailPayload;
@@ -124,7 +130,7 @@ async function loadArticle(articleId: string) {
   } catch (error) {
     if (seq !== loadSeq) return;
     detailError.value =
-      error instanceof Error ? error.message : "Network error.";
+      error instanceof Error ? error.message : commonShell.value.networkError;
   } finally {
     if (seq === loadSeq) {
       loadingDetail.value = false;
@@ -156,7 +162,7 @@ async function shareLongImage() {
   await nextTick();
   const root = articleDetailRef.value?.shareCaptureRoot;
   if (!(root instanceof HTMLElement)) {
-    showErrorToast("Content not ready.");
+    showErrorToast(commonShell.value.contentNotReady);
     return;
   }
   if (articleIdAtStart !== props.articleId || selectedArticle.value?.id !== articleSnapshot.id) {
@@ -176,11 +182,11 @@ async function shareLongImage() {
       return;
     }
     if (outcome === "shared") {
-      showInfoToast("Image shared.");
+      showInfoToast(newsUi.value.toastImageShared);
     } else if (outcome === "clipboard") {
-      showInfoToast("Image copied to clipboard.");
+      showInfoToast(newsUi.value.toastImageClipboard);
     } else {
-      showInfoToast("Image downloaded.");
+      showInfoToast(newsUi.value.toastImageDownloaded);
     }
   } catch (error) {
     if (articleIdAtStart !== props.articleId || selectedArticle.value?.id !== articleSnapshot.id) {
@@ -191,7 +197,7 @@ async function shareLongImage() {
         ? error.message
         : typeof error === "string"
           ? error
-          : "Could not create image.";
+          : newsUi.value.toastCouldNotCreateImage;
     showErrorToast(msg);
   } finally {
     longImageBusy.value = false;
@@ -264,11 +270,11 @@ onUnmounted(() => {
 <template>
   <section class="article-page" aria-labelledby="article-title">
     <div class="article-toolbar">
-      <button class="btn-nav btn-back" type="button" title="Back to news list" @click="goBackToList">
+      <button class="btn-nav btn-back" type="button" :title="newsUi.articleBackListTitle" @click="goBackToList">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        <span>News</span>
+        <span>{{ newsUi.backNews }}</span>
       </button>
 
       <span
@@ -283,7 +289,7 @@ onUnmounted(() => {
         <button
           class="btn-nav btn-long-image"
           type="button"
-          title="Save or share image"
+          :title="newsUi.articleLongImageBtnTitle"
           :disabled="!selectedArticle || loadingDetail || longImageBusy"
           @click="shareLongImage"
         >
@@ -328,12 +334,12 @@ onUnmounted(() => {
             />
             <circle cx="5.25" cy="6.25" r="1" fill="currentColor" />
           </svg>
-          <span>Image</span>
+          <span>{{ newsUi.articleLongImageBadge }}</span>
         </button>
         <button
           class="btn-nav btn-share"
           type="button"
-          :title="copiedState ? 'Copied' : 'Share article'"
+          :title="copiedState ? newsUi.articleShareCopiedTitle : newsUi.articleShareArticleTitle"
           :disabled="!selectedArticle"
           @click="shareArticle"
         >
@@ -346,7 +352,7 @@ onUnmounted(() => {
             <circle cx="4" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
             <path d="M10.5 3.75L5.5 7.25M10.5 12.25L5.5 8.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <span class="btn-share-label">{{ copiedState ? "Copied" : "Share" }}</span>
+          <span class="btn-share-label">{{ copiedState ? newsUi.copiedVerb : newsUi.shareVerb }}</span>
         </button>
       </div>
     </div>

@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { siteLocale } from "@/features/locale/siteLocale";
+import { socialHistoryTableShellByLocale } from "@/features/social/socialShellCopy";
 type HistoryRoomLike = {
   room_id: string;
   name: string;
@@ -16,33 +19,35 @@ defineProps<{
   formatDateTime: (iso: string) => string;
   formatDuration: (createdIso: string, dissolvedIso: string) => string;
 }>();
+
+const tableUi = computed(() => socialHistoryTableShellByLocale[siteLocale.value]);
 </script>
 
 <template>
   <div class="history-section">
     <div class="history-header">
-      <h2 class="history-title">Recent Rooms <span class="history-badge">24h</span></h2>
+      <h2 class="history-title">{{ tableUi.titleRecent }} <span class="history-badge">{{ tableUi.badge24h }}</span></h2>
     </div>
 
     <p v-if="historyError" class="error-msg">{{ historyError }}</p>
 
-    <div v-if="loadingHistory && history.length === 0" class="empty-state">Loading...</div>
+    <div v-if="loadingHistory && history.length === 0" class="empty-state">{{ tableUi.loading }}</div>
 
     <div v-else-if="history.length === 0 && !loadingHistory" class="empty-state empty-state--sm">
-      No dissolved rooms in the last 24 hours.
+      {{ tableUi.empty }}
     </div>
 
     <div v-else class="history-table-wrap">
       <table class="history-table">
         <thead>
           <tr>
-            <th>Room</th>
-            <th class="col-id">ID</th>
-            <th class="col-creator">Creator</th>
-            <th>Started</th>
-            <th>Duration</th>
-            <th class="col-num">Msgs</th>
-            <th class="col-reason">Reason</th>
+            <th>{{ tableUi.colRoom }}</th>
+            <th class="col-id">{{ tableUi.colId }}</th>
+            <th class="col-creator">{{ tableUi.colCreator }}</th>
+            <th>{{ tableUi.colStarted }}</th>
+            <th>{{ tableUi.colDuration }}</th>
+            <th class="col-num">{{ tableUi.colMsgs }}</th>
+            <th class="col-reason">{{ tableUi.colReason }}</th>
           </tr>
         </thead>
         <tbody>

@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 from app.domains.social.persistence import social_repository
 from app.domains.social.http import public_router
-from app.model_defs import Agent
-from app.services import ws_send_direct_message, ws_social_inbound
-from app.social_registry import SocialRoomRegistry
+from app.model_defs import Agent, SocialRoom
+from app.services import ws_admin_ops, ws_send_direct_message, ws_social_inbound
+from app.social_registry import CHECKIN_ROOM_ID, SocialRoomRegistry, chat_room_from_social_row
 
 
 class _FakeSession:
@@ -22,6 +22,9 @@ class _FakeSession:
 
     async def scalar(self, _stmt):
         return self._scalars.pop(0) if self._scalars else None
+
+    async def commit(self):
+        return None
 
 
 class _FakeSessionFactory:
@@ -61,7 +64,7 @@ def test_live_membership_is_distinct_from_history_after_leave() -> None:
         ws = _FakeWebSocket()
         room = await registry.create_room(
             name="room",
-            topic="topic",
+            brief="brief",
             creator_id="agent-a",
             creator_name="Agent A",
             ws=ws,
@@ -81,7 +84,7 @@ def test_room_history_requires_current_live_member(monkeypatch) -> None:
         registry = SocialRoomRegistry()
         room = await registry.create_room(
             name="room",
-            topic="topic",
+            brief="brief",
             creator_id="agent-a",
             creator_name="Agent A",
             ws=_FakeWebSocket(),
@@ -119,7 +122,9 @@ def test_room_history_requires_current_live_member(monkeypatch) -> None:
             _agent("agent-a"),
         )
         assert non_member_resp.status_code == 403
-        assert json.loads(non_member_resp.body)["detail"] == "not_in_room"
+        error_body = json.loads(non_member_resp.body)
+        assert error_body["detail"]["reason"] == "not_in_room"
+        assert error_body["detail"]["room_id"] == room.room_id
 
     asyncio.run(run())
 
@@ -130,7 +135,7 @@ def test_join_room_same_live_room_is_idempotent(monkeypatch) -> None:
         ws = _FakeWebSocket()
         room = await registry.create_room(
             name="room",
-            topic="topic",
+            brief="brief",
             creator_id="agent-a",
             creator_name="Agent A",
             ws=ws,
@@ -195,7 +200,7 @@ def test_join_room_sends_pending_topics_only_to_creator(monkeypatch) -> None:
         peer_ws = _FakeWebSocket()
         room = await registry.create_room(
             name="room",
-            topic="topic",
+            brief="brief",
             creator_id="agent-a",
             creator_name="Agent A",
             ws=creator_ws,
@@ -257,7 +262,7 @@ def test_pending_topic_updates_notify_observers_and_live_creator(monkeypatch) ->
         observer_ws = _FakeWebSocket()
         room = await registry.create_room(
             name="room",
-            topic="topic",
+            brief="brief",
             creator_id="agent-a",
             creator_name="Agent A",
             ws=creator_ws,
@@ -294,7 +299,7 @@ def test_message_notify_recipients_include_absent_room_creator_once() -> None:
         peer_ws = _FakeWebSocket()
         room = await registry.create_room(
             name="room",
-            topic="topic",
+            brief="brief",
             creator_id="agent-a",
             creator_name="Agent A",
             ws=creator_ws,
@@ -323,7 +328,7 @@ def test_creator_can_update_room_metadata(monkeypatch) -> None:
         peer_ws = _FakeWebSocket()
         room = await registry.create_room(
             name="old room",
-            topic="old topic",
+            brief="old brief",
             rules="old rules",
             creator_id="agent-a",
             creator_name="Agent A",
@@ -357,23 +362,392 @@ def test_creator_can_update_room_metadata(monkeypatch) -> None:
             {
                 "room_id": room.room_id,
                 "name": "new room",
-                "topic": "new topic",
+                "brief": "new brief",
                 "rules": "",
             },
         )
 
         assert creator_ws.sent[-1]["type"] == "room_metadata_updated"
         assert creator_ws.sent[-1]["name"] == "new room"
-        assert creator_ws.sent[-1]["topic"] == "new topic"
+        assert creator_ws.sent[-1]["brief"] == "new brief"
         assert creator_ws.sent[-1]["rules"] == ""
         assert peer_ws.sent[-1]["type"] == "room_metadata_updated"
         assert peer_ws.sent[-1]["name"] == "new room"
         updated = await registry.get_room(room.room_id)
         assert updated is not None
         assert updated.name == "new room"
-        assert updated.topic == "new topic"
+        assert updated.brief == "new brief"
         assert updated.rules == ""
         assert any(event["event"] == "a2a_room_metadata_updated" for event in events)
+
+    asyncio.run(run())
+
+
+def test_room_door_close_kicks_peers_and_blocks_join(monkeypatch) -> None:
+    async def run():
+        registry = SocialRoomRegistry()
+        creator_ws = _FakeWebSocket()
+        peer_ws = _FakeWebSocket()
+        joiner_ws = _FakeWebSocket()
+        room = await registry.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=creator_ws,
+        )
+        assert not isinstance(room, str)
+        joined = await registry.join_room(
+            room_id=room.room_id,
+            agent_id="agent-b",
+            agent_name="Agent B",
+            ws=peer_ws,
+        )
+        assert not isinstance(joined, str)
+
+        leave_records = []
+
+        async def fake_update_room_door(*_args, **_kwargs):
+            return True
+
+        async def fake_record_member_leave(_session_factory, room_id, agent_id, left_at=None):
+            leave_records.append((room_id, agent_id, left_at))
+
+        async def fake_record_event(*_args, **_kwargs):
+            return None
+
+        async def fake_check_permission(*_args, **_kwargs):
+            return True
+
+        async def fake_count_rooms_today(*_args, **_kwargs):
+            return 0
+
+        monkeypatch.setattr(ws_social_inbound, "db_update_room_door_state", fake_update_room_door)
+        monkeypatch.setattr(ws_social_inbound, "record_member_leave", fake_record_member_leave)
+        monkeypatch.setattr(ws_social_inbound, "record_agent_event", fake_record_event)
+        monkeypatch.setattr(ws_social_inbound, "check_permission", fake_check_permission)
+        monkeypatch.setattr(ws_social_inbound, "count_rooms_today", fake_count_rooms_today)
+
+        await ws_social_inbound._handle_update_room_door(
+            creator_ws,
+            registry,
+            _FakeSessionFactory(),
+            "agent-a",
+            {"room_id": room.room_id, "door_state": "closed"},
+        )
+
+        assert creator_ws.sent[-1]["type"] == "room_door_updated"
+        assert creator_ws.sent[-1]["door_state"] == "closed"
+        assert creator_ws.sent[-1]["kicked_agent_ids"] == ["agent-b"]
+        assert peer_ws.sent[-1]["type"] == "room_door_closed"
+        assert await registry.is_live_member("agent-b", room.room_id) is False
+        assert leave_records[0][0:2] == (room.room_id, "agent-b")
+
+        await ws_social_inbound._handle_join_room(
+            joiner_ws,
+            registry,
+            _FakeSessionFactory(),
+            SimpleNamespace(),
+            SimpleNamespace(),
+            "agent-c",
+            "Agent C",
+            1,
+            {"room_id": room.room_id},
+        )
+
+        assert joiner_ws.sent[-1]["type"] == "error"
+        assert joiner_ws.sent[-1]["reason"] == "room_door_closed"
+        assert joiner_ws.sent[-1]["door_state"] == "closed"
+
+    asyncio.run(run())
+
+
+def test_room_owner_can_join_closed_room(monkeypatch) -> None:
+    async def run():
+        registry = SocialRoomRegistry()
+        owner_ws = _FakeWebSocket()
+        room = await registry.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=owner_ws,
+        )
+        assert not isinstance(room, str)
+        await registry.leave_room("agent-a")
+        room.door_closed = True
+
+        async def fake_check_permission(*_args, **_kwargs):
+            return True
+
+        async def fake_count_rooms_today(*_args, **_kwargs):
+            return 0
+
+        async def fake_record_member_join(*_args, **_kwargs):
+            return True
+
+        async def fake_record_event(*_args, **_kwargs):
+            return None
+
+        async def fake_get_room_messages(*_args, **_kwargs):
+            return []
+
+        async def fake_pending_topics(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(ws_social_inbound, "check_permission", fake_check_permission)
+        monkeypatch.setattr(ws_social_inbound, "count_rooms_today", fake_count_rooms_today)
+        monkeypatch.setattr(ws_social_inbound, "record_member_join", fake_record_member_join)
+        monkeypatch.setattr(ws_social_inbound, "record_agent_event", fake_record_event)
+        monkeypatch.setattr(ws_social_inbound, "get_room_messages", fake_get_room_messages)
+        monkeypatch.setattr(ws_social_inbound, "list_pending_topic_suggestions", fake_pending_topics)
+
+        await ws_social_inbound._handle_join_room(
+            owner_ws,
+            registry,
+            _FakeSessionFactory(),
+            SimpleNamespace(),
+            SimpleNamespace(),
+            "agent-a",
+            "Agent A",
+            1,
+            {"room_id": room.room_id},
+        )
+
+        assert owner_ws.sent[-2]["type"] == "room_joined"
+        assert owner_ws.sent[-2]["door_state"] == "closed"
+        assert await registry.is_live_member("agent-a", room.room_id) is True
+
+    asyncio.run(run())
+
+
+def test_checkin_room_loaded_from_db_is_standard() -> None:
+    created_at = datetime.now(timezone.utc)
+    row = SocialRoom(
+        room_id=CHECKIN_ROOM_ID,
+        name="AI Agent Check-in",
+        brief="brief",
+        creator_agent_id="agent-a",
+        created_at=created_at,
+        max_members=10,
+        ttl_minutes=60,
+        expires_at=None,
+        total_messages=0,
+        is_private=False,
+        observable=True,
+        door_closed=False,
+    )
+
+    room = chat_room_from_social_row(row, creator_name="Agent A", agent_cap=10)
+    summary = room.to_summary(SocialRoomRegistry().idle_after)
+
+    assert room.is_permanent is False
+    assert summary["is_permanent"] is False
+    assert summary["idle_dissolves_at"] is not None
+
+
+def test_room_owner_transfer_updates_closed_room_membership() -> None:
+    async def run():
+        registry = SocialRoomRegistry()
+        owner_ws = _FakeWebSocket()
+        successor_ws = _FakeWebSocket()
+        room = await registry.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=owner_ws,
+        )
+        assert not isinstance(room, str)
+        joined = await registry.join_room(
+            room_id=room.room_id,
+            agent_id="agent-b",
+            agent_name="Agent B",
+            ws=successor_ws,
+        )
+        assert not isinstance(joined, str)
+        room.door_closed = True
+
+        updated, kicked, error = await registry.apply_room_owner_after_persist(
+            room.room_id,
+            new_creator_id="agent-b",
+            new_creator_name="Agent B",
+        )
+
+        assert error is None
+        assert updated is room
+        assert room.creator_id == "agent-b"
+        assert [member.agent_id for member in kicked] == ["agent-a"]
+        assert await registry.is_live_member("agent-a", room.room_id) is False
+        assert await registry.is_live_member("agent-b", room.room_id) is True
+
+    asyncio.run(run())
+
+
+def test_l0_can_transfer_social_room_owner(monkeypatch) -> None:
+    async def run():
+        social = SocialRoomRegistry()
+        room = await social.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=_FakeWebSocket(),
+        )
+        assert not isinstance(room, str)
+        successor = _agent("agent-b", "Agent B", level=1)
+        row = SocialRoom(
+            room_id=room.room_id,
+            name="room",
+            brief="brief",
+            creator_agent_id="agent-a",
+            created_at=room.created_at,
+            max_members=10,
+            is_private=False,
+            observable=True,
+            door_closed=False,
+        )
+        events = []
+
+        async def fake_record_event(_session_factory, event, agent_id=None, detail=None, **_kwargs):
+            events.append({"event": event, "agent_id": agent_id, "detail": detail or {}})
+
+        monkeypatch.setattr(ws_admin_ops, "record_agent_event", fake_record_event)
+
+        out = await ws_admin_ops.handle_admin_transfer_social_room_owner(
+            session_factory=_FakeSessionFactory([successor, row]),
+            social=social,
+            sovereign_agent_id="agent-l0",
+            agent_level=0,
+            connection_id="conn-1",
+            data={
+                "room_id": room.room_id,
+                "new_owner_agent_id": "agent-b",
+                "note": "handoff",
+            },
+        )
+
+        assert out["type"] == "admin_transfer_social_room_owner_ok"
+        assert out["old_owner_agent_id"] == "agent-a"
+        assert out["new_owner_agent_id"] == "agent-b"
+        assert room.creator_id == "agent-b"
+        assert row.creator_agent_id == "agent-b"
+        assert events[0]["event"] == "admin_transfer_social_room_owner_via_ws"
+
+    asyncio.run(run())
+
+
+def test_room_door_open_does_not_reset_in_memory_history(monkeypatch) -> None:
+    async def run():
+        registry = SocialRoomRegistry()
+        creator_ws = _FakeWebSocket()
+        room = await registry.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=creator_ws,
+        )
+        assert not isinstance(room, str)
+        await registry.record_message("agent-a")
+        room.door_closed = True
+        assert room.message_count == 1
+        assert room.last_message_at is not None
+
+        calls = []
+
+        async def fake_update_room_door(_session_factory, room_id, *, door_closed):
+            calls.append((room_id, door_closed))
+            return True
+
+        async def fake_record_event(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(ws_social_inbound, "db_update_room_door_state", fake_update_room_door)
+        monkeypatch.setattr(ws_social_inbound, "record_agent_event", fake_record_event)
+
+        await ws_social_inbound._handle_update_room_door(
+            creator_ws,
+            registry,
+            _FakeSessionFactory(),
+            "agent-a",
+            {"room_id": room.room_id, "door_state": "open"},
+        )
+
+        assert calls == [(room.room_id, False)]
+        assert creator_ws.sent[-1]["type"] == "room_door_updated"
+        assert creator_ws.sent[-1]["door_state"] == "open"
+        assert "cleared_history" not in creator_ws.sent[-1]
+        assert room.door_closed is False
+        assert room.message_count == 1
+        assert room.last_message_at is not None
+
+    asyncio.run(run())
+
+
+def test_room_creator_can_clear_room_state(monkeypatch) -> None:
+    async def run():
+        registry = SocialRoomRegistry()
+        creator_ws = _FakeWebSocket()
+        peer_ws = _FakeWebSocket()
+        room = await registry.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=creator_ws,
+        )
+        assert not isinstance(room, str)
+        joined = await registry.join_room(
+            room_id=room.room_id,
+            agent_id="agent-b",
+            agent_name="Agent B",
+            ws=peer_ws,
+        )
+        assert not isinstance(joined, str)
+        await registry.record_message("agent-a")
+        assert room.message_count == 1
+        assert room.last_message_at is not None
+
+        calls = []
+        events = []
+        pending_notifications = []
+
+        async def fake_clear_room_state(_session_factory, room_id, *, clear_messages, clear_signals):
+            calls.append((room_id, clear_messages, clear_signals))
+            return True
+
+        async def fake_record_event(_session_factory, event, agent_id=None, detail=None, **_kwargs):
+            events.append({"event": event, "agent_id": agent_id, "detail": detail or {}})
+
+        async def fake_notify_topics(_session_factory, room_id):
+            pending_notifications.append(room_id)
+
+        monkeypatch.setattr(ws_social_inbound, "db_clear_room_state", fake_clear_room_state)
+        monkeypatch.setattr(ws_social_inbound, "record_agent_event", fake_record_event)
+        monkeypatch.setattr(registry, "notify_topic_suggestions_pending", fake_notify_topics)
+
+        await ws_social_inbound._handle_clear_room_state(
+            creator_ws,
+            registry,
+            _FakeSessionFactory(),
+            "agent-a",
+            {
+                "room_id": room.room_id,
+                "clear_messages": True,
+                "clear_signals": True,
+            },
+        )
+
+        assert calls == [(room.room_id, True, True)]
+        assert creator_ws.sent[-1]["type"] == "room_state_cleared"
+        assert creator_ws.sent[-1]["cleared_messages"] is True
+        assert creator_ws.sent[-1]["cleared_signals"] is True
+        assert peer_ws.sent[-1]["type"] == "room_state_cleared"
+        assert room.message_count == 0
+        assert room.last_message_at is None
+        assert pending_notifications == [room.room_id]
+        assert any(event["event"] == "a2a_room_state_cleared" for event in events)
 
     asyncio.run(run())
 
@@ -385,7 +759,7 @@ def test_room_creator_receives_message_notify_after_leaving_room(monkeypatch) ->
         peer_ws = _FakeWebSocket()
         room = await registry.create_room(
             name="room",
-            topic="topic",
+            brief="brief",
             creator_id="agent-a",
             creator_name="Agent A",
             ws=creator_ws,
@@ -443,7 +817,7 @@ def test_out_of_room_mentions_are_dropped_not_msgbox_enqueued(monkeypatch) -> No
         peer_ws = _FakeWebSocket()
         room = await registry.create_room(
             name="room",
-            topic="topic",
+            brief="brief",
             creator_id="agent-a",
             creator_name="Agent A",
             ws=sender_ws,

@@ -13,7 +13,6 @@ from app.db import create_engine, create_session_factory, init_db
 from app.model_defs import SocialRoom
 from app.routers import mail
 from app.services.display_name_resolve import load_agent_name_map
-from app.services.games_live_registry import GamesLiveRegistry
 from app.services.ws_debug_tap import WsDebugTap
 from app.social_registry import SocialRoomRegistry
 from app.social_ttl import run_social_ttl_enforcer
@@ -40,7 +39,6 @@ async def _configure_social_registry(app: FastAPI) -> SocialRoomRegistry:
         settings.social_room_max_concurrent_agents,
         settings.social_room_max_concurrent_observers,
     )
-    await social.ensure_checkin_room()
     async with session_factory() as session:
         result = await session.execute(select(SocialRoom).where(SocialRoom.dissolved_at.is_(None)))
         persisted = list(result.scalars().all())
@@ -91,7 +89,6 @@ async def lifespan(app: FastAPI):
     ws_debug_tap = WsDebugTap(max_events=800)
     app.state.ws_debug_tap = ws_debug_tap
     app.state.registry = AgentConnectionRegistry(debug_tap=ws_debug_tap)
-    app.state.games_live_registry = GamesLiveRegistry()
     mail.init_mail_app(app, settings)
     _warn_social_observe_security(app)
     _configure_media_mount(app)

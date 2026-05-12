@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import NewsCommentsPanel from "@/components/news/NewsCommentsPanel.vue";
+import { newsShellByLocale } from "@/features/news/newsShellCopy";
+import { siteLocale } from "@/features/locale/siteLocale";
 
 type NewsDetail = {
   id: string;
@@ -11,6 +13,7 @@ type NewsDetail = {
   published_at: string;
   tags: string[];
   like_count: number;
+  read_count: number;
 };
 
 defineProps<{
@@ -48,13 +51,15 @@ const emit = defineEmits<{
   "update:commentBody": [value: string];
 }>();
 
+const newsUi = computed(() => newsShellByLocale[siteLocale.value]);
+
 /** Cover through article body (excludes like row and comments) for long-image capture. */
 const shareCaptureRoot = ref<HTMLElement | null>(null);
 defineExpose({ shareCaptureRoot });
 </script>
 
 <template>
-  <p v-if="loadingDetail" class="state">Loading article...</p>
+  <p v-if="loadingDetail" class="state">{{ newsUi.detailLoading }}</p>
   <p v-else-if="detailError" class="state error">{{ detailError }}</p>
   <template v-else-if="selectedArticle">
     <div ref="shareCaptureRoot" class="news-share-capture-root">
@@ -66,19 +71,6 @@ defineExpose({ shareCaptureRoot });
         loading="lazy"
         @error="markCoverFailed(selectedArticle.id)"
       />
-      <div v-else class="cover-placeholder detail-cover-placeholder" aria-hidden="true">
-        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="6" y="10" width="36" height="28" rx="4" stroke="currentColor" stroke-width="1.5" />
-          <circle cx="16" cy="20" r="4" stroke="currentColor" stroke-width="1.5" />
-          <path
-            d="M6 32 L18 22 L28 30 L34 24 L42 32"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linejoin="round"
-            stroke-linecap="round"
-          />
-        </svg>
-      </div>
       <div class="detail-byline">
         <span class="author">{{ selectedArticle.publisher_agent_name }}</span>
         <span class="sep">·</span>
@@ -89,14 +81,14 @@ defineExpose({ shareCaptureRoot });
       <div v-if="selectedArticle.tags && selectedArticle.tags.length" class="tags detail-tags">
         <span v-for="tag in selectedArticle.tags" :key="`detail-${tag}`" class="tag"> #{{ tag }} </span>
       </div>
-      <article class="markdown" v-html="detailHtml" />
+      <article class="markdown" :aria-label="newsUi.commentAriaLabel" v-html="detailHtml" />
     </div>
     <div class="detail-like-row">
       <button
         class="like-btn like-btn-detail"
         type="button"
         :disabled="likingIds.has(selectedArticle.id)"
-        title="Like this article"
+        :title="newsUi.detailLikeTitle"
         @click="emit('like', selectedArticle.id, $event)"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -104,6 +96,13 @@ defineExpose({ shareCaptureRoot });
         </svg>
         <span>{{ selectedArticle.like_count }}</span>
       </button>
+      <span class="read-stat read-stat-detail" :title="newsUi.titleReads">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M1.5 8C2.85 5.35 5.05 4 8 4C10.95 4 13.15 5.35 14.5 8C13.15 10.65 10.95 12 8 12C5.05 12 2.85 10.65 1.5 8Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+          <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.35"/>
+        </svg>
+        <span>{{ selectedArticle.read_count }}</span>
+      </span>
     </div>
 
     <NewsCommentsPanel
@@ -126,17 +125,6 @@ defineExpose({ shareCaptureRoot });
 .news-share-capture-root {
   background: var(--bg);
   border-radius: 0;
-}
-.cover-placeholder {
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-  background: rgba(127, 127, 127, 0.08);
-}
-.detail-cover-placeholder {
-  border-radius: var(--radius-2xl);
-  border: 1px solid var(--border);
-  margin-bottom: 1rem;
 }
 .detail-cover {
   width: 100%;
@@ -181,11 +169,25 @@ defineExpose({ shareCaptureRoot });
   overflow-wrap: anywhere;
 }
 .detail-like-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   margin-top: 1.35rem;
 }
 .like-btn-detail {
   padding: 0.45rem 0.8rem;
   border-radius: var(--radius-pill);
+}
+.read-stat-detail {
+  padding: 0.45rem 0.8rem;
+}
+.read-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  font-size: var(--text-meta);
 }
 .like-btn-detail:hover:not(:disabled) {
   background: rgba(127, 127, 127, 0.12);
@@ -272,9 +274,6 @@ defineExpose({ shareCaptureRoot });
   .markdown :deep(ol) { padding-left: 1.15rem; }
   .detail-cover {
     max-height: min(16rem, 52vw);
-    border-radius: var(--radius-xl);
-  }
-  .detail-cover-placeholder {
     border-radius: var(--radius-xl);
   }
 }

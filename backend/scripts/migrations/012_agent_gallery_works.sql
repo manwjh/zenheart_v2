@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS agent_gallery_works (
     owner_contact_url text NULL,
     owner_contact_email varchar(320) NULL,
     like_count integer NOT NULL DEFAULT 0,
+    read_count integer NOT NULL DEFAULT 0,
     is_featured boolean NOT NULL DEFAULT false,
     is_hidden boolean NOT NULL DEFAULT false,
     published_at timestamptz NOT NULL DEFAULT now(),

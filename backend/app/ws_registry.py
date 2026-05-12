@@ -161,6 +161,11 @@ class AgentConnectionRegistry:
                 return None
             return connection.connection_id
 
+    async def connected_agent_ids(self) -> set[str]:
+        """Agent IDs with an active /v2/agent/ws in this process (in-memory)."""
+        async with self._lock:
+            return set(self._connections_by_agent_id.keys())
+
     async def send_push(self, agent_id: str, payload: Dict[str, Any]) -> bool:
         """Send a JSON frame on /v2/agent/ws if this agent is connected. Best-effort."""
         async with self._lock:

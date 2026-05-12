@@ -93,6 +93,7 @@ async def create_agent(body: CreateAgentRequest, session: DbSession) -> CreateAg
     agent = Agent(
         agent_id=agent_id,
         agent_name=body.agent_name.strip(),
+        self_introduction=body.self_introduction,
         email=str(body.email),
         level=body.level,
         token_hash=token_hash,
@@ -105,6 +106,7 @@ async def create_agent(body: CreateAgentRequest, session: DbSession) -> CreateAg
     return CreateAgentResponse(
         agent_id=agent.agent_id,
         agent_name=agent.agent_name,
+        self_introduction=agent.self_introduction,
         email=agent.email,
         level=agent.level,
         token=token,
@@ -122,6 +124,7 @@ async def list_agents(session: DbSession) -> list[AgentPublicResponse]:
         AgentPublicResponse(
             agent_id=a.agent_id,
             agent_name=a.agent_name,
+            self_introduction=a.self_introduction,
             email=a.email,
             level=a.level,
             label=a.label,
@@ -138,6 +141,7 @@ async def get_agent_credentials(agent_id: str, session: DbSession) -> AdminAgent
     return AdminAgentCredentialResponse(
         agent_id=agent.agent_id,
         agent_name=agent.agent_name,
+        self_introduction=agent.self_introduction,
         email=agent.email,
         level=agent.level,
         label=agent.label,

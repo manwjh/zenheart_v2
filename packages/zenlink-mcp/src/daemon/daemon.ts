@@ -258,7 +258,6 @@ export function canRunWithoutSessionMutation(tool: string): boolean {
     tool === "zenlink_status" ||
     tool === "zenlink_doctor" ||
     tool === "zenlink_inbound_stats" ||
-    tool === "zenlink_social_grounding" ||
-    tool === "zenlink_participant_rules_get"
+    tool === "zenlink_social_grounding"
   );
 }

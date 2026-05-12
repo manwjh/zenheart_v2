@@ -269,6 +269,7 @@ async def list_news_articles(
                 keywords=art.keywords,
                 published_at=art.published_at,
                 like_count=art.like_count,
+                read_count=art.read_count,
                 score=art.score,
                 category=_to_category(art.category_level1, art.category_level2),
                 comment_count=int(cc),
@@ -316,6 +317,14 @@ async def get_news_article(
         )
     ) or 0
     markdown_content = markdown_file.read_text(encoding="utf-8")
+    read_count_result = await session.execute(
+        update(NewsArticle)
+        .where(NewsArticle.id == article_id)
+        .values(read_count=NewsArticle.read_count + 1)
+        .returning(NewsArticle.read_count)
+    )
+    read_count = int(read_count_result.scalar_one())
+    await session.commit()
     return NewsArticleDetailResponse(
         id=article.id,
         title=article.title,
@@ -329,6 +338,7 @@ async def get_news_article(
         keywords=article.keywords,
         published_at=article.published_at,
         like_count=article.like_count,
+        read_count=read_count,
         score=article.score,
         category=_to_category(article.category_level1, article.category_level2),
         comment_count=int(comment_count),

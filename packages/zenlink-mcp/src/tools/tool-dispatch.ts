@@ -6,89 +6,52 @@ import { basename } from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   ackMsgbox,
-  ackMsgboxGlobal,
-  adminFetchJson,
+  clearRoomStateHttp,
+  fetchAgentNativeProtocolArtifact,
+  fetchAgentNativeProtocolDiscovery,
+  fetchAgentSocialRooms,
+  fetchCurrentRoomMembers,
   fetchMsgbox,
-  fetchMsgboxGlobal,
   fetchMsgboxSummary,
-  fetchNewsArticle,
-  fetchNewsArticles,
   fetchSocialRoomMessages,
   fetchSocialRoomsHistory,
   fetchSocialRoomsLobby,
   patchAgentProfile,
+  pullRoomTopicsHttp,
   sendAgentDirectMessage,
+  updateRoomAccessListsHttp,
+  updateRoomDoorHttp,
+  updateRoomMetadataHttp,
   uploadAgentImage,
   parseAgentImageBase64Argument,
   defaultFilenameForImageContentType,
 } from "../zenlink/index.js";
-import type {
-  ZenlinkAdminHttpOptions,
-  ZenlinkClient,
-  ZenlinkAgentImageContentType,
-} from "../zenlink/index.js";
-import {
-  ZenlinkRouterPackInputSchema,
-  ZenlinkRouterResultSchema,
-  normalizeRouterResult,
-  packRouterContext,
-} from "../router/router-runtime.js";
+import type { ZenlinkAgentImageContentType } from "../zenlink/index.js";
 import type { ZenlinkSession } from "../transport/session.js";
 import {
-  getParticipantRulesSnapshotForTools,
-  writeParticipantRulesFile,
-} from "../social/participant-rules.js";
-import {
   ZenlinkAckMessagesSchema,
-  ZenlinkAdminAgentEventLogsSchema,
-  ZenlinkAdminAgentIdSchema,
-  ZenlinkAdminCreateAgentSchema,
-  ZenlinkAdminDispatchCommandSchema,
-  ZenlinkAdminNewsArticleIdSchema,
-  ZenlinkAdminNewsArticlePatchSchema,
-  ZenlinkAdminNewsColumnAddSchema,
-  ZenlinkAdminNewsColumnOrderSchema,
-  ZenlinkAdminPermissionDeleteSchema,
-  ZenlinkAdminPermissionUpsertSchema,
-  ZenlinkAdminHttpSchema,
-  ZenlinkAdminWsSchema,
-  ZenlinkAdminSocialDeliveryStatsSchema,
-  ZenlinkAdminSocialWebhookSchema,
-  ZenlinkAdminWallListSchema,
-  ZenlinkAdminWallPatchSchema,
-  ZenlinkWsAdminDissolveRoomSchema,
-  ZenlinkWsAdminListAgentsSchema,
-  ZenlinkWsAdminListArticlesSchema,
-  ZenlinkWsAdminModerateArticleSchema,
-  ZenlinkWsAdminResurrectRoomSchema,
-  ZenlinkWsAdminSendDirectiveSchema,
-  ZenlinkWsAdminSetAgentLevelSchema,
-  ZenlinkWsAdminSetArticleCategorySchema,
-  ZenlinkWsAdminSetPermissionSchema,
-  ZenlinkWsAdminSetWebhookSchema,
+  ZenlinkA2aSchema,
+  ZenlinkConnectionSchema,
   ZenlinkCreateRoomSchema,
   ZenlinkGetRoomMessagesSchema,
   ZenlinkInboundPollSchema,
   ZenlinkInboundWaitSchema,
   ZenlinkJoinRoomSchema,
   ZenlinkMsgboxQuerySchema,
-  ZenlinkMsgboxSchema,
-  ZenlinkNewsArticleIdSchema,
-  ZenlinkNewsListSchema,
-  ZenlinkNewsManageSchema,
-  ZenlinkNewsPublishSchema,
-  ZenlinkNewsUpdateSchema,
-  ZenlinkParticipantRulesSetSchema,
   ZenlinkPatchProfileSchema,
+  ZenlinkProtocolArtifactSchema,
   ZenlinkPullRoomTopicsSchema,
   ZenlinkRoomAccessListsUpdateSchema,
+  ZenlinkRoomDoorUpdateSchema,
   ZenlinkRoomMetadataUpdateSchema,
-  ZenlinkRoomsSchema,
+  ZenlinkRoomStateClearSchema,
+  ZenlinkRoomSchema,
   ZenlinkSendDmSchema,
   ZenlinkSendMessageSchema,
   ZenlinkSendMessageToAllSchema,
   ZenlinkUploadImageSchema,
   ZenlinkWakeDrainSchema,
+  ZenlinkWakePolicySchema,
 } from "./tool-input-schemas.js";
 import { readAgentImageBytesFromResolvedPath } from "./upload-image-from-path.js";
 
@@ -130,15 +93,6 @@ export async function toolTry<T>(
   } catch (e) {
     return toolError(e);
   }
-}
-
-function resolveAdminHttpOptions(client: ZenlinkClient): ZenlinkAdminHttpOptions {
-  const base = client.httpOptions();
-  const adminKey =
-    process.env["ZENLINK_ADMIN_API_KEY"]?.trim() ||
-    process.env["ZENHEART_ADMIN_API_KEY"]?.trim() ||
-    process.env["ZENHEART_V2_ADMIN_API_KEY"]?.trim();
-  return adminKey ? { ...base, adminApiKey: adminKey } : { ...base };
 }
 
 function msgboxQueryFromArgs(args: {
@@ -184,9 +138,44 @@ function wakeDrainInstruction(queueDepth: number): string {
   return `Call zenlink_wake_drain with timeout_ms=${timeoutMs}, limit=${limit}, inbox_limit=10 before replying. Repeat until remaining_inbound_queue_depth is 0.`;
 }
 
-function buildZenlinkDoctorReport(session: ZenlinkSession): Record<string, unknown> {
+const COMMON_USER_WAKE_SIGNALS = [
+  "room.message",
+  "room.message_notify",
+  "room.topic_suggestions_pending",
+  "msgbox.notify",
+] as const;
+
+async function probeAgentNativeProtocolDiscovery(
+  baseUrl: string,
+): Promise<Record<string, unknown>> {
+  try {
+    const discovery = await fetchAgentNativeProtocolDiscovery({ baseUrl });
+    const data = discovery as {
+      protocol?: unknown;
+      drafter?: unknown;
+      artifacts?: unknown;
+      bindings?: unknown;
+    };
+    return {
+      available: data.protocol === "agent-native-site-world/v0.1",
+      protocol: typeof data.protocol === "string" ? data.protocol : null,
+      drafter: typeof data.drafter === "string" ? data.drafter : null,
+      has_artifacts: Boolean(data.artifacts && typeof data.artifacts === "object"),
+      has_bindings: Boolean(data.bindings && typeof data.bindings === "object"),
+    };
+  } catch (e) {
+    return {
+      available: false,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+async function buildZenlinkDoctorReport(session: ZenlinkSession): Promise<Record<string, unknown>> {
   const status = session.status();
   const push = status.openclaw_push;
+  const wakePolicy = status.wake_policy;
+  const protocol = await probeAgentNativeProtocolDiscovery(session.client.httpBaseUrl);
   const findings: DoctorFinding[] = [];
   const nextActions: string[] = [];
 
@@ -241,14 +230,28 @@ function buildZenlinkDoctorReport(session: ZenlinkSession): Record<string, unkno
 
   const skippedTotal =
     sumRecordValues(push.skipped_frame_type_filter_by_type) +
+    sumRecordValues(push.skipped_signal_policy_by_signal) +
     sumRecordValues(push.skipped_dedupe_by_type) +
     sumRecordValues(push.skipped_room_line_coalesce_by_type);
   if (skippedTotal > 0) {
     findings.push({
       id: "push_skips_observed",
       severity: "info",
-      detail: `${skippedTotal} inbound frames were intentionally skipped by filter/dedupe/coalesce rules.`,
+      detail: `${skippedTotal} inbound frames were intentionally skipped by filter/signal-policy/dedupe/coalesce rules.`,
     });
+  }
+
+  if (wakePolicy.mode === "allowlist") {
+    const configured = new Set(wakePolicy.wake_signals ?? []);
+    const missingCommonSignals = COMMON_USER_WAKE_SIGNALS.filter((signal) => !configured.has(signal));
+    if (missingCommonSignals.length > 0) {
+      findings.push({
+        id: "wake_policy_common_signals_excluded",
+        severity: "warning",
+        detail: `Wake policy allowlist excludes common user-facing signals: ${missingCommonSignals.join(", ")}.`,
+      });
+      nextActions.push("Call zenlink_connection action=wake_policy with action=get to inspect, or action=set/reset to adjust.");
+    }
   }
 
   if (
@@ -293,6 +296,15 @@ function buildZenlinkDoctorReport(session: ZenlinkSession): Record<string, unkno
     nextActions.push(wakeDrainInstruction(status.inbound_queue_depth));
   }
 
+  if (!protocol.available) {
+    findings.push({
+      id: "protocol_discovery_unavailable",
+      severity: "warning",
+      detail: "Agent-Native Site World Protocol discovery is not available from the configured ZenHeart server.",
+    });
+    nextActions.push("Call zenlink_connection action=protocol_discovery after the server is upgraded, or verify ZENLINK_HOST points at a compliant server.");
+  }
+
   if (findings.length === 0) {
     findings.push({
       id: "healthy",
@@ -320,6 +332,7 @@ function buildZenlinkDoctorReport(session: ZenlinkSession): Record<string, unkno
         process.env["ZENLINK_MCP_OPENCLAW_AGENT_ID"]?.trim() || "main",
       configured_session_key:
         process.env["ZENLINK_MCP_OPENCLAW_SESSION_KEY"]?.trim() || null,
+      wake_policy: wakePolicy,
     },
     status_evidence: {
       online: status.online,
@@ -330,77 +343,54 @@ function buildZenlinkDoctorReport(session: ZenlinkSession): Record<string, unkno
       last_inbound_dequeue_count: status.last_inbound_dequeue_count,
       last_inbound_dequeue_tool: status.last_inbound_dequeue_tool,
       last_msgbox_fetch_at: status.last_msgbox_fetch_at,
+      wake_policy: wakePolicy,
       openclaw_push: push,
+      agent_native_protocol: protocol,
     },
   };
 }
 
-const ZENLINK_ROOMS_ACTION_TO_TOOL = {
+const ZENLINK_CONNECTION_ACTION_TO_TOOL = {
+  connect: "zenlink_connect",
+  disconnect: "zenlink_disconnect",
+  start_long_lived: "zenlink_start_long_lived",
+  status: "zenlink_status",
+  doctor: "zenlink_doctor",
+  inbound_poll: "zenlink_inbound_poll",
+  inbound_wait: "zenlink_inbound_wait",
+  inbound_stats: "zenlink_inbound_stats",
+  wake_drain: "zenlink_wake_drain",
+  wake_policy: "zenlink_wake_policy",
+  protocol_discovery: "zenlink_protocol_discovery",
+  protocol_artifact: "zenlink_protocol_artifact",
+} as const;
+
+const ZENLINK_ROOM_ACTION_TO_TOOL = {
   list_lobby: "zenlink_list_rooms_lobby",
   list_history: "zenlink_list_rooms_history",
   list_agent: "zenlink_list_rooms_agent",
   list_members: "zenlink_list_room_members",
+  join: "zenlink_join_room",
+  leave: "zenlink_leave_room",
+  send_message: "zenlink_send_message",
+  send_message_to_all: "zenlink_send_message_to_all",
+  upload_image: "zenlink_upload_image",
   pull_topics: "zenlink_pull_room_topics",
   get_messages: "zenlink_get_room_messages",
   create: "zenlink_create_room",
   update_metadata: "zenlink_update_room_metadata",
   update_access_lists: "zenlink_update_room_access_lists",
+  update_door: "zenlink_update_room_door",
+  clear_state: "zenlink_clear_room_state",
 } as const;
 
-const ZENLINK_MSGBOX_ACTION_TO_TOOL = {
-  list_private: "zenlink_get_inbox",
-  list_global: "zenlink_get_inbox_global",
-  summary: "zenlink_get_inbox_summary",
-  ack_private: "zenlink_ack_messages",
-  ack_global: "zenlink_ack_messages_global",
-} as const;
-
-const ZENLINK_NEWS_MANAGE_ACTION_TO_TOOL = {
-  publish: "zenlink_news_publish",
-  update: "zenlink_news_update",
-  delete: "zenlink_news_delete",
-} as const;
-
-const ZENLINK_ADMIN_HTTP_ACTION_TO_TOOL = {
-  list_agents: "zenlink_admin_list_agents",
-  create_agent: "zenlink_admin_create_agent",
-  get_agent: "zenlink_admin_get_agent",
-  patch_agent_social_webhook: "zenlink_admin_patch_agent_social_webhook",
-  revoke_agent: "zenlink_admin_revoke_agent",
-  rotate_agent_token: "zenlink_admin_rotate_agent_token",
-  list_agent_event_logs: "zenlink_admin_list_agent_event_logs",
-  get_agent_connection: "zenlink_admin_get_agent_connection",
-  dispatch_agent_command: "zenlink_admin_dispatch_agent_command",
-  get_social_delivery_stats: "zenlink_admin_get_social_delivery_stats",
-  list_permissions: "zenlink_admin_list_permissions",
-  upsert_permission: "zenlink_admin_upsert_permission",
-  delete_permission: "zenlink_admin_delete_permission",
-  list_wall_messages: "zenlink_admin_list_wall_messages",
-  patch_wall_message: "zenlink_admin_patch_wall_message",
-  list_news_articles: "zenlink_admin_list_news_articles",
-  list_news_columns: "zenlink_admin_list_news_columns",
-  add_news_column: "zenlink_admin_add_news_column",
-  order_news_columns: "zenlink_admin_order_news_columns",
-  delete_news_column: "zenlink_admin_delete_news_column",
-  get_news_article: "zenlink_admin_get_news_article",
-  patch_news_article: "zenlink_admin_patch_news_article",
-  delete_news_article: "zenlink_admin_delete_news_article",
-} as const;
-
-const ZENLINK_ADMIN_WS_ACTION_TO_TOOL = {
-  list_agents: "zenlink_ws_admin_list_agents",
-  revoke_agent: "zenlink_ws_admin_revoke_agent",
-  rotate_token: "zenlink_ws_admin_rotate_token",
-  set_permission: "zenlink_ws_admin_set_permission",
-  list_permissions: "zenlink_ws_admin_list_permissions",
-  send_directive: "zenlink_ws_admin_send_directive",
-  set_agent_level: "zenlink_ws_admin_set_agent_level",
-  set_webhook: "zenlink_ws_admin_set_webhook",
-  list_articles: "zenlink_ws_admin_list_articles",
-  set_article_category: "zenlink_ws_admin_set_article_category",
-  moderate_article: "zenlink_ws_admin_moderate_article",
-  dissolve_social_room: "zenlink_ws_admin_dissolve_social_room",
-  resurrect_social_room: "zenlink_ws_admin_resurrect_social_room",
+const ZENLINK_A2A_ACTION_TO_TOOL = {
+  list_inbox: "zenlink_get_inbox",
+  inbox_summary: "zenlink_get_inbox_summary",
+  ack_messages: "zenlink_ack_messages",
+  send_dm: "zenlink_send_dm",
+  patch_profile: "zenlink_patch_profile",
+  social_grounding: "zenlink_social_grounding",
 } as const;
 
 export async function dispatchZenlinkTool(
@@ -411,47 +401,29 @@ export async function dispatchZenlinkTool(
   const client = session.client;
 
   switch (tool) {
-    case "zenlink_rooms": {
-      const { action, payload } = ZenlinkRoomsSchema.parse(rawArgs ?? {});
+    case "zenlink_connection": {
+      const { action, payload } = ZenlinkConnectionSchema.parse(rawArgs ?? {});
       return dispatchZenlinkTool(
         session,
-        ZENLINK_ROOMS_ACTION_TO_TOOL[action],
+        ZENLINK_CONNECTION_ACTION_TO_TOOL[action],
         payload ?? {},
       );
     }
 
-    case "zenlink_msgbox": {
-      const { action, payload } = ZenlinkMsgboxSchema.parse(rawArgs ?? {});
+    case "zenlink_room": {
+      const { action, payload } = ZenlinkRoomSchema.parse(rawArgs ?? {});
       return dispatchZenlinkTool(
         session,
-        ZENLINK_MSGBOX_ACTION_TO_TOOL[action],
+        ZENLINK_ROOM_ACTION_TO_TOOL[action],
         payload ?? {},
       );
     }
 
-    case "zenlink_news_manage": {
-      const { action, payload } = ZenlinkNewsManageSchema.parse(rawArgs ?? {});
+    case "zenlink_a2a": {
+      const { action, payload } = ZenlinkA2aSchema.parse(rawArgs ?? {});
       return dispatchZenlinkTool(
         session,
-        ZENLINK_NEWS_MANAGE_ACTION_TO_TOOL[action],
-        payload ?? {},
-      );
-    }
-
-    case "zenlink_admin_http": {
-      const { action, payload } = ZenlinkAdminHttpSchema.parse(rawArgs ?? {});
-      return dispatchZenlinkTool(
-        session,
-        ZENLINK_ADMIN_HTTP_ACTION_TO_TOOL[action],
-        payload ?? {},
-      );
-    }
-
-    case "zenlink_admin_ws": {
-      const { action, payload } = ZenlinkAdminWsSchema.parse(rawArgs ?? {});
-      return dispatchZenlinkTool(
-        session,
-        ZENLINK_ADMIN_WS_ACTION_TO_TOOL[action],
+        ZENLINK_A2A_ACTION_TO_TOOL[action],
         payload ?? {},
       );
     }
@@ -474,63 +446,29 @@ export async function dispatchZenlinkTool(
         return { ok: true, ...session.status() };
       });
 
-    case "zenlink_router_pack_context": {
-      const input = ZenlinkRouterPackInputSchema.parse(rawArgs);
-      return toolTry(async () => packRouterContext(input));
-    }
-
-    case "zenlink_router_apply_result": {
-      const input = ZenlinkRouterResultSchema.parse(rawArgs);
-      return toolTry(async () => {
-        const normalized = normalizeRouterResult(input);
-        const base: Record<string, unknown> = {
-          ok: true,
-          normalized,
-          persist_echo:
-            normalized.persist !== undefined ? normalized.persist : null,
-        };
-        const d = normalized.dispatch;
-        if (!d || d.kind === "none") {
-          return base;
-        }
-        if (d.kind === "agent_dm") {
-          const dm = await sendAgentDirectMessage(client.httpOptions(), {
-            to_agent_id: d.to_agent_id,
-            body: d.body,
-            ...(d.subject !== undefined ? { subject: d.subject } : {}),
-          });
-          return {
-            ...base,
-            dispatch_done: "agent_dm",
-            dm,
-          };
-        }
-        const frames = await session.socialReply(d.room_id, d.text);
-        return {
-          ...base,
-          dispatch_done: "social_reply",
-          room_joined: frames.room_joined,
-          message_echo: frames.message_echo,
-        };
-      });
-    }
-
     case "zenlink_status":
       return okJson(session.status());
 
     case "zenlink_doctor":
-      return okJson(buildZenlinkDoctorReport(session));
+      return toolTry(() => buildZenlinkDoctorReport(session));
+
+    case "zenlink_protocol_discovery":
+      return toolTry(() =>
+        fetchAgentNativeProtocolDiscovery({ baseUrl: client.httpBaseUrl }),
+      );
+
+    case "zenlink_protocol_artifact": {
+      const { artifact } = ZenlinkProtocolArtifactSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        fetchAgentNativeProtocolArtifact(
+          { baseUrl: client.httpBaseUrl },
+          artifact,
+        ),
+      );
+    }
 
     case "zenlink_social_grounding":
       return okJson(session.socialGrounding());
-
-    case "zenlink_participant_rules_get":
-      return okJson(getParticipantRulesSnapshotForTools());
-
-    case "zenlink_participant_rules_set": {
-      const { body } = ZenlinkParticipantRulesSetSchema.parse(rawArgs ?? {});
-      return toolTry(async () => writeParticipantRulesFile(body));
-    }
 
     case "zenlink_inbound_poll": {
       const { limit, types, room_id, current_room_only } = ZenlinkInboundPollSchema.parse(rawArgs ?? {});
@@ -606,8 +544,8 @@ export async function dispatchZenlinkTool(
           ok: true,
           action:
             remainingInboundQueueDepth > 0
-              ? "Use inbound.frames first, then call zenlink_wake_drain again before replying because queued inbound frames remain. For room frames, reply to frame.room_id with zenlink_send_message.room_id. Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled."
-              : "Use inbound.frames first. For room frames, reply to frame.room_id with zenlink_send_message.room_id. Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled.",
+              ? "Use inbound.frames first, then call zenlink_connection action=wake_drain again before replying because queued inbound frames remain. For room frames, reply with zenlink_room action=send_message and payload.room_id. Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled."
+              : "Use inbound.frames first. For room frames, reply with zenlink_room action=send_message and payload.room_id. Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled.",
           continue_drain: remainingInboundQueueDepth > 0,
           remaining_inbound_queue_depth: remainingInboundQueueDepth,
           next_action:
@@ -619,6 +557,26 @@ export async function dispatchZenlinkTool(
           inbox,
           stats: finalStatus,
         };
+      });
+    }
+
+    case "zenlink_wake_policy": {
+      const { action, wake_signals } = ZenlinkWakePolicySchema.parse(rawArgs ?? {});
+      if (action === "set") {
+        return okJson({
+          ok: true,
+          policy: session.setWakePolicyAllowlist(wake_signals ?? []),
+        });
+      }
+      if (action === "reset") {
+        return okJson({
+          ok: true,
+          policy: session.resetWakePolicy(),
+        });
+      }
+      return okJson({
+        ok: true,
+        policy: session.wakePolicyStatus(),
       });
     }
 
@@ -736,22 +694,18 @@ export async function dispatchZenlinkTool(
       );
 
     case "zenlink_list_rooms_agent":
-      return toolTry(() =>
-        session.wsRpc(["rooms_list"], () => client.sendListRooms()),
-      );
+      return toolTry(() => fetchAgentSocialRooms(client.httpOptions()));
 
     case "zenlink_list_room_members":
-      return toolTry(() =>
-        session.wsRpc(["room_members_list"], () =>
-          client.sendListRoomMembers(),
-        ),
-      );
+      return toolTry(() => fetchCurrentRoomMembers(client.httpOptions()));
 
     case "zenlink_pull_room_topics": {
       const { room_id, limit } = ZenlinkPullRoomTopicsSchema.parse(
         rawArgs ?? {},
       );
-      return toolTry(() => session.pullRoomTopicsTool(room_id, limit));
+      return toolTry(() =>
+        pullRoomTopicsHttp(client.httpOptions(), room_id, limit),
+      );
     }
 
     case "zenlink_get_room_messages": {
@@ -798,33 +752,15 @@ export async function dispatchZenlinkTool(
       });
     }
 
-    case "zenlink_ack_messages_global": {
-      const { message_ids } = ZenlinkAckMessagesSchema.parse(rawArgs ?? {});
-      return toolTry(async () => {
-        const result = await ackMsgboxGlobal(client.httpOptions(), message_ids);
-        session.recordMsgboxAck(result.acked);
-        return result;
-      });
-    }
-
     case "zenlink_get_inbox_summary":
       return toolTry(() => fetchMsgboxSummary(client.httpOptions()));
-
-    case "zenlink_get_inbox_global": {
-      const args = ZenlinkMsgboxQuerySchema.parse(rawArgs ?? {});
-      return toolTry(async () => {
-        const inbox = await fetchMsgboxGlobal(client.httpOptions(), msgboxQueryFromArgs(args));
-        session.recordMsgboxFetch(inbox.messages.length, null);
-        return inbox;
-      });
-    }
 
     case "zenlink_create_room": {
       const payload = ZenlinkCreateRoomSchema.parse(rawArgs ?? {});
       return toolTry(async () => {
         const {
           name,
-          topic,
+          brief,
           rules,
           is_private,
           observable,
@@ -834,7 +770,7 @@ export async function dispatchZenlinkTool(
           payload;
         return session.createRoomTool({
           name,
-          topic,
+          brief,
           ...(rules !== undefined ? { rules } : {}),
           ...(is_private !== undefined ? { is_private } : {}),
           ...(observable !== undefined ? { observable } : {}),
@@ -850,24 +786,38 @@ export async function dispatchZenlinkTool(
       const { room_id, allowed_agent_ids, denied_agent_ids } =
         ZenlinkRoomAccessListsUpdateSchema.parse(rawArgs ?? {});
       return toolTry(() =>
-        session.wsRpc(["room_access_lists_updated"], () =>
-          client.sendUpdateRoomAccessLists({
-            room_id,
-            ...(allowed_agent_ids !== undefined ? { allowed_agent_ids } : {}),
-            ...(denied_agent_ids !== undefined ? { denied_agent_ids } : {}),
-          }),
-        ),
+        updateRoomAccessListsHttp(client.httpOptions(), room_id, {
+          ...(allowed_agent_ids !== undefined ? { allowed_agent_ids } : {}),
+          ...(denied_agent_ids !== undefined ? { denied_agent_ids } : {}),
+        }),
+      );
+    }
+
+    case "zenlink_update_room_door": {
+      const { room_id, door_state } = ZenlinkRoomDoorUpdateSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        updateRoomDoorHttp(client.httpOptions(), room_id, { door_state }),
+      );
+    }
+
+    case "zenlink_clear_room_state": {
+      const { room_id, clear_messages, clear_signals } =
+        ZenlinkRoomStateClearSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        clearRoomStateHttp(client.httpOptions(), room_id, {
+          clear_messages,
+          clear_signals,
+        }),
       );
     }
 
     case "zenlink_update_room_metadata": {
-      const { room_id, name, topic, rules } =
+      const { room_id, name, brief, rules } =
         ZenlinkRoomMetadataUpdateSchema.parse(rawArgs ?? {});
       return toolTry(() =>
-        session.updateRoomMetadataTool({
-          room_id,
+        updateRoomMetadataHttp(client.httpOptions(), room_id, {
           ...(name !== undefined ? { name } : {}),
-          ...(topic !== undefined ? { topic } : {}),
+          ...(brief !== undefined ? { brief } : {}),
           ...(rules !== undefined ? { rules } : {}),
         }),
       );
@@ -879,468 +829,6 @@ export async function dispatchZenlinkTool(
         const data = await patchAgentProfile(client.httpOptions(), body);
         return data ?? { ok: true };
       });
-    }
-
-    case "zenlink_news_list": {
-      const args = ZenlinkNewsListSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        fetchNewsArticles({ baseUrl: client.httpBaseUrl }, args),
-      );
-    }
-
-    case "zenlink_news_get": {
-      const { article_id } = ZenlinkNewsArticleIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        fetchNewsArticle({ baseUrl: client.httpBaseUrl }, article_id),
-      );
-    }
-
-    case "zenlink_news_publish": {
-      const payload = ZenlinkNewsPublishSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.wsRpc(
-          ["publish_news_ok"],
-          () => client.sendPublishNews(payload),
-          { skipRoomRestore: true },
-        ),
-      );
-    }
-
-    case "zenlink_news_update": {
-      const payload = ZenlinkNewsUpdateSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.wsRpc(
-          ["update_news_ok"],
-          () => client.sendUpdateNews(payload),
-          { skipRoomRestore: true },
-        ),
-      );
-    }
-
-    case "zenlink_news_delete": {
-      const { article_id } = ZenlinkNewsArticleIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.wsRpc(
-          ["delete_news_ok"],
-          () => client.sendDeleteNews(article_id),
-          { skipRoomRestore: true },
-        ),
-      );
-    }
-
-    case "zenlink_admin_list_agents":
-      return toolTry(() =>
-        adminFetchJson(resolveAdminHttpOptions(client), "GET", "/v2/admin/agents"),
-      );
-
-    case "zenlink_admin_create_agent": {
-      const body = ZenlinkAdminCreateAgentSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(resolveAdminHttpOptions(client), "POST", "/v2/admin/agents", {
-          body,
-        }),
-      );
-    }
-
-    case "zenlink_admin_get_agent": {
-      const { agent_id } = ZenlinkAdminAgentIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "GET",
-          `/v2/admin/agents/${encodeURIComponent(agent_id)}`,
-        ),
-      );
-    }
-
-    case "zenlink_admin_patch_agent_social_webhook": {
-      const { agent_id, social_webhook_url } =
-        ZenlinkAdminSocialWebhookSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "PATCH",
-          `/v2/admin/agents/${encodeURIComponent(agent_id)}/social-webhook`,
-          { body: { social_webhook_url } },
-        ),
-      );
-    }
-
-    case "zenlink_admin_revoke_agent": {
-      const { agent_id } = ZenlinkAdminAgentIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "POST",
-          `/v2/admin/agents/${encodeURIComponent(agent_id)}/revoke`,
-        ),
-      );
-    }
-
-    case "zenlink_admin_rotate_agent_token": {
-      const { agent_id } = ZenlinkAdminAgentIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "POST",
-          `/v2/admin/agents/${encodeURIComponent(agent_id)}/rotate-token`,
-        ),
-      );
-    }
-
-    case "zenlink_admin_list_agent_event_logs": {
-      const { agent_id, limit, offset } = ZenlinkAdminAgentEventLogsSchema.parse(
-        rawArgs ?? {},
-      );
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "GET",
-          `/v2/admin/agents/${encodeURIComponent(agent_id)}/event-logs`,
-          {
-            query: { limit, offset },
-          },
-        ),
-      );
-    }
-
-    case "zenlink_admin_get_agent_connection": {
-      const { agent_id } = ZenlinkAdminAgentIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "GET",
-          `/v2/admin/agents/${encodeURIComponent(agent_id)}/connection`,
-        ),
-      );
-    }
-
-    case "zenlink_admin_dispatch_agent_command": {
-      const { agent_id, command, args, timeout_seconds } =
-        ZenlinkAdminDispatchCommandSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "POST",
-          `/v2/admin/agents/${encodeURIComponent(agent_id)}/commands`,
-          {
-            body: {
-              command,
-              args: args ?? {},
-              timeout_seconds,
-            },
-          },
-        ),
-      );
-    }
-
-    case "zenlink_admin_get_social_delivery_stats": {
-      const { window_hours } = ZenlinkAdminSocialDeliveryStatsSchema.parse(
-        rawArgs ?? {},
-      );
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "GET",
-          "/v2/admin/social-delivery-stats",
-          { query: { window_hours } },
-        ),
-      );
-    }
-
-    case "zenlink_admin_list_permissions":
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "GET",
-          "/v2/admin/permissions",
-        ),
-      );
-
-    case "zenlink_admin_upsert_permission": {
-      const { module, action, ...body } =
-        ZenlinkAdminPermissionUpsertSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "PUT",
-          `/v2/admin/permissions/${encodeURIComponent(module)}/${encodeURIComponent(action)}`,
-          { body },
-        ),
-      );
-    }
-
-    case "zenlink_admin_delete_permission": {
-      const { module, action } = ZenlinkAdminPermissionDeleteSchema.parse(
-        rawArgs ?? {},
-      );
-      return toolTry(async () => {
-        await adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "DELETE",
-          `/v2/admin/permissions/${encodeURIComponent(module)}/${encodeURIComponent(action)}`,
-        );
-        return { ok: true };
-      });
-    }
-
-    case "zenlink_admin_list_wall_messages": {
-      const q = ZenlinkAdminWallListSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(resolveAdminHttpOptions(client), "GET", "/v2/admin/wall/messages", {
-          query: {
-            include_hidden: q.include_hidden,
-            limit: q.limit,
-          },
-        }),
-      );
-    }
-
-    case "zenlink_admin_patch_wall_message": {
-      const { message_id, is_hidden } = ZenlinkAdminWallPatchSchema.parse(
-        rawArgs ?? {},
-      );
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "PATCH",
-          `/v2/admin/wall/messages/${encodeURIComponent(message_id)}`,
-          { body: { is_hidden } },
-        ),
-      );
-    }
-
-    case "zenlink_admin_list_news_articles":
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "GET",
-          "/v2/admin/news/articles",
-        ),
-      );
-
-    case "zenlink_admin_list_news_columns":
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "GET",
-          "/v2/admin/news/columns",
-        ),
-      );
-
-    case "zenlink_admin_add_news_column": {
-      const { agent_id } = ZenlinkAdminNewsColumnAddSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "POST",
-          "/v2/admin/news/columns",
-          { body: { agent_id } },
-        ),
-      );
-    }
-
-    case "zenlink_admin_order_news_columns": {
-      const { agent_ids } = ZenlinkAdminNewsColumnOrderSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "PUT",
-          "/v2/admin/news/columns/order",
-          { body: { agent_ids } },
-        ),
-      );
-    }
-
-    case "zenlink_admin_delete_news_column": {
-      const { agent_id } = ZenlinkAdminAgentIdSchema.parse(rawArgs ?? {});
-      return toolTry(async () => {
-        await adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "DELETE",
-          `/v2/admin/news/columns/${encodeURIComponent(agent_id)}`,
-        );
-        return { ok: true };
-      });
-    }
-
-    case "zenlink_admin_get_news_article": {
-      const { article_id } = ZenlinkAdminNewsArticleIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "GET",
-          `/v2/admin/news/articles/${encodeURIComponent(article_id)}`,
-        ),
-      );
-    }
-
-    case "zenlink_admin_patch_news_article": {
-      const parsed = ZenlinkAdminNewsArticlePatchSchema.parse(rawArgs ?? {});
-      const { article_id, ...rest } = parsed;
-      const body = Object.fromEntries(
-        Object.entries(rest).filter(([, v]) => v !== undefined),
-      );
-      return toolTry(() =>
-        adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "PATCH",
-          `/v2/admin/news/articles/${encodeURIComponent(article_id)}`,
-          { body },
-        ),
-      );
-    }
-
-    case "zenlink_admin_delete_news_article": {
-      const { article_id } = ZenlinkAdminNewsArticleIdSchema.parse(rawArgs ?? {});
-      return toolTry(async () => {
-        await adminFetchJson(
-          resolveAdminHttpOptions(client),
-          "DELETE",
-          `/v2/admin/news/articles/${encodeURIComponent(article_id)}`,
-        );
-        return { ok: true };
-      });
-    }
-
-    case "zenlink_ws_admin_list_agents": {
-      const args = ZenlinkWsAdminListAgentsSchema.parse(rawArgs ?? {});
-      const frame: Record<string, unknown> = { type: "admin_list_agents" };
-      if (args.include_revoked !== undefined) {
-        frame.include_revoked = args.include_revoked;
-      }
-      return toolTry(() => session.adminWsRpc("admin_list_agents_ok", frame));
-    }
-
-    case "zenlink_ws_admin_revoke_agent": {
-      const { agent_id } = ZenlinkAdminAgentIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.adminWsRpc("admin_revoke_agent_ok", {
-          type: "admin_revoke_agent",
-          agent_id,
-        }),
-      );
-    }
-
-    case "zenlink_ws_admin_rotate_token": {
-      const { agent_id } = ZenlinkAdminAgentIdSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.adminWsRpc("admin_rotate_token_ok", {
-          type: "admin_rotate_token",
-          agent_id,
-        }),
-      );
-    }
-
-    case "zenlink_ws_admin_set_permission": {
-      const p = ZenlinkWsAdminSetPermissionSchema.parse(rawArgs ?? {});
-      const frame: Record<string, unknown> = {
-        type: "admin_set_permission",
-        module: p.module,
-        action: p.action,
-        max_level: p.max_level,
-      };
-      if (p.limit_value !== undefined) frame.limit_value = p.limit_value;
-      if (p.description !== undefined) frame.description = p.description;
-      return toolTry(() => session.adminWsRpc("admin_set_permission_ok", frame));
-    }
-
-    case "zenlink_ws_admin_list_permissions":
-      return toolTry(() =>
-        session.adminWsRpc("admin_list_permissions_ok", {
-          type: "admin_list_permissions",
-        }),
-      );
-
-    case "zenlink_ws_admin_send_directive": {
-      const p = ZenlinkWsAdminSendDirectiveSchema.parse(rawArgs ?? {});
-      const frame: Record<string, unknown> = {
-        type: "admin_send_directive",
-        to_agent_id: p.to_agent_id,
-        body: p.body,
-        priority: p.priority ?? 1,
-      };
-      if (p.subject !== undefined) frame.subject = p.subject;
-      return toolTry(() => session.adminWsRpc("admin_send_directive_ok", frame));
-    }
-
-    case "zenlink_ws_admin_set_agent_level": {
-      const p = ZenlinkWsAdminSetAgentLevelSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.adminWsRpc("admin_set_agent_level_ok", {
-          type: "admin_set_agent_level",
-          agent_id: p.agent_id,
-          level: p.level,
-        }),
-      );
-    }
-
-    case "zenlink_ws_admin_set_webhook": {
-      const p = ZenlinkWsAdminSetWebhookSchema.parse(rawArgs ?? {});
-      const frame: Record<string, unknown> = {
-        type: "admin_set_webhook",
-        agent_id: p.agent_id,
-      };
-      if (p.social_webhook_url !== undefined) {
-        frame.social_webhook_url = p.social_webhook_url;
-      }
-      return toolTry(() => session.adminWsRpc("admin_set_webhook_ok", frame));
-    }
-
-    case "zenlink_ws_admin_list_articles": {
-      const p = ZenlinkWsAdminListArticlesSchema.parse(rawArgs ?? {});
-      const frame: Record<string, unknown> = { type: "admin_list_articles" };
-      if (p.limit !== undefined) frame.limit = p.limit;
-      if (p.publisher_agent_id !== undefined) {
-        frame.publisher_agent_id = p.publisher_agent_id;
-      }
-      if (p.before_id !== undefined) frame.before_id = p.before_id;
-      return toolTry(() => session.adminWsRpc("admin_list_articles_ok", frame));
-    }
-
-    case "zenlink_ws_admin_set_article_category": {
-      const p = ZenlinkWsAdminSetArticleCategorySchema.parse(rawArgs ?? {});
-      const frame: Record<string, unknown> = {
-        type: "admin_set_article_category",
-        article_id: p.article_id,
-      };
-      if (p.category !== undefined) frame.category = p.category;
-      return toolTry(() =>
-        session.adminWsRpc("admin_set_article_category_ok", frame),
-      );
-    }
-
-    case "zenlink_ws_admin_moderate_article": {
-      const p = ZenlinkWsAdminModerateArticleSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.adminWsRpc("admin_moderate_article_ok", {
-          type: "admin_moderate_article",
-          article_id: p.article_id,
-          reason: p.reason,
-        }),
-      );
-    }
-
-    case "zenlink_ws_admin_dissolve_social_room": {
-      const p = ZenlinkWsAdminDissolveRoomSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.adminWsRpc("admin_dissolve_social_room_ok", {
-          type: "admin_dissolve_social_room",
-          room_id: p.room_id,
-          note: p.note ?? "",
-        }),
-      );
-    }
-
-    case "zenlink_ws_admin_resurrect_social_room": {
-      const p = ZenlinkWsAdminResurrectRoomSchema.parse(rawArgs ?? {});
-      return toolTry(() =>
-        session.adminWsRpc("admin_resurrect_social_room_ok", {
-          type: "admin_resurrect_social_room",
-          room_id: p.room_id,
-          note: p.note ?? "",
-        }),
-      );
     }
 
     default:

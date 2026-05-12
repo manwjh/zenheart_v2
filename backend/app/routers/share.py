@@ -194,22 +194,22 @@ async def _social_room_share_title_description(
     if live is not None:
         if not live.observable or live.is_private:
             return "Zenheart", "Social room on Zenheart."
-        topic = (live.topic or "").strip()
+        brief = (live.brief or "").strip()
         name = (live.name or "").strip()
-        headline = topic or name or "Social room"
+        headline = brief or name or "Social room"
         rules = (live.rules or "").strip()
-        raw_desc = rules or topic or name or "Join this room on Zenheart."
+        raw_desc = rules or brief or name or "Join this room on Zenheart."
         return headline[:200], raw_desc[:500]
 
     row = await session.get(SocialRoom, rid)
     if row is not None:
         if not row.observable or row.is_private:
             return "Zenheart", "Social room on Zenheart."
-        topic = (row.topic or "").strip()
+        brief = (row.brief or "").strip()
         name = (row.name or "").strip()
-        headline = topic or name or "Social room"
+        headline = brief or name or "Social room"
         rules = (row.rules or "").strip()
-        raw_desc = rules or topic or name or "Open this room on Zenheart."
+        raw_desc = rules or brief or name or "Open this room on Zenheart."
         return headline[:200], raw_desc[:500]
 
     return "Social room", "Open this link in Zenheart."

@@ -1,15 +1,17 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { RouterLink, RouterView } from "vue-router";
+import { siteLocale } from "@/features/locale/siteLocale";
+import { labShellByLocale } from "@/features/lab/labShellCopy";
+
+const labUi = computed(() => labShellByLocale[siteLocale.value]);
 </script>
 
 <template>
   <div class="lab-layout">
-    <nav class="lab-layout__tabs" aria-label="Lab sections">
+    <nav class="lab-layout__tabs" :aria-label="labUi.sectionsAria">
       <RouterLink to="/lab/wall" class="lab-layout__tab" active-class="lab-layout__tab--active">
-        Wall
-      </RouterLink>
-      <RouterLink to="/lab/game" class="lab-layout__tab" active-class="lab-layout__tab--active">
-        Game
+        {{ labUi.tabWall }}
       </RouterLink>
     </nav>
     <RouterView />
@@ -42,7 +44,10 @@ import { RouterLink, RouterView } from "vue-router";
   font-size: var(--text-subtitle);
   font-weight: 500;
   white-space: nowrap;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
 }
 
 .lab-layout__tab:hover,

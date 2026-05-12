@@ -2,7 +2,7 @@
 # Deploy v2 FastAPI backend to EC2: upload tarballs, extract, venv+pip, optional psql client, migrations, systemd.
 # Defaults match aws/AWS_ACCESS_GUIDE.md. Requires a populated remote .env (see docs).
 # The full tree under v2/backend/ is synced — new API routes (e.g. /v2/wall/*) need no extra deploy steps.
-# FAQ markdown / skills / games only (no service restart): use deploy-faq-files.sh.
+# FAQ markdown / skills only (no service restart): use deploy-faq-files.sh.
 set -euo pipefail
 
 V2_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +30,16 @@ if [[ -f "$V2_ROOT/.deploy-env" ]]; then
   # shellcheck disable=SC1091
   source "$V2_ROOT/.deploy-env"
   set +a
+fi
+
+# If .deploy-env references a known_hosts path from another machine/checkout, fall back to this v2/.ssh/known_hosts.
+if [[ -n "${ZENHEART_SSH_KNOWN_HOSTS:-}" ]] && [[ ! -f "$ZENHEART_SSH_KNOWN_HOSTS" ]]; then
+  if [[ -f "$V2_ROOT/.ssh/known_hosts" ]]; then
+    echo "[v2-backend] ZENHEART_SSH_KNOWN_HOSTS file missing (${ZENHEART_SSH_KNOWN_HOSTS-}) — using $V2_ROOT/.ssh/known_hosts" >&2
+    ZENHEART_SSH_KNOWN_HOSTS="$V2_ROOT/.ssh/known_hosts"
+  else
+    unset ZENHEART_SSH_KNOWN_HOSTS || true
+  fi
 fi
 
 # SSH: require a pinned host key file, or explicit opt-in to accept-new (TOFU / MITM on first connect).
@@ -150,18 +160,6 @@ if [[ -d "$V2_ROOT/skills" ]]; then
   "${SCP_CMD[@]}" "$SKILLS_ARCHIVE_LOCAL" "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$SKILLS_ARCHIVE_NAME"
 fi
 
-# Per-game rules (POMDP, etc.); FAQ serves GET /v2/faq/game/* from here (dir on disk: v2/games/).
-GAME_ARCHIVE_NAME="${ZENHEART_V2_GAME_ARCHIVE_NAME:-zenheart-v2-games.tar.gz}"
-SYNCED_GAME=0
-if [[ -d "$V2_ROOT/games" ]]; then
-  SYNCED_GAME=1
-  GAME_ARCHIVE_LOCAL="$TMP_ARCHIVE_DIR/games.tar.gz"
-  echo "[v2-backend] pack games rules → $GAME_ARCHIVE_LOCAL"
-  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$TAR_CREATE_CMD" -C "$V2_ROOT/games" -czf "$GAME_ARCHIVE_LOCAL" .
-  echo "[v2-backend] upload game rules archive → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$GAME_ARCHIVE_NAME"
-  "${SCP_CMD[@]}" "$GAME_ARCHIVE_LOCAL" "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$GAME_ARCHIVE_NAME"
-fi
-
 if ((${#_SSH_TIME_PREFIX[@]})); then
   echo "[v2-backend] remote install (venv, pip, psql client, migrations, systemd, optional nginx) max ${ZENHEART_V2_REMOTE_SSH_MAX_S}s"
 else
@@ -183,10 +181,10 @@ _CMD+=(
     ZENHEART_MEDIA_ROOT="${ZENHEART_MEDIA_ROOT:-}" \
     ZENHEART_V2_NO_ROTATE_ADMIN_KEY="${ZENHEART_V2_NO_ROTATE_ADMIN_KEY:-0}" \
     ZENHEART_V2_BOOTSTRAP_ENV="${ZENHEART_V2_BOOTSTRAP_ENV:-0}" \
+    ZENHEART_V2_STANDARDIZE_CHECKIN_SYSTEM="${ZENHEART_V2_STANDARDIZE_CHECKIN_SYSTEM:-0}" \
     BACKEND_ARCHIVE_NAME="$BACKEND_ARCHIVE_NAME" \
     SYNCED_DOCS="$SYNCED_DOCS" DOCS_ARCHIVE_NAME="$DOCS_ARCHIVE_NAME" \
     SYNCED_SKILLS="$SYNCED_SKILLS" SKILLS_ARCHIVE_NAME="$SKILLS_ARCHIVE_NAME" \
-    SYNCED_GAME="$SYNCED_GAME" GAME_ARCHIVE_NAME="$GAME_ARCHIVE_NAME" \
     bash -s
 )
 set +e
@@ -246,16 +244,6 @@ if [[ "${SYNCED_SKILLS:-0}" == "1" && -n "${SKILLS_ARCHIVE_NAME:-}" && -f "$HOME
   sudo tar "${TAR_WARN_FLAGS[@]}" -xzf "$HOME/$SKILLS_ARCHIVE_NAME" -C "$SKILLS_REMOTE"
   sudo chown -R "$(id -un):$(id -gn)" "$SKILLS_REMOTE"
   rm -f "$HOME/$SKILLS_ARCHIVE_NAME"
-fi
-
-if [[ "${SYNCED_GAME:-0}" == "1" && -n "${GAME_ARCHIVE_NAME:-}" && -f "$HOME/$GAME_ARCHIVE_NAME" ]]; then
-  GAME_REMOTE="$(dirname "$REMOTE_DIR")/games"
-  echo "[v2-backend] install games rules → $GAME_REMOTE/"
-  sudo rm -rf "$GAME_REMOTE"
-  sudo mkdir -p "$GAME_REMOTE"
-  sudo tar "${TAR_WARN_FLAGS[@]}" -xzf "$HOME/$GAME_ARCHIVE_NAME" -C "$GAME_REMOTE"
-  sudo chown -R "$(id -un):$(id -gn)" "$GAME_REMOTE"
-  rm -f "$HOME/$GAME_ARCHIVE_NAME"
 fi
 
 if [[ ! -f "$REMOTE_DIR/.env" ]]; then
@@ -389,6 +377,12 @@ PY
   echo "[v2-backend] migrations done; updating systemd ($SERVICE_NAME)"
 fi
 
+if [[ "${ZENHEART_V2_STANDARDIZE_CHECKIN_SYSTEM:-0}" == "1" ]]; then
+  echo "[v2-backend] standardize check-in room (--system-creator)"
+  cd "$REMOTE_DIR"
+  "$REMOTE_DIR/.venv/bin/python" "$REMOTE_DIR/scripts/standardize_checkin_room.py" --system-creator
+fi
+
 sudo cp "$REMOTE_DIR/deploy/zenheart-v2-backend.service" "/etc/systemd/system/${SERVICE_NAME}.service"
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
@@ -460,4 +454,4 @@ fi
 
 echo "[v2-backend] deploy-backend.sh done"
 echo "[v2-backend] admin CLI: $REMOTE_DIR/scripts/admin_agent_cli.py"
-echo "[v2-backend] agent WS protocol: v2/docs/01_agent-connectivity-spec.md"
+echo "[v2-backend] agent WS protocol: v2/docs/protocol/A01_agent-connectivity-spec.md"

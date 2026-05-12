@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# ZenHeart v2 — 唯一本地入口：Postgres(Docker) + venv + .env + Uvicorn + Vite
+# ZenHeart v2 local entrypoint: Docker Postgres + venv + .env + Uvicorn + Vite.
 #
-#   ./local.sh                全流程（含 pip），前台 Vite；退出 Vite 会停掉本会话起的后端
-#   ./local.sh --quick        跳过 pip/升级依赖；仍起 Docker、自检、双进程（无 venv 时会自动补装）
-#   ./local.sh --bootstrap-only   只做环境（库+配置），不启 Uvicorn/Vite
-#   ./local.sh --verify-only      只检查 .env / 配置 / 5433 / 可选 :8090
-#   ./local.sh --backend-only     只前台跑 Uvicorn（调试用）
-#   ./local.sh --frontend-only    只前台跑 Vite（需后端已在跑）
+#   ./local.sh                  Full stack; foreground Vite stops the backend child on exit.
+#   ./local.sh --quick          Skip dependency install when the venv already exists.
+#   ./local.sh --bootstrap-only Prepare Docker, venv, .env, and database only.
+#   ./local.sh --verify-only    Check .env, settings, database port, and optional backend health.
+#   ./local.sh --backend-only   Run Uvicorn in the foreground.
+#   ./local.sh --frontend-only  Run Vite in the foreground; backend must already be running.
 #
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -21,14 +21,14 @@ MODE=run
 
 usage() {
   cat <<'EOF'
-ZenHeart v2 — 唯一本地入口
+ZenHeart v2 local entrypoint
 
-  ./local.sh                  全流程；退出 Vite 会停掉本会话起的后端
-  ./local.sh --quick          跳过 pip（已有 venv 时）；仍起 Docker + 双进程
-  ./local.sh --bootstrap-only  只准备 Docker / venv / .env
-  ./local.sh --verify-only    只检查 .env、配置、5433、可选 :8090
-  ./local.sh --backend-only   只跑 Uvicorn（前台）
-  ./local.sh --frontend-only  只跑 Vite（前台）
+  ./local.sh                  Full stack; exiting Vite stops the backend child
+  ./local.sh --quick          Skip pip install when the venv already exists
+  ./local.sh --bootstrap-only Prepare Docker / venv / .env / database
+  ./local.sh --verify-only    Check .env, settings, 5433, and optional :8090
+  ./local.sh --backend-only   Run Uvicorn in the foreground
+  ./local.sh --frontend-only  Run Vite in the foreground
 EOF
 }
 
@@ -52,10 +52,24 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# If a dev server is already listening, stop it so this script can bind again.
+# Stop a single TCP listener on $1 so Uvicorn/Vite can bind. Uses kill(1), OS-wide for
+# that PID; restricted to non-privileged ports and a small denylist (DB/SSH/etc.).
 stop_listener_on_port() {
   local port="$1"
   local label="${2:-$port}"
+  local deny
+  if ! [[ "$port" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  if [[ "$port" -lt 1024 ]]; then
+    echo "Will not kill listeners on privileged port ${port} (${label}). Use PORT/FRONT_PORT >= 1024." >&2
+    return 0
+  fi
+  for deny in 22 5432 5433 3306 6379 27017; do
+    if [[ "$port" == "$deny" ]]; then
+      return 0
+    fi
+  done
   if ! command -v lsof >/dev/null 2>&1; then
     return 0
   fi
@@ -64,13 +78,20 @@ stop_listener_on_port() {
   if [[ -z "$pids" ]]; then
     return 0
   fi
-  echo "Stopping existing listener on ${label} (TCP ${port})…"
-  echo "$pids" | xargs kill 2>/dev/null || true
+  echo "Stopping existing listener on ${label} (TCP ${port})..."
+  local pid
+  for pid in $pids; do
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 1 ]] && [[ "$pid" -ne $$ ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
   sleep 1
   pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
-  if [[ -n "$pids" ]]; then
-    echo "$pids" | xargs kill -9 2>/dev/null || true
-  fi
+  for pid in $pids; do
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$pid" -gt 1 ]] && [[ "$pid" -ne $$ ]]; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done
 }
 
 resolve_py311() {
@@ -112,12 +133,12 @@ require_docker() {
 }
 
 docker_up_pg() {
-  echo "Starting PostgreSQL (docker compose)…"
+  echo "Starting PostgreSQL (docker compose)..."
   docker compose -f "$BACKEND/docker-compose.yml" up -d
 }
 
 wait_postgres() {
-  echo "Waiting for PostgreSQL on 127.0.0.1:5433…"
+  echo "Waiting for PostgreSQL on 127.0.0.1:5433..."
   local ready=0
   local _
   for _ in $(seq 1 45); do
@@ -136,24 +157,23 @@ wait_postgres() {
 venv_and_pip() {
   resolve_py311
   if [[ ! -d "$BACKEND/.venv_py311" ]]; then
-    echo "Creating .venv_py311 …"
+    echo "Creating .venv_py311..."
     "$PY311" -m venv "$BACKEND/.venv_py311"
     QUICK=0
   fi
   if [[ "$QUICK" == 1 ]]; then
     return 0
   fi
-  # shellcheck disable=SC1091
-  source "$BACKEND/.venv_py311/bin/activate"
-  pip install -q --upgrade pip
-  pip install -q -r "$BACKEND/requirements.txt"
+  local vpy="$BACKEND/.venv_py311/bin/python"
+  "$vpy" -m pip install -q --upgrade pip
+  "$vpy" -m pip install -q -r "$BACKEND/requirements.txt"
 }
 
 ensure_env_file() {
   if [[ -f "$BACKEND/.env" ]]; then
     return 0
   fi
-  echo "No backend/.env — creating from .env.example (local news/media paths)…"
+  echo "No backend/.env; creating it from .env.example with local news/media paths."
   cp "$BACKEND/.env.example" "$BACKEND/.env"
   resolve_py311
   ROOT="$ROOT" "$PY311" <<'PY'
@@ -173,7 +193,7 @@ for line in text.splitlines(keepends=True):
         out.append(line)
 p.write_text("".join(out), encoding="utf-8")
 PY
-  echo "Edit ADMIN_API_KEY in $BACKEND/.env before any real deploy."
+  echo "Edit ADMIN_API_KEY in $BACKEND/.env before any real deployment."
   echo ""
 }
 
@@ -189,14 +209,14 @@ export_local_overrides() {
 verify_core() {
   cd "$BACKEND"
   if [[ ! -f .env ]]; then
-    echo -e "${RED}FAIL${NC} Missing $BACKEND/.env — run: cd $ROOT && ./local.sh --bootstrap-only" >&2
+    echo -e "${RED}FAIL${NC} Missing $BACKEND/.env; run: cd $ROOT && ./local.sh --bootstrap-only" >&2
     return 1
   fi
   echo -e "${GREEN}OK${NC} .env present"
   local pb
   pb="$(python_run)" || true
   if [[ -z "${pb:-}" ]] || [[ ! -x "$pb" ]]; then
-    echo -e "${RED}FAIL${NC} No Python / venv — run full ./local.sh once." >&2
+    echo -e "${RED}FAIL${NC} No Python / venv; run full ./local.sh once." >&2
     return 1
   fi
   export_local_overrides
@@ -209,7 +229,7 @@ verify_core() {
   if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 5433 2>/dev/null; then
     echo -e "${GREEN}OK${NC} PostgreSQL on 127.0.0.1:5433"
   else
-    echo -e "${RED}FAIL${NC} Nothing on 127.0.0.1:5433 — start DB with ./local.sh --bootstrap-only" >&2
+    echo -e "${RED}FAIL${NC} Nothing on 127.0.0.1:5433; start DB with ./local.sh --bootstrap-only" >&2
     return 1
   fi
   return 0
@@ -226,14 +246,14 @@ verify_with_optional_backend() {
   if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
     local body
     if body=$(curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/health" 2>/dev/null); then
-      echo -e "${GREEN}OK${NC} Backend :${PORT}/health → $body"
+      echo -e "${GREEN}OK${NC} Backend :${PORT}/health => $body"
       backend_ok=1
     else
       echo -e "${YELLOW}WARN${NC} Port ${PORT} open but /health not JSON" >&2
       fail=1
     fi
   else
-    echo -e "${YELLOW}WARN${NC} Backend not on :${PORT} — expected until ./local.sh or ./local.sh --backend-only"
+    echo -e "${YELLOW}WARN${NC} Backend not on :${PORT}; expected until ./local.sh or ./local.sh --backend-only"
   fi
   echo ""
   if [[ "$fail" != 0 ]]; then
@@ -255,12 +275,12 @@ preflight_backend() {
     exit 1
   fi
   if [[ ! -f "$BACKEND/.env" ]]; then
-    echo "Missing $BACKEND/.env — run: cd $ROOT && ./local.sh --bootstrap-only" >&2
+    echo "Missing $BACKEND/.env; run: cd $ROOT && ./local.sh --bootstrap-only" >&2
     exit 1
   fi
   mkdir_data
   export_local_overrides
-  echo "Preflight (load settings)…"
+  echo "Preflight (load settings)..."
   if ! "$pb" -c "from app.config import load_settings; load_settings()" 2>/tmp/zenheart_local_preflight.err; then
     cat /tmp/zenheart_local_preflight.err >&2
     echo "Fix .env (see .env.example) or run: cd $ROOT && ./local.sh --verify-only" >&2
@@ -268,12 +288,56 @@ preflight_backend() {
   fi
 }
 
+run_backend_migrations() {
+  cd "$BACKEND"
+  local pb
+  pb="$(python_run)" || true
+  if [[ -z "${pb:-}" ]]; then
+    echo "No Python interpreter. Run: cd $ROOT && ./local.sh --bootstrap-only" >&2
+    exit 1
+  fi
+  export_local_overrides
+  echo "Preparing database schema..."
+  "$pb" - <<'PY'
+import asyncio
+
+from app.config import load_settings
+from app.db import create_engine, init_db
+
+
+async def main() -> None:
+    settings = load_settings()
+    engine = create_engine(settings)
+    try:
+        await init_db(engine)
+    finally:
+        await engine.dispose()
+
+
+asyncio.run(main())
+PY
+  echo "Applying database migrations..."
+  local database_url
+  if ! database_url="$("$pb" - <<'PY'
+from app.config import load_settings
+
+print(load_settings().database_url)
+PY
+  )"; then
+    echo "Could not load DATABASE_URL from backend settings." >&2
+    exit 1
+  fi
+  DATABASE_URL="$database_url" "$pb" -u scripts/run_migrations.py scripts/migrations
+}
+
 run_backend_fg() {
   stop_listener_on_port "$PORT" "backend"
   preflight_backend
+  run_backend_migrations
+  stop_listener_on_port "$PORT" "backend"
   local pb
   pb="$(python_run)"
-  echo "Uvicorn http://127.0.0.1:${PORT} — docs http://127.0.0.1:${PORT}/docs — WS debug http://127.0.0.1:${PORT}/v2/admin/debug/ws"
+  echo "Uvicorn http://127.0.0.1:${PORT} - docs http://127.0.0.1:${PORT}/docs - WS debug http://127.0.0.1:${PORT}/v2/admin/debug/ws"
   exec "$pb" -m uvicorn app.main:app --host "${HOST}" --port "${PORT}" --reload
 }
 
@@ -288,15 +352,15 @@ run_frontend_fg() {
 
 print_urls() {
   echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "  本地地址"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "------------------------------------------------------------"
+  echo "  Local URLs"
+  echo "------------------------------------------------------------"
   echo "  PostgreSQL     127.0.0.1:5433"
-  echo "  后端           http://127.0.0.1:${PORT}/   (PORT=… 可覆盖)"
-  echo "  前端           http://127.0.0.1:${FRONT_PORT}/"
-  echo "  WS 调试        http://127.0.0.1:${PORT}/v2/admin/debug/ws"
-  echo "                 http://127.0.0.1:${FRONT_PORT}/v2/admin/debug/ws  (经 Vite 代理)"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Backend        http://127.0.0.1:${PORT}/   (override with PORT=...)"
+  echo "  Frontend       http://127.0.0.1:${FRONT_PORT}/"
+  echo "  WS debug       http://127.0.0.1:${PORT}/v2/admin/debug/ws"
+  echo "                 http://127.0.0.1:${FRONT_PORT}/v2/admin/debug/ws  (via Vite proxy)"
+  echo "------------------------------------------------------------"
   echo ""
 }
 
@@ -311,9 +375,11 @@ run_full() {
   ensure_env_file
   cd "$ROOT"
   verify_core || exit 1
+  run_backend_migrations
   print_urls
 
-  echo "Starting backend in background (http://127.0.0.1:${PORT})…"
+  stop_listener_on_port "$PORT" "backend"
+  echo "Starting backend in background (http://127.0.0.1:${PORT})..."
   (
     cd "$BACKEND"
     export_local_overrides
@@ -342,12 +408,12 @@ run_full() {
     exit 1
   fi
 
-  echo "Starting frontend (退出 Vite 会结束本脚本并停止上述后端)…"
+  echo "Starting frontend. Exiting Vite stops the backend child from this run."
   run_frontend_fg || true
 }
 
 bootstrap_only() {
-  echo "=== ZenHeart v2 — bootstrap only (no dev servers) ==="
+  echo "=== ZenHeart v2 bootstrap only (no dev servers) ==="
   require_docker
   docker_up_pg
   wait_postgres
@@ -355,6 +421,7 @@ bootstrap_only() {
   mkdir_data
   ensure_env_file
   verify_core || exit 1
+  run_backend_migrations
   print_urls
   echo "Bootstrap done. Run full stack: cd $ROOT && ./local.sh"
   echo "Or: cd $ROOT && ./local.sh --quick"
@@ -375,7 +442,7 @@ case "$MODE" in
     run_frontend_fg
     ;;
   run)
-    echo "=== ZenHeart v2 — local (Docker + API + Vite) ==="
+    echo "=== ZenHeart v2 local (Docker + API + Vite) ==="
     run_full
     ;;
 esac

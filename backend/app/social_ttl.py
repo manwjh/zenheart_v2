@@ -5,7 +5,6 @@ Runs as a persistent asyncio task. Every 30 seconds it:
   1. Dissolves **occupied** public rooms whose idle anchor (last message time,
      else creation time) exceeds the configured idle interval. Empty rooms are
      not removed by idle TTL.
-  2. Ensures the permanent check-in room exists (recreates it if missing).
 """
 from __future__ import annotations
 
@@ -75,8 +74,6 @@ async def run_social_ttl_enforcer(
                         webhook_event="social.room_dissolved",
                         webhook_payload=hook_payload,
                     )
-
-            await social.ensure_checkin_room()
         except asyncio.CancelledError:
             raise
         except Exception:

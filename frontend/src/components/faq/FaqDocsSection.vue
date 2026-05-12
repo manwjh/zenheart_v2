@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { FAQ_PROTOCOL_DOCS, ZENHEART_V2_GITHUB_REPO, zenheartDocBlobUrl } from "@/features/faq/faqDocGuide";
+import { ZENHEART_V2_GITHUB_REPO, zenheartDocBlobUrlFromRelPath } from "@/features/faq/faqDocGuide";
 import { faqUiByLocale, PROTOCOL_SUMMARIES } from "@/features/faq/faqCopy";
 import { siteLocale } from "@/features/locale/siteLocale";
 
-type DocItem = { slug: string; title: string };
+type DocItem = { slug: string; title: string; category: string; rel_path: string };
 
 const props = defineProps<{
   docs: DocItem[];
@@ -29,21 +29,16 @@ function curlTitle(slug: string) {
   return ui.value.docsCurlTitle.replace(/\{slug\}/g, slug);
 }
 
-const docTitleBySlug = computed(() => {
-  const m = new Map<string, string>();
-  for (const d of props.docs) m.set(d.slug, d.title);
-  return m;
-});
-
-const protocolCatalogItems = computed(() =>
-  FAQ_PROTOCOL_DOCS.map((row) => ({
-    file: row.file,
+const protocolCatalogItems = computed(() => {
+  const rows = props.docs.filter((d) => d.category === "protocol");
+  return rows.map((row) => ({
+    file: row.rel_path || `${row.slug}.md`,
     slug: row.slug,
     summary: PROTOCOL_SUMMARIES[siteLocale.value][row.slug] ?? "",
-    title: docTitleBySlug.value.get(row.slug) ?? row.slug,
-    githubUrl: zenheartDocBlobUrl(row.file),
-  })),
-);
+    title: row.title,
+    githubUrl: zenheartDocBlobUrlFromRelPath(row.rel_path || `protocol/${row.slug}.md`),
+  }));
+});
 
 const expandBtnTitle = computed(() =>
   props.docsListExpanded
@@ -66,20 +61,11 @@ const emit = defineEmits<{
         <h2 class="card-title">{{ ui.docsTitle }}</h2>
         <p class="card-desc">{{ o(ui.docsP1) }}</p>
         <p class="card-desc card-desc--tight">
-          <template v-if="siteLocale === 'zh'">
-            站点入口：<a :href="siteHttpsOrigin + '/'" target="_blank" rel="noopener noreferrer">{{ siteHttpsOrigin }}/</a>
-            · GitHub：
-            <a :href="ZENHEART_V2_GITHUB_REPO" target="_blank" rel="noopener noreferrer">{{ ZENHEART_V2_GITHUB_REPO }}</a>
-            （树内 <code>v2/docs/</code> 与线上一致时，仍以运行时与 OpenAPI 为准）。日常对接不必克隆整仓。
-          </template>
-          <template v-else>
-            Site:
-            <a :href="siteHttpsOrigin + '/'" target="_blank" rel="noopener noreferrer">{{ siteHttpsOrigin }}/</a>
-            · GitHub:
-            <a :href="ZENHEART_V2_GITHUB_REPO" target="_blank" rel="noopener noreferrer">{{ ZENHEART_V2_GITHUB_REPO }}</a>
-            (when <code>v2/docs/</code> matches production, runtime + OpenAPI still win). No need to clone the monorepo for
-            day-to-day integration.
-          </template>
+          {{ ui.docsSourceSite }}:
+          <a :href="siteHttpsOrigin + '/'" target="_blank" rel="noopener noreferrer">{{ siteHttpsOrigin }}/</a>
+          · {{ ui.docsSourceGithub }}:
+          <a :href="ZENHEART_V2_GITHUB_REPO" target="_blank" rel="noopener noreferrer">{{ ZENHEART_V2_GITHUB_REPO }}</a>
+          ({{ ui.docsSourceRepoNote }})
         </p>
         <p class="card-desc card-desc--tight">{{ o(ui.docsP3) }}</p>
       </div>

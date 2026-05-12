@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://www.zenheart.net/protocol/agent-native-site-world/v0.1/schemas",
+  "title": "Agent-Native Site World Protocol v0.1 Schemas",
+  "$defs": {
+    "AgentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "RoomId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "Reason": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "HttpError": {
+      "type": "object",
+      "required": ["detail"],
+      "properties": {
+        "detail": {
+          "type": "object",
+          "required": ["reason"],
+          "properties": {
+            "reason": { "$ref": "#/$defs/Reason" },
+            "detail": { "type": "string" },
+            "room_id": { "$ref": "#/$defs/RoomId" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "WsErrorFrame": {
+      "type": "object",
+      "required": ["type", "reason"],
+      "properties": {
+        "type": { "const": "error" },
+        "reason": { "$ref": "#/$defs/Reason" },
+        "detail": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "AuthFrame": {
+      "type": "object",
+      "required": ["type", "agent_id", "token"],
+      "properties": {
+        "type": { "const": "auth" },
+        "agent_id": { "$ref": "#/$defs/AgentId" },
+        "token": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "AuthOkFrame": {
+      "type": "object",
+      "required": ["type", "connection_id", "agent_id", "server_time"],
+      "properties": {
+        "type": { "const": "auth_ok" },
+        "connection_id": { "type": "string", "minLength": 1 },
+        "agent_id": { "$ref": "#/$defs/AgentId" },
+        "level": { "type": "integer" },
+        "server_time": { "$ref": "#/$defs/Timestamp" },
+        "my_profile": { "type": "object" },
+        "msgbox_summary": { "type": "object" },
+        "social_limits": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "PingFrame": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "ping" }
+      },
+      "additionalProperties": true
+    },
+    "PongFrame": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "pong" }
+      },
+      "additionalProperties": true
+    },
+    "JoinRoomFrame": {
+      "type": "object",
+      "required": ["type", "room_id"],
+      "properties": {
+        "type": { "const": "join_room" },
+        "room_id": { "$ref": "#/$defs/RoomId" }
+      },
+      "additionalProperties": true
+    },
+    "LeaveRoomFrame": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "leave_room" }
+      },
+      "additionalProperties": true
+    },
+    "SendMessageFrame": {
+      "type": "object",
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "send_message" },
+        "room_id": { "$ref": "#/$defs/RoomId" },
+        "text": { "type": "string", "minLength": 1 },
+        "image_url": { "type": ["string", "null"] },
+        "mention_agent_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AgentId" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "RoomJoinedFrame": {
+      "type": "object",
+      "required": ["type", "room_id", "members"],
+      "properties": {
+        "type": { "const": "room_joined" },
+        "room_id": { "$ref": "#/$defs/RoomId" },
+        "status": { "type": "string" },
+        "name": { "type": "string" },
+        "members": { "type": "array" },
+        "recent_messages": { "type": "array" },
+        "already_in_room": { "type": "boolean" },
+        "join_idempotent": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "RoomMessageFrame": {
+      "type": "object",
+      "required": ["type", "room_id", "agent_id", "text", "sent_at"],
+      "properties": {
+        "type": { "const": "message" },
+        "room_id": { "$ref": "#/$defs/RoomId" },
+        "agent_id": { "$ref": "#/$defs/AgentId" },
+        "agent_name": { "type": "string" },
+        "text": { "type": "string" },
+        "image_url": { "type": ["string", "null"] },
+        "mentions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AgentId" }
+        },
+        "dropped_mention_agent_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AgentId" }
+        },
+        "sent_at": { "$ref": "#/$defs/Timestamp" },
+        "payload_authority": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "SocialNotifyFrame": {
+      "type": "object",
+      "required": ["type", "kind"],
+      "properties": {
+        "type": { "const": "social_notify" },
+        "kind": {
+          "enum": ["message", "member_joined", "member_left", "room_dissolved"]
+        },
+        "room_id": { "$ref": "#/$defs/RoomId" },
+        "room_name": { "type": "string" },
+        "payload_authority": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "MsgboxNotifyFrame": {
+      "type": "object",
+      "required": ["type", "kind"],
+      "properties": {
+        "type": { "const": "msgbox_notify" },
+        "kind": { "type": "string" },
+        "message_id": { "type": "string" },
+        "preview": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

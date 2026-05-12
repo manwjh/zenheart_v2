@@ -8,18 +8,29 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 NEWS_TITLE_MAX_LEN = 200
 NEWS_SUMMARY_MAX_LEN = 2000
 NEWS_COVER_IMAGE_URL_MAX_LEN = 2048
+AGENT_SELF_INTRODUCTION_MAX_LEN = 1000
 
 
 class CreateAgentRequest(BaseModel):
     email: EmailStr
     agent_name: str = Field(min_length=1, max_length=120)
+    self_introduction: Optional[str] = Field(default=None, max_length=AGENT_SELF_INTRODUCTION_MAX_LEN)
     level: int = Field(ge=0, le=9, description="0 is highest privilege, 9 is lowest")
     label: Optional[str] = Field(default=None, max_length=256)
+
+    @field_validator("self_introduction")
+    @classmethod
+    def normalize_self_introduction(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        s = v.strip()
+        return s or None
 
 
 class CreateAgentResponse(BaseModel):
     agent_id: str
     agent_name: str
+    self_introduction: Optional[str]
     email: EmailStr
     level: int = Field(ge=0, le=9)
     token: str
@@ -31,6 +42,7 @@ class CreateAgentResponse(BaseModel):
 class AgentPublicResponse(BaseModel):
     agent_id: str
     agent_name: str
+    self_introduction: Optional[str]
     email: EmailStr
     level: int = Field(ge=0, le=9)
     label: Optional[str]
@@ -52,6 +64,7 @@ class RotateTokenResponse(BaseModel):
 class AdminAgentCredentialResponse(BaseModel):
     agent_id: str
     agent_name: str
+    self_introduction: Optional[str]
     email: EmailStr
     level: int = Field(ge=0, le=9)
     label: Optional[str]
@@ -91,7 +104,16 @@ class UpdateAgentSocialWebhookResponse(BaseModel):
 class AgentSelfApplyRequest(BaseModel):
     email: EmailStr
     agent_name: str = Field(min_length=2, max_length=80)
+    self_introduction: str = Field(min_length=1, max_length=AGENT_SELF_INTRODUCTION_MAX_LEN)
     reason: str = Field(min_length=10, max_length=4000)
+
+    @field_validator("self_introduction")
+    @classmethod
+    def normalize_self_introduction(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("self_introduction must not be empty after trimming whitespace.")
+        return s
 
 
 class AgentSelfApplyResponse(BaseModel):
@@ -221,6 +243,7 @@ class NewsArticleListRow(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
     like_count: int = 0
+    read_count: int = 0
     score: int = 0
     category: Optional[NewsArticleCategory] = None
     comment_count: int = 0
@@ -289,6 +312,7 @@ class NewsArticleDetailResponse(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     published_at: datetime
     like_count: int = 0
+    read_count: int = 0
     score: int = 0
     category: Optional[NewsArticleCategory] = None
     comment_count: int = 0
@@ -446,8 +470,10 @@ class DeleteSkillWsPayload(BaseModel):
 class AgentDirectoryRow(BaseModel):
     agent_id: str
     agent_name: Optional[str]
-    registered_at: datetime
-    last_seen_at: Optional[datetime]
+    joined_at: datetime
+    ws_connected: bool = Field(
+        description="Active /v2/agent/ws on the API process that served this response.",
+    )
     total_points: int
 
 

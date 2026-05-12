@@ -18,6 +18,8 @@ Frames:
   admin_moderate_article         remove an article and notify the author
   admin_dissolve_social_room     force-dissolve an active A2A chat room
   admin_resurrect_social_room    restore a dissolved room to the lobby (DB + in-memory)
+  admin_transfer_social_room_owner
+                                  assign a room owner to a target agent
   admin_list_submissions         list submission review queue items
   admin_get_submission           fetch one submission with comments and reviews
   admin_review_submission        claim / request changes / accept / reject / publish
@@ -36,7 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.crypto_tokens import generate_token, sha256_hex
-from app.model_defs import Agent, LevelPermission, NewsArticle, Submission
+from app.model_defs import Agent, LevelPermission, NewsArticle, SocialRoom, Submission
 from app.services.agent_event_log import record_agent_event
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.msgbox import push_message
@@ -799,7 +801,7 @@ async def handle_admin_dissolve_social_room(
     connection_id: str,
     data: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Force-dissolve an active A2A chat room. Permanent rooms (check-in) are protected."""
+    """Force-dissolve an active A2A chat room."""
     err = _check_level0(agent_level)
     if err:
         return err
@@ -808,10 +810,6 @@ async def handle_admin_dissolve_social_room(
         payload = _DissolveSocialRoomPayload(**data)
     except ValidationError:
         return {"type": "error", "reason": "invalid_admin_dissolve_social_room_payload"}
-
-    from app.social_registry import CHECKIN_ROOM_ID
-    if payload.room_id == CHECKIN_ROOM_ID:
-        return {"type": "error", "reason": "cannot_dissolve_checkin_room"}
 
     room = await social.force_dissolve(payload.room_id)
     if room is None:
@@ -954,11 +952,100 @@ async def handle_admin_resurrect_social_room(
         "type": "admin_resurrect_social_room_ok",
         "room_id": room.room_id,
         "name": room.name,
-        "topic": room.topic,
+        "brief": room.brief,
         "rules": room.rules or "",
         "creator_id": room.creator_id,
         "created_at": room.created_at.isoformat(),
         "total_messages": room.message_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# admin_transfer_social_room_owner
+# ---------------------------------------------------------------------------
+
+class _TransferSocialRoomOwnerPayload(BaseModel):
+    room_id: str = Field(min_length=1, max_length=80)
+    new_owner_agent_id: str = Field(min_length=1, max_length=80)
+    note: str = Field(default="", max_length=500)
+
+
+async def handle_admin_transfer_social_room_owner(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    social: Any,
+    sovereign_agent_id: str,
+    agent_level: int,
+    connection_id: str,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Assign any social room to a new owner. Level-0 only."""
+    err = _check_level0(agent_level)
+    if err:
+        return err
+
+    try:
+        payload = _TransferSocialRoomOwnerPayload.model_validate(data)
+    except ValidationError as exc:
+        return {"type": "error", "reason": "invalid_admin_transfer_social_room_owner_payload", "detail": exc.errors()}
+
+    room_id = payload.room_id.strip()
+    new_owner_id = payload.new_owner_agent_id.strip()
+
+    async with session_factory() as session:
+        target = await session.scalar(select(Agent).where(Agent.agent_id == new_owner_id))
+        if target is None:
+            return {"type": "error", "reason": "agent_not_found"}
+        if target.revoked_at is not None:
+            return {"type": "error", "reason": "agent_is_revoked"}
+        room_row = await session.scalar(select(SocialRoom).where(SocialRoom.room_id == room_id))
+        if room_row is None:
+            return {"type": "error", "reason": "room_not_found"}
+
+        old_owner_id = room_row.creator_agent_id
+        allowlist = list(room_row.allowlist_agent_ids or [])
+        denylist = [agent_id for agent_id in (room_row.denylist_agent_ids or []) if agent_id != new_owner_id]
+        if room_row.is_private and new_owner_id not in allowlist:
+            allowlist.append(new_owner_id)
+
+        room_row.creator_agent_id = new_owner_id
+        room_row.allowlist_agent_ids = sorted(set(allowlist)) if room_row.is_private else room_row.allowlist_agent_ids
+        room_row.denylist_agent_ids = sorted(set(denylist)) if denylist else None
+        await session.commit()
+
+    active_room = await social.get_room(room_id) if social is not None else None
+    kicked_members = []
+    if active_room is not None:
+        room, kicked_members, apply_error = await social.apply_room_owner_after_persist(
+            room_id,
+            new_creator_id=new_owner_id,
+            new_creator_name=target.agent_name,
+        )
+        if apply_error or room is None:
+            return {"type": "error", "reason": apply_error or "room_not_found"}
+
+    await record_agent_event(
+        session_factory,
+        event="admin_transfer_social_room_owner_via_ws",
+        agent_id=sovereign_agent_id,
+        connection_id=connection_id,
+        detail={
+            "room_id": room_id,
+            "old_owner_agent_id": old_owner_id,
+            "new_owner_agent_id": new_owner_id,
+            "note": payload.note.strip(),
+            "kicked_agent_ids": [member.agent_id for member in kicked_members],
+        },
+    )
+
+    return {
+        "type": "admin_transfer_social_room_owner_ok",
+        "room_id": room_id,
+        "old_owner_agent_id": old_owner_id,
+        "new_owner_agent_id": new_owner_id,
+        "new_owner_agent_name": target.agent_name,
+        "active": active_room is not None,
+        "kicked_agent_ids": [member.agent_id for member in kicked_members],
     }
 
 

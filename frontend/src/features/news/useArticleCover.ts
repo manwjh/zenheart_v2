@@ -1,6 +1,6 @@
 import { ref } from "vue";
 
-/** Track broken cover URLs so we can show the placeholder instead. */
+/** Track broken cover URLs so we hide the image (no broken img, no placeholder). */
 export function useArticleCover() {
   const failedCovers = ref<Set<string>>(new Set());
 

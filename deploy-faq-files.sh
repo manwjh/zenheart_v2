@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Sync FAQ-facing trees (markdown docs, skills, game rules) to production without restarting the backend.
-# Matches deploy-backend.sh remote layout: "$(dirname ZENHEART_V2_REMOTE_DIR)/{docs,skills,games}".
+# Sync FAQ-facing trees (markdown docs, skills) to production without restarting the backend.
+# Matches deploy-backend.sh remote layout: "$(dirname ZENHEART_V2_REMOTE_DIR)/{docs,skills}".
 # Optional: mirror v2/packages to sibling packages/ (--with-packages); not read by GET /v2/faq/* today.
 #
 # Env / prereqs: same as deploy-backend.sh (v2/.deploy-env, ZENHEART_EC2_HOST, SSH host key pinning).
 #
 # Usage:
-#   ./v2/deploy-faq-files.sh              # rsync docs + skills + games (skip missing dirs)
+#   ./v2/deploy-faq-files.sh              # rsync docs + skills (skip missing dirs)
 #   ./v2/deploy-faq-files.sh --dry-run    # show what would change
 #   ./v2/deploy-faq-files.sh --check-only  # exit 1 if remote differs from local (no writes)
 #   ./v2/deploy-faq-files.sh --with-packages
@@ -30,6 +30,15 @@ if [[ -f "$V2_ROOT/.deploy-env" ]]; then
   # shellcheck disable=SC1091
   source "$V2_ROOT/.deploy-env"
   set +a
+fi
+
+if [[ -n "${ZENHEART_SSH_KNOWN_HOSTS:-}" ]] && [[ ! -f "$ZENHEART_SSH_KNOWN_HOSTS" ]]; then
+  if [[ -f "$V2_ROOT/.ssh/known_hosts" ]]; then
+    echo "[v2-faq-files] ZENHEART_SSH_KNOWN_HOSTS file missing (${ZENHEART_SSH_KNOWN_HOSTS-}) — using $V2_ROOT/.ssh/known_hosts" >&2
+    ZENHEART_SSH_KNOWN_HOSTS="$V2_ROOT/.ssh/known_hosts"
+  else
+    unset ZENHEART_SSH_KNOWN_HOSTS || true
+  fi
 fi
 
 SSH_HOSTKEY_ARGS=()
@@ -176,12 +185,12 @@ sync_tree() {
 }
 
 echo "=============================================================================="
-echo "[deploy-faq-files] ZenHeart v2 — docs/skills/games (no backend restart)"
+echo "[deploy-faq-files] ZenHeart v2 — sync trees: docs, skills (no backend restart)"
 echo "[deploy-faq-files] remote parent: $REMOTE_PARENT"
 echo "=============================================================================="
 
 ANY_DRIFT=0
-for tree in docs skills games; do
+for tree in docs skills; do
   [[ -d "$V2_ROOT/$tree" ]] || continue
   if [[ "$CHECK_ONLY" == "1" ]]; then
     sync_tree "$tree" || ANY_DRIFT=1

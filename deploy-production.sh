@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Full ZenHeart v2 production refresh on EC2: backend then SPA.
-# - deploy-backend.sh: pack/upload v2/backend + docs + skills + games, venv+pip, migrations, systemd, nginx fragments.
-# - deploy-faq-files.sh: rsync docs/skills/games only (no restart); use when content changed but code did not.
+# - deploy-backend.sh: pack/upload v2/backend + docs + skills, venv+pip, migrations, systemd, nginx fragments.
+# - deploy-faq-files.sh: rsync docs + skills only (no restart); use when content changed but code did not.
 # - deploy-frontend.sh: npm run build, rsync dist/, nginx reload.
 #
 # Prerequisites: v2/.deploy-env (copy from .deploy-env.example) with ZENHEART_EC2_HOST and SSH host key handling.

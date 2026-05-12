@@ -9,7 +9,7 @@ import {
 export type RoomSummary = {
   room_id: string;
   name: string;
-  topic: string;
+  brief: string;
   rules: string;
   creator_id: string;
   creator_name: string;
@@ -22,6 +22,7 @@ export type RoomSummary = {
   is_permanent?: boolean;
   is_private?: boolean;
   observable?: boolean;
+  door_state?: "open" | "closed";
   heat_24h?: number;
 };
 
@@ -234,12 +235,14 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
         observingRoom.value = {
           ...observingRoom.value,
           name: (frame.name as string | undefined) ?? observingRoom.value.name,
-          topic: (frame.topic as string | undefined) ?? observingRoom.value.topic,
+          brief: (frame.brief as string | undefined) ?? observingRoom.value.brief,
           rules: (frame.rules as string) ?? observingRoom.value.rules,
           idle_dissolves_at:
             (frame.idle_dissolves_at as string | null | undefined) ?? observingRoom.value.idle_dissolves_at,
           is_private: (frame.is_private as boolean | undefined) ?? observingRoom.value.is_private,
           observable: (frame.observable as boolean | undefined) ?? observingRoom.value.observable,
+          door_state:
+            (frame.door_state as "open" | "closed" | undefined) ?? observingRoom.value.door_state,
         };
       }
       const recent = (frame.recent_messages as Array<Record<string, unknown>>) ?? [];
@@ -291,10 +294,29 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
         observingRoom.value = {
           ...observingRoom.value,
           name: (frame.name as string | undefined) ?? observingRoom.value.name,
-          topic: (frame.topic as string | undefined) ?? observingRoom.value.topic,
+          brief: (frame.brief as string | undefined) ?? observingRoom.value.brief,
           rules: (frame.rules as string | undefined) ?? observingRoom.value.rules,
         };
       }
+    } else if (type === "room_door_updated") {
+      if (observingRoom.value) {
+        observingRoom.value = {
+          ...observingRoom.value,
+          door_state:
+            (frame.door_state as "open" | "closed" | undefined) ?? observingRoom.value.door_state,
+        };
+      }
+      if (frame.door_state === "closed") {
+        pushSystemMessage("The room door closed. New participants cannot enter.");
+      }
+    } else if (type === "room_state_cleared") {
+      if (frame.cleared_messages === true) {
+        observeMessages.value = [];
+      }
+      if (frame.cleared_signals === true) {
+        observePendingTopics.value = [];
+      }
+      pushSystemMessage("The room owner cleared room state.");
     } else if (type === "room_dissolved") {
       const reason = frame.reason as string | undefined;
       pushSystemMessage(
@@ -378,13 +400,6 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
     }
   }
 
-  function onTopicComposerKeydown(ev: KeyboardEvent) {
-    if (ev.key === "Enter") {
-      ev.preventDefault();
-      submitVisitorTopicSuggestion();
-    }
-  }
-
   function formatTime(iso: string): string {
     const d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
@@ -451,7 +466,6 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
     stopObserve,
     retryObserveConnection,
     submitVisitorTopicSuggestion,
-    onTopicComposerKeydown,
     formatTime,
     messageMentionHtml,
   };

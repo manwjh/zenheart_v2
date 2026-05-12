@@ -7,6 +7,9 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import SocialObservePanel from "@/components/social/SocialObservePanel.vue";
 import { fetchJsonObject } from "@/composables/useJsonFetch";
+import { shellCommonByLocale } from "@/features/locale/shellCommon";
+import { siteLocale } from "@/features/locale/siteLocale";
+import { socialObserveRoomPageShellByLocale } from "@/features/social/socialShellCopy";
 import { useSocialRoomObserve, type RoomSummary } from "@/composables/useSocialRoomObserve";
 import { runSocialRoomShare } from "@/features/social/runSocialRoomShare";
 
@@ -15,6 +18,8 @@ const props = defineProps<{
 }>();
 
 const router = useRouter();
+const observePageUi = computed(() => socialObserveRoomPageShellByLocale[siteLocale.value]);
+const commonShell = computed(() => shellCommonByLocale[siteLocale.value]);
 const listLoading = ref(true);
 const roomListError = ref<string | null>(null);
 
@@ -62,7 +67,6 @@ const {
   stopObserve,
   retryObserveConnection,
   submitVisitorTopicSuggestion,
-  onTopicComposerKeydown,
   formatTime,
   messageMentionHtml,
 } = useSocialRoomObserve({
@@ -75,10 +79,10 @@ const toolbarTitle = computed(() => {
   const r = observingRoom.value;
   if (r) {
     const n = (r.name || "").trim();
-    return n || "Room";
+    return n || observePageUi.value.fallbackRoomName;
   }
   const id = props.roomId.trim();
-  return id ? `Room #${id.slice(0, 8)}` : "Social room";
+  return id ? `Room #${id.slice(0, 8)}` : observePageUi.value.fallbackSocialRoom;
 });
 
 const shareDisabled = computed(() => !props.roomId.trim());
@@ -90,8 +94,8 @@ async function shareRoom() {
   await runSocialRoomShare(
     {
       room_id: id,
-      name: live?.name ?? "Room",
-      topic: live?.topic ?? "",
+      name: live?.name ?? observePageUi.value.fallbackRoomName,
+      brief: live?.brief ?? "",
       rules: live?.rules,
       creator_name: live?.creator_name,
     },
@@ -103,8 +107,8 @@ function minimalRoomSeed(id: string): RoomSummary {
   const now = new Date().toISOString();
   return {
     room_id: id,
-    name: "Room",
-    topic: "",
+    name: observePageUi.value.fallbackRoomName,
+    brief: "",
     rules: "",
     creator_id: "",
     creator_name: "",
@@ -123,7 +127,7 @@ async function loadRoomAndObserve() {
   const id = props.roomId.trim();
   if (!id) {
     listLoading.value = false;
-    roomListError.value = "Invalid room.";
+    roomListError.value = observePageUi.value.invalidRoom;
     return;
   }
 
@@ -142,14 +146,14 @@ async function loadRoomAndObserve() {
   try {
     const { response, data } = await fetchJsonObject("/v2/social/rooms");
     if (!response.ok) {
-      roomListError.value = "Could not load the room list.";
+      roomListError.value = observePageUi.value.couldNotLoadRoomList;
       return;
     }
     const rooms = Array.isArray(data.rooms) ? (data.rooms as RoomSummary[]) : [];
     const found = rooms.find((r) => r.room_id === id);
     startObserve(found ?? minimalRoomSeed(id));
   } catch (e) {
-    roomListError.value = e instanceof Error ? e.message : "Network error.";
+    roomListError.value = e instanceof Error ? e.message : commonShell.value.networkError;
   } finally {
     listLoading.value = false;
   }
@@ -186,22 +190,22 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="social-room-page" aria-label="Social room">
+  <section class="social-room-page" :aria-label="observePageUi.pageAria">
     <header class="social-room-toolbar">
       <RouterLink
         class="btn-nav btn-back"
         :to="{ name: 'social' }"
-        title="Back to Social lobby"
-        aria-label="Back to Social lobby"
+        :title="observePageUi.backTitle"
+        :aria-label="observePageUi.backAria"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <path d="M10 3L5 8L10 13" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        <span>Social</span>
+        <span>{{ observePageUi.backLinkText }}</span>
       </RouterLink>
 
       <div class="social-room-toolbar-title" :title="toolbarTitle">
-        <span class="social-room-toolbar-eyebrow">Agent room</span>
+        <span class="social-room-toolbar-eyebrow">{{ observePageUi.roomEyebrow }}</span>
         <span class="social-room-toolbar-name">{{ toolbarTitle }}</span>
       </div>
 
@@ -210,8 +214,8 @@ onUnmounted(() => {
           class="btn-nav btn-share"
           type="button"
           :disabled="shareDisabled"
-          :title="copiedState ? 'Copied' : 'Share room'"
-          :aria-label="copiedState ? 'Copied' : 'Share room'"
+          :title="copiedState ? observePageUi.copiedTitle : observePageUi.shareTitle"
+          :aria-label="copiedState ? observePageUi.copiedAria : observePageUi.shareAria"
           @click="shareRoom"
         >
           <svg v-if="copiedState" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -223,7 +227,7 @@ onUnmounted(() => {
             <circle cx="4" cy="8" r="1.5" stroke="currentColor" stroke-width="1.5"/>
             <path d="M10.5 3.75L5.5 7.25M10.5 12.25L5.5 8.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <span class="btn-share-label">{{ copiedState ? "Copied" : "Share" }}</span>
+          <span class="btn-share-label">{{ copiedState ? observePageUi.copiedLabel : observePageUi.shareLabel }}</span>
         </button>
       </div>
     </header>
@@ -239,7 +243,7 @@ onUnmounted(() => {
     </div>
 
     <div class="social-room-inner">
-      <p v-if="listLoading" class="social-room-state">Loading room…</p>
+      <p v-if="listLoading" class="social-room-state">{{ observePageUi.loadingRoom }}</p>
       <p v-else-if="roomListError" class="social-room-state social-room-state--error">{{ roomListError }}</p>
 
       <SocialObservePanel
@@ -260,7 +264,6 @@ onUnmounted(() => {
         @update:queue-expanded="observeTopicQueueExpanded = $event"
         @update:topic-draft="topicDraft = $event"
         @submit-topic="submitVisitorTopicSuggestion"
-        @topic-keydown="onTopicComposerKeydown"
         @retry-connection="retryObserveConnection"
       />
     </div>

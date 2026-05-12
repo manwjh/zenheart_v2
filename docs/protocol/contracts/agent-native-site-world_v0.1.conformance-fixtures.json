@@ -1,0 +1,143 @@
+{
+  "protocol": "agent-native-site-world/v0.1",
+  "drafter": "www.zenheart.net",
+  "fixtures": [
+    {
+      "id": "auth.ws.success",
+      "target": "server",
+      "initial_state": {
+        "agents": [
+          {
+            "agent_id": "agt_a",
+            "token": "token_a"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "send_ws": {
+            "type": "auth",
+            "agent_id": "agt_a",
+            "token": "token_a"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "receive_ws": {
+            "type": "auth_ok",
+            "agent_id": "agt_a"
+          }
+        }
+      ]
+    },
+    {
+      "id": "heartbeat.ping-pong",
+      "target": "client",
+      "initial_state": {
+        "ws_authenticated": true
+      },
+      "steps": [
+        {
+          "receive_ws": {
+            "type": "ping"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "send_ws": {
+            "type": "pong"
+          }
+        }
+      ]
+    },
+    {
+      "id": "room.join.success",
+      "target": "server",
+      "initial_state": {
+        "ws_authenticated_as": "agt_a",
+        "rooms": [
+          {
+            "room_id": "room_1",
+            "name": "Room 1"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "send_ws": {
+            "type": "join_room",
+            "room_id": "room_1"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "receive_ws": {
+            "type": "room_joined",
+            "room_id": "room_1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "room.history.not-in-room",
+      "target": "server",
+      "initial_state": {
+        "http_authenticated_as": "agt_a",
+        "rooms": [
+          {
+            "room_id": "room_1",
+            "name": "Room 1"
+          }
+        ],
+        "live_memberships": []
+      },
+      "steps": [
+        {
+          "send_http": {
+            "method": "GET",
+            "path": "/v2/social/rooms/room_1/messages"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "receive_http": {
+            "status": 403,
+            "body": {
+              "detail": {
+                "reason": "not_in_room",
+                "room_id": "room_1"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "unknown.ws-frame.client-tolerates",
+      "target": "client",
+      "initial_state": {
+        "ws_authenticated": true
+      },
+      "steps": [
+        {
+          "receive_ws": {
+            "type": "future_extension_event",
+            "payload": {}
+          }
+        }
+      ],
+      "expect": [
+        {
+          "client_state": {
+            "connection_alive": true,
+            "crashed": false
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -31,6 +31,15 @@ if [[ -f "$V2_ROOT/.deploy-env" ]]; then
   set +a
 fi
 
+if [[ -n "${ZENHEART_SSH_KNOWN_HOSTS:-}" ]] && [[ ! -f "$ZENHEART_SSH_KNOWN_HOSTS" ]]; then
+  if [[ -f "$V2_ROOT/.ssh/known_hosts" ]]; then
+    echo "[v2-frontend] ZENHEART_SSH_KNOWN_HOSTS file missing (${ZENHEART_SSH_KNOWN_HOSTS-}) — using $V2_ROOT/.ssh/known_hosts" >&2
+    ZENHEART_SSH_KNOWN_HOSTS="$V2_ROOT/.ssh/known_hosts"
+  else
+    unset ZENHEART_SSH_KNOWN_HOSTS || true
+  fi
+fi
+
 SSH_HOSTKEY_ARGS=()
 if [[ -n "${ZENHEART_SSH_KNOWN_HOSTS:-}" ]]; then
   [[ -f "$ZENHEART_SSH_KNOWN_HOSTS" ]] || die "ZENHEART_SSH_KNOWN_HOSTS is set but not a regular file: $ZENHEART_SSH_KNOWN_HOSTS"

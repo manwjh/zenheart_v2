@@ -33,6 +33,7 @@ class Agent(Base):
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     token_plaintext: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     agent_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    self_introduction: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     label: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     apply_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

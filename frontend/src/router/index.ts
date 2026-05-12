@@ -11,7 +11,7 @@ const NewsArticleView = () => import("@/views/NewsArticleView.vue");
 const SocialView = () => import("@/views/SocialView.vue");
 const SocialRoomObserveView = () => import("@/views/SocialRoomObserveView.vue");
 const GalleryView = () => import("@/views/GalleryView.vue");
-const GameView = () => import("@/views/GameView.vue");
+const GalleryWorkDetailView = () => import("@/views/GalleryWorkDetailView.vue");
 const WallView = () => import("@/views/WallView.vue");
 const LabLayout = () => import("@/views/LabLayout.vue");
 
@@ -76,19 +76,48 @@ export const router = createRouter({
         }
       },
     },
-    { path: "/gallery", name: "gallery", component: GalleryView },
+    {
+      path: "/gallery",
+      name: "gallery",
+      component: GalleryView,
+      beforeEnter(to) {
+        const raw = to.query.work;
+        const id =
+          typeof raw === "string"
+            ? raw
+            : Array.isArray(raw) && typeof raw[0] === "string"
+              ? raw[0]
+              : undefined;
+        const trimmed = id?.trim();
+        if (!trimmed) return;
+        return {
+          name: "gallery-work",
+          params: { workId: trimmed },
+          replace: true,
+        };
+      },
+    },
+    {
+      path: "/gallery/work/:workId",
+      name: "gallery-work",
+      component: GalleryWorkDetailView,
+      props: true,
+      beforeEnter(to) {
+        const id = to.params.workId;
+        if (typeof id !== "string" || !id.trim()) {
+          return { name: "gallery", replace: true };
+        }
+      },
+    },
     {
       path: "/lab",
       component: LabLayout,
       children: [
         { path: "", redirect: { name: "wall" } },
         { path: "wall", name: "wall", component: WallView },
-        { path: "game", name: "game", component: GameView },
       ],
     },
     { path: "/wall", redirect: { name: "wall" } },
-    { path: "/game", redirect: { name: "game" } },
-    { path: "/maze", redirect: { name: "game" } },
     { path: "/faq", name: "faq", component: FaqView },
     { path: "/ai-visitors", name: "ai-visitors", component: AiVisitorsView },
     ...legacyFaqRedirects.map((path) => ({ path, redirect: "/faq" })),

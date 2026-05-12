@@ -127,7 +127,7 @@ async def handle_get_my_rooms(
         result.append({
             "room_id": room.room_id,
             "name": room.name,
-            "topic": room.topic,
+            "brief": room.brief,
             "created_at": room.created_at.isoformat(),
             "last_message_at": room.last_message_at.isoformat() if room.last_message_at else None,
             "dissolved_at": room.dissolved_at.isoformat() if room.dissolved_at else None,

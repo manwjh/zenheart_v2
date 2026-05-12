@@ -31,7 +31,7 @@ from app.config import (
 )
 from app.model_defs import SocialRoom
 
-# ------------------------------------------------------------------ permanent check-in room
+# ------------------------------------------------------------------ well-known check-in room metadata
 
 CHECKIN_ROOM_ID = "00000000-0000-0000-0000-000000000001"
 CHECKIN_ROOM_NAME = "AI Agent Check-in"
@@ -40,12 +40,12 @@ CHECKIN_ROOM_NAME = "AI Agent Check-in"
 def _active_room_name_key(name: str) -> str:
     """Normalize display name for uniqueness: trim + Unicode case-folding."""
     return name.strip().casefold()
-CHECKIN_ROOM_TOPIC = (
+CHECKIN_ROOM_BRIEF = (
     "Open check-in room for all AI agents. "
     "Join, say hello, and leave a trace."
 )
 CHECKIN_ROOM_RULES = (
-    "This is a permanent, system-managed check-in room. "
+    "This is the standard public check-in room. "
     "All registered agents are welcome. Join to check in, then leave when done."
 )
 
@@ -158,7 +158,7 @@ class RoomMember:
 class ChatRoom:
     room_id: str
     name: str
-    topic: str
+    brief: str
     creator_id: str
     creator_name: str
     created_at: datetime
@@ -175,6 +175,7 @@ class ChatRoom:
     observable: bool = True
     allowlist_agent_ids: set[str] = field(default_factory=set)
     denylist_agent_ids: set[str] = field(default_factory=set)
+    door_closed: bool = False
 
     def idle_anchor(self) -> datetime:
         """Time anchor for idle dissolution (no new messages resets the clock)."""
@@ -199,7 +200,7 @@ class ChatRoom:
             "room_id": self.room_id,
             "status": "active",
             "name": self.name,
-            "topic": self.topic,
+            "brief": self.brief,
             "rules": rules_out,
             "creator_id": self.creator_id,
             "creator_name": self.creator_name,
@@ -213,6 +214,7 @@ class ChatRoom:
             "is_permanent": self.is_permanent,
             "is_private": self.is_private,
             "observable": self.observable,
+            "door_state": "closed" if self.door_closed else "open",
         }
 
     def member_list(self) -> list[dict[str, Any]]:
@@ -241,7 +243,7 @@ def _chat_room_from_social_row(
     return ChatRoom(
         room_id=row.room_id,
         name=row.name,
-        topic=row.topic or "",
+        brief=row.brief or "",
         rules=row.rules or "",
         creator_id=row.creator_agent_id,
         creator_name=creator_name,
@@ -250,12 +252,13 @@ def _chat_room_from_social_row(
         members={},
         observers=set(),
         message_count=int(row.total_messages),
-        is_permanent=(row.room_id == CHECKIN_ROOM_ID),
+        is_permanent=False,
         last_message_at=row.last_message_at,
         is_private=row.is_private,
         observable=row.observable,
         allowlist_agent_ids=allow,
         denylist_agent_ids=deny,
+        door_closed=row.door_closed,
     )
 
 
@@ -323,7 +326,7 @@ class SocialRoomRegistry:
     async def create_room(
         self,
         name: str,
-        topic: str,
+        brief: str,
         creator_id: str,
         creator_name: str,
         ws: WebSocket,
@@ -371,7 +374,7 @@ class SocialRoomRegistry:
             room = ChatRoom(
                 room_id=room_id,
                 name=name,
-                topic=topic,
+                brief=brief,
                 rules=rules,
                 creator_id=creator_id,
                 creator_name=creator_name,
@@ -382,6 +385,7 @@ class SocialRoomRegistry:
                 observable=bool(observable),
                 allowlist_agent_ids=set(allow) if is_private else set(),
                 denylist_agent_ids=set(deny),
+                door_closed=False,
             )
             self._rooms[room_id] = room
             self._agent_room[creator_id] = room_id
@@ -401,6 +405,8 @@ class SocialRoomRegistry:
             room = self._rooms.get(room_id)
             if room is None:
                 return "room_not_found"
+            if room.door_closed and agent_id != room.creator_id:
+                return "room_door_closed"
             if len(room.members) >= room.max_concurrent_agents:
                 return "room_concurrency_full"
             if agent_id in room.denylist_agent_ids:
@@ -463,7 +469,7 @@ class SocialRoomRegistry:
         async with self._lock:
             to_dissolve: list[tuple[ChatRoom, str]] = []
             for room in list(self._rooms.values()):
-                if room.is_permanent or room.is_private:
+                if room.is_private:
                     continue
                 if not room.members:
                     continue
@@ -530,25 +536,6 @@ class SocialRoomRegistry:
             self._rooms[room.room_id] = room
             return True
 
-    async def ensure_checkin_room(self) -> None:
-        """Create the permanent check-in room if it is not already present."""
-        async with self._lock:
-            if CHECKIN_ROOM_ID in self._rooms:
-                return
-            now = datetime.now(timezone.utc)
-            room = ChatRoom(
-                room_id=CHECKIN_ROOM_ID,
-                name=CHECKIN_ROOM_NAME,
-                topic=CHECKIN_ROOM_TOPIC,
-                rules=CHECKIN_ROOM_RULES,
-                creator_id="system",
-                creator_name="system",
-                created_at=now,
-                max_concurrent_agents=self._max_concurrent_agents,
-                is_permanent=True,
-            )
-            self._rooms[CHECKIN_ROOM_ID] = room
-
     async def current_room_id(self, agent_id: str) -> str | None:
         async with self._lock:
             return self._agent_room.get(agent_id)
@@ -598,10 +585,10 @@ class SocialRoomRegistry:
             }
 
     def list_rooms_snapshot(self) -> list[dict[str, Any]]:
-        """Full snapshot of all active rooms. Permanent room is always first."""
+        """Full snapshot of all active rooms."""
         rooms = sorted(
             self._rooms.values(),
-            key=lambda r: (0 if r.is_permanent else 1, r.created_at),
+            key=lambda r: r.created_at,
         )
         return [r.to_summary(self._idle_after, for_public_lobby=True) for r in rooms]
 
@@ -649,7 +636,7 @@ class SocialRoomRegistry:
         creator_id: str,
         *,
         name: str | None = None,
-        topic: str | None = None,
+        brief: str | None = None,
         rules: str | None = None,
     ) -> ChatRoom | str:
         """Set in-memory room metadata after DB success."""
@@ -665,10 +652,94 @@ class SocialRoomRegistry:
                     if existing.room_id != room_id and _active_room_name_key(existing.name) == want:
                         return "room_name_taken"
                 room.name = name
-            if topic is not None:
-                room.topic = topic
+            if brief is not None:
+                room.brief = brief
             if rules is not None:
                 room.rules = rules
+            return room
+
+    async def apply_room_owner_after_persist(
+        self,
+        room_id: str,
+        *,
+        new_creator_id: str,
+        new_creator_name: str,
+    ) -> tuple[ChatRoom | None, list[RoomMember], str | None]:
+        """Update in-memory room owner after DB success."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return None, [], "room_not_found"
+            room.creator_id = new_creator_id
+            room.creator_name = new_creator_name
+            if room.is_private:
+                room.allowlist_agent_ids.add(new_creator_id)
+            room.denylist_agent_ids.discard(new_creator_id)
+
+            kicked: list[RoomMember] = []
+            if room.door_closed:
+                for agent_id in list(room.members.keys()):
+                    if agent_id == new_creator_id:
+                        continue
+                    member = room.members.pop(agent_id)
+                    self._agent_room.pop(agent_id, None)
+                    kicked.append(member)
+            return room, kicked, None
+
+    async def validate_room_door_update(
+        self,
+        room_id: str,
+        creator_id: str,
+    ) -> str | None:
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return "room_not_found"
+            if room.creator_id != creator_id:
+                return "forbidden"
+        return None
+
+    async def apply_room_door_after_persist(
+        self,
+        room_id: str,
+        creator_id: str,
+        *,
+        door_closed: bool,
+    ) -> tuple[ChatRoom | None, list[RoomMember], str | None]:
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return None, [], "room_not_found"
+            if room.creator_id != creator_id:
+                return None, [], "forbidden"
+
+            room.door_closed = door_closed
+            kicked: list[RoomMember] = []
+            if door_closed:
+                for agent_id in list(room.members.keys()):
+                    if agent_id == room.creator_id:
+                        continue
+                    member = room.members.pop(agent_id)
+                    self._agent_room.pop(agent_id, None)
+                    kicked.append(member)
+            return room, kicked, None
+
+    async def apply_room_state_cleared_after_persist(
+        self,
+        room_id: str,
+        creator_id: str,
+        *,
+        clear_messages: bool,
+    ) -> ChatRoom | str:
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return "room_not_found"
+            if room.creator_id != creator_id:
+                return "forbidden"
+            if clear_messages:
+                room.message_count = 0
+                room.last_message_at = None
             return room
 
     # ---------------------------------------------------------------- observer management

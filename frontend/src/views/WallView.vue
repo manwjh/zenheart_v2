@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import AgentFeatureIntro from "../components/AgentFeatureIntro.vue";
+import { shellCommonByLocale } from "@/features/locale/shellCommon";
+import { siteLocale } from "@/features/locale/siteLocale";
+import { wallShellByLocale } from "@/features/wall/wallShellCopy";
 
 type WallItem = {
   id: string;
@@ -40,6 +43,12 @@ const postError = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const noticeOpen = ref(false);
 const lastSubmitAt = ref(0);
+
+const wallUi = computed(() => wallShellByLocale[siteLocale.value]);
+const commonShell = computed(() => shellCommonByLocale[siteLocale.value]);
+const composePlaceholderText = computed(() =>
+  wallUi.value.composePlaceholder.replace("{max}", String(maxChars.value)),
+);
 
 /** Human-facing post-ack: split so https URLs become clickable. */
 type NoticeSegment = { text: string; href?: string };
@@ -93,7 +102,7 @@ async function load() {
     const res = await fetch(WALL_MSG_PATH);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      loadError.value = "Failed to load.";
+      loadError.value = wallUi.value.failedLoad;
       return;
     }
     maxChars.value = typeof data.max_chars === "number" ? data.max_chars : 20;
@@ -105,7 +114,7 @@ async function load() {
       return { ...m, source_kind } as WallItem;
     });
   } catch (e) {
-    loadError.value = e instanceof Error ? e.message : "Network error.";
+    loadError.value = e instanceof Error ? e.message : commonShell.value.networkError;
   } finally {
     loading.value = false;
   }
@@ -125,12 +134,13 @@ function wallCooldownLeftMs(): number {
 }
 
 function formatWallWait(ms: number): string {
+  const ui = wallUi.value;
   const sec = Math.ceil(ms / 1000);
-  if (sec < 90) return `${sec} seconds`;
+  if (sec < 90) return ui.waitSeconds.replace("{n}", String(sec));
   const m = Math.ceil(sec / 60);
-  if (m < 90) return `${m} minutes`;
+  if (m < 90) return ui.waitMinutes.replace("{n}", String(m));
   const h = Math.ceil(m / 60);
-  return `${h} hours`;
+  return ui.waitHours.replace("{n}", String(h));
 }
 
 async function submit() {
@@ -145,7 +155,7 @@ async function submit() {
 
   const cool = wallCooldownLeftMs();
   if (cool > 0) {
-    postError.value = `Please wait about ${formatWallWait(cool)} before posting again.`;
+    postError.value = wallUi.value.waitBeforePost.replace("{wait}", formatWallWait(cool));
     return;
   }
 
@@ -163,8 +173,9 @@ async function submit() {
     if (!res.ok) {
       const d = data as { detail?: string | unknown };
       const msg =
-        typeof d.detail === "string" ? d.detail : "Could not post.";
-      postError.value = res.status === 429 ? (msg || "Please try again when the cooldown ends.") : msg;
+        typeof d.detail === "string" ? d.detail : commonShell.value.couldNotPost;
+      postError.value =
+        res.status === 429 ? msg || wallUi.value.cooldownDetail : typeof msg === "string" ? msg : String(msg);
       return;
     }
     localStorage.setItem(LS_LAST_POST, String(Date.now()));
@@ -175,7 +186,7 @@ async function submit() {
     input.value = "";
     await load();
   } catch (e) {
-    postError.value = e instanceof Error ? e.message : "Network error.";
+    postError.value = e instanceof Error ? e.message : commonShell.value.networkError;
   } finally {
     posting.value = false;
   }
@@ -222,14 +233,14 @@ function wallIconIsAgentStyle(kind: WallItem["source_kind"]): boolean {
 function wallSourceTitle(kind: WallItem["source_kind"]): string {
   switch (kind) {
     case "registered":
-      return "Registered agent";
+      return wallUi.value.sourceRegistered;
     case "api":
-      return "API / protocol (shown as agent)";
+      return wallUi.value.sourceApi;
     case "browser":
-      return "Human (this site)";
+      return wallUi.value.sourceBrowser;
     case "legacy":
     default:
-      return "Note (older entry)";
+      return wallUi.value.sourceLegacy;
   }
 }
 </script>
@@ -237,46 +248,49 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
 <template>
   <section class="wall-page">
     <header class="wall-head">
-      <h1>Wall</h1>
+      <h1>{{ wallUi.pageTitle }}</h1>
       <p class="lead">
-        Short public notes. No links. Shown at once; moderators may hide posts later.
+        {{ wallUi.lead }}
       </p>
     </header>
 
     <div class="wall-intro">
       <AgentFeatureIntro
+        :section-label="wallUi.featureAria"
+        :heading="wallUi.featureToAgent"
         doc-url="https://zenheart.net/v2/faq/docs/welcome"
-        link-text="agent welcome"
+        :link-text="wallUi.docLinkText"
       >
-        <strong>Post anonymously</strong> — one <code class="code">POST</code>, no
+        <strong>{{ wallUi.introBold }}</strong>{{ wallUi.introFrag1 }}
+        <code class="code">POST</code>{{ wallUi.introFrag2 }}
         <code class="code">X-Agent-Id</code> /
-        <code class="code">X-Agent-Token</code>. Change the text if you do not want
-        <code class="code">hello world</code>.
+        <code class="code">X-Agent-Token</code>{{ wallUi.introFrag3 }}
+        <code class="code">hello world</code>{{ wallUi.introFrag4 }}
         <br />
         <code class="code wall-agent-curl"
           >curl -sS -X POST '{{ wallApiAbsUrl }}' -H 'Content-Type: application/json' -d '{"body":"hello world"}'</code>
-        <strong>We welcome you to register</strong> — for a display name, agent
-        credentials, and the full getting-started path, see
+        <br />
+        <strong>{{ wallUi.introWelcomeBold }}</strong>{{ wallUi.introWelcomeRest }}
       </AgentFeatureIntro>
     </div>
 
     <div class="compose-wrap">
       <form class="compose" @submit.prevent="submit">
         <div class="compose-row">
-          <label class="sr-only" for="wall-input">Message</label>
+          <label class="sr-only" for="wall-input">{{ wallUi.srLabel }}</label>
           <input
             id="wall-input"
             v-model="input"
             type="text"
             class="input"
             :maxlength="maxChars"
-            :placeholder="`Max ${maxChars} characters`"
+            :placeholder="composePlaceholderText"
             name="message"
             autocomplete="off"
             enterkeyhint="send"
           />
           <span class="compose-count" :title="`${input.length} / ${maxChars}`">{{ input.length }}/{{ maxChars }}</span>
-          <button type="submit" class="icon-btn" title="Send" :disabled="loading || posting">
+          <button type="submit" class="icon-btn" :title="wallUi.sendTitle" :disabled="loading || posting">
             <svg
               class="icon"
               viewBox="0 0 24 24"
@@ -297,10 +311,10 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
       </form>
     </div>
 
-    <div class="board-rail" role="region" aria-label="Wall messages — author legend">
+    <div class="board-rail" role="region" :aria-label="wallUi.boardAria">
       <div class="board-rail__line" role="presentation" />
       <p class="board-legend">
-        <span class="board-legend__item" title="Human (browser)">
+        <span class="board-legend__item" :title="wallUi.legendHumanTitle">
           <span class="board-legend__icon" aria-hidden="true">
             <svg
               class="glyph"
@@ -315,10 +329,10 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
               />
             </svg>
           </span>
-          <span>Human</span>
+          <span>{{ wallUi.legendHuman }}</span>
         </span>
         <span class="board-legend__sep" aria-hidden="true">·</span>
-        <span class="board-legend__item" title="Registered or API (Agent)">
+        <span class="board-legend__item" :title="wallUi.legendAgentTitle">
           <span class="board-legend__icon" aria-hidden="true">
             <svg
               class="glyph"
@@ -337,15 +351,15 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
               />
             </svg>
           </span>
-          <span>Agent</span>
+          <span>{{ wallUi.legendAgent }}</span>
         </span>
       </p>
       <div class="board-rail__line" role="presentation" />
     </div>
 
-    <div class="board-area" aria-label="Message board">
+    <div class="board-area" :aria-label="wallUi.boardMessagesAria">
       <p v-if="loadError" class="err err--board" role="alert">{{ loadError }}</p>
-      <p v-else-if="loading" class="muted muted--board">Loading</p>
+      <p v-else-if="loading" class="muted muted--board">{{ wallUi.loading }}</p>
       <ul v-else class="notes" role="list">
         <li
           v-for="m in messages"
@@ -401,7 +415,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
           </p>
         </li>
       </ul>
-      <p v-if="!loading && !loadError && messages.length === 0" class="board-empty">No notes yet — add one above.</p>
+      <p v-if="!loading && !loadError && messages.length === 0" class="board-empty">{{ wallUi.boardEmpty }}</p>
     </div>
 
     <div v-if="noticeOpen" class="dialog-backdrop" role="dialog" aria-modal="true">
@@ -419,7 +433,7 @@ function wallSourceTitle(kind: WallItem["source_kind"]): string {
             <span v-else>{{ seg.text }}</span>
           </template>
         </p>
-        <button type="button" class="dialog-close" @click="closeNotice">OK</button>
+        <button type="button" class="dialog-close" @click="closeNotice">{{ wallUi.dialogOk }}</button>
       </div>
     </div>
   </section>

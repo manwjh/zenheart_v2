@@ -2,6 +2,8 @@
 import { computed } from "vue";
 import { toIsoDate } from "@/features/news/newsHelpers";
 import type { NewsCommentRow } from "@/features/news/useNewsComments";
+import { newsShellByLocale } from "@/features/news/newsShellCopy";
+import { siteLocale } from "@/features/locale/siteLocale";
 
 const props = defineProps<{
   comments: NewsCommentRow[];
@@ -21,43 +23,45 @@ const emit = defineEmits<{
 }>();
 
 const canSubmit = computed(() => !props.commentSubmitting && props.commentBody.trim().length > 0);
+
+const newsUi = computed(() => newsShellByLocale[siteLocale.value]);
 </script>
 
 <template>
   <div class="comment-section">
     <h3 class="comment-heading">
-      Comments
+      {{ newsUi.commentsHeading }}
       <span v-if="comments.length" class="comment-count">{{ comments.length }}</span>
     </h3>
 
-    <div v-if="loadingComments" class="comment-loading">Loading comments...</div>
+    <div v-if="loadingComments" class="comment-loading">{{ newsUi.commentsLoading }}</div>
     <div v-else-if="comments.length" class="comment-list">
       <div v-for="c in comments" :key="c.id" class="comment-item">
         <div class="comment-meta">
-          <span class="comment-author">{{ c.from_name || "Anonymous" }}</span>
+          <span class="comment-author">{{ c.from_name || newsUi.commentAnonymous }}</span>
           <span class="comment-date">{{ toIsoDate(c.created_at) }}</span>
         </div>
         <p v-if="c.status === 'pending'" class="comment-body comment-body--pending">
-          <strong>Pending review</strong>
+          <strong>{{ newsUi.commentPendingReview }}</strong>
         </p>
         <p v-else class="comment-body" v-html="commentBodyHtml(c.body)"></p>
       </div>
     </div>
-    <p v-else class="comment-empty">No comments yet. Be the first.</p>
+    <p v-else class="comment-empty">{{ newsUi.commentEmptyPrompt }}</p>
 
     <div class="comment-form-wrap">
       <div v-if="commentSuccess" class="comment-success">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           <path d="M3 8L6.5 11.5L13 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        Comment submitted - pending author review.
+        {{ newsUi.commentSuccessPending }}
       </div>
       <form v-else class="comment-form" @submit.prevent="emit('submit')">
         <input
           :value="commentName"
           class="comment-input"
           type="text"
-          placeholder="Name (optional)"
+          :placeholder="newsUi.commentNamePh"
           maxlength="120"
           :disabled="commentSubmitting"
           @input="emit('update:commentName', ($event.target as HTMLInputElement).value)"
@@ -65,7 +69,7 @@ const canSubmit = computed(() => !props.commentSubmitting && props.commentBody.t
         <textarea
           :value="commentBody"
           class="comment-textarea"
-          placeholder="Leave a comment..."
+          :placeholder="newsUi.composePlaceholder"
           maxlength="2000"
           rows="3"
           required
@@ -75,7 +79,7 @@ const canSubmit = computed(() => !props.commentSubmitting && props.commentBody.t
         <div class="comment-form-footer">
           <p v-if="commentError" class="comment-err">{{ commentError }}</p>
           <button class="comment-submit" type="submit" :disabled="!canSubmit">
-            {{ commentSubmitting ? "Posting..." : "Post" }}
+            {{ commentSubmitting ? newsUi.commentPostingVerb : newsUi.commentPostVerb }}
           </button>
         </div>
       </form>
