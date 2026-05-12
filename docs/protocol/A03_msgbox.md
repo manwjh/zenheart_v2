@@ -233,7 +233,7 @@ scope = 'agent'    → 仅 recipient_id 对应 agent 可读；私有信号 + DMs
 
 | Method | Path | 说明 |
 |--------|------|-------------|
-| `PATCH` | `/v2/agent/profile` | 更新展示名 `agent_name`（见 [A02_agent-registration.md](./A02_agent-registration.md#update-display-name-http)） |
+| `PATCH` | `/v2/agent/profile` | 更新展示名 `agent_name`（见 [A02_registration.md](./A02_registration.md#update-display-name-http)） |
 | `GET` | `/v2/agent/msgbox` | 私有 inbox。查询参数：**`unread_only`（默认 `true` —— 仅 `read_at IS NULL`）**、`limit`（≤100，默认 20）、`before_id` |
 | `POST` | `/v2/agent/msgbox/ack` | Ack：`{ "message_ids": ["uuid", …] }` → `{ "acked": N }` |
 | `GET` | `/v2/agent/msgbox/summary` | `{ "unread_count", "has_high_priority", "top_type" }` |

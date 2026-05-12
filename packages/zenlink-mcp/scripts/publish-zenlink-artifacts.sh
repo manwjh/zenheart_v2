@@ -22,6 +22,13 @@ if [[ -f "${V2_ROOT}/.deploy-env" ]]; then
   set +a
 fi
 
+if [[ -n "${ZENHEART_SSH_KNOWN_HOSTS:-}" && ! -f "${ZENHEART_SSH_KNOWN_HOSTS}" ]]; then
+  if [[ -f "${V2_ROOT}/.ssh/known_hosts" ]]; then
+    echo "[publish] ZENHEART_SSH_KNOWN_HOSTS file missing (${ZENHEART_SSH_KNOWN_HOSTS}) — using ${V2_ROOT}/.ssh/known_hosts" >&2
+    ZENHEART_SSH_KNOWN_HOSTS="${V2_ROOT}/.ssh/known_hosts"
+  fi
+fi
+
 ZENHEART_EC2_KEY="${ZENHEART_EC2_KEY:-${REPO_ROOT}/aws/zenheart-ec2.pem}"
 ZENHEART_EC2_USER="${ZENHEART_EC2_USER:-ec2-user}"
 ZENHEART_WEB_DIR="${ZENHEART_WEB_DIR:-/opt/zenheart/frontend}"
@@ -84,6 +91,7 @@ echo "[publish] upload to ${ZENHEART_EC2_USER}@${ZENHEART_EC2_HOST}"
   bash -s <<'REMOTE'
 set -euo pipefail
 W="${ZENHEART_WEB_DIR:?}/zenlink"
+sudo mkdir -p "${W}"
 sudo mv "$HOME/openclaw-macos-v${VERSION}.tar.gz.part" "${W}/zenlink-mcp-openclaw-macos-v${VERSION}.tar.gz"
 sudo mv "$HOME/openclaw-linux-v${VERSION}.tar.gz.part" "${W}/zenlink-mcp-openclaw-linux-v${VERSION}.tar.gz"
 sudo mv "$HOME/install-openclaw-macos-v${VERSION}.sh.part" "${W}/install-zenlink-mcp-openclaw-macos-v${VERSION}.sh"
@@ -92,6 +100,26 @@ sudo chmod 755 \
   "${W}/install-zenlink-mcp-openclaw-macos-v${VERSION}.sh" \
   "${W}/install-zenlink-mcp-openclaw-linux-v${VERSION}.sh"
 sudo mv "$HOME/zenlink-release-manifest.json" "${W}/release-manifest.json"
+
+# Drop previous OpenClaw bundle filenames so only the version we just published remains.
+shopt -s nullglob
+keep_mac_tar="zenlink-mcp-openclaw-macos-v${VERSION}.tar.gz"
+keep_linux_tar="zenlink-mcp-openclaw-linux-v${VERSION}.tar.gz"
+keep_mac_sh="install-zenlink-mcp-openclaw-macos-v${VERSION}.sh"
+keep_linux_sh="install-zenlink-mcp-openclaw-linux-v${VERSION}.sh"
+for f in "${W}"/zenlink-mcp-openclaw-macos-v*.tar.gz \
+         "${W}"/zenlink-mcp-openclaw-linux-v*.tar.gz \
+         "${W}"/install-zenlink-mcp-openclaw-macos-v*.sh \
+         "${W}"/install-zenlink-mcp-openclaw-linux-v*.sh; do
+  [[ -f "$f" ]] || continue
+  b="$(basename "$f")"
+  if [[ "$b" == "$keep_mac_tar" || "$b" == "$keep_linux_tar" || "$b" == "$keep_mac_sh" || "$b" == "$keep_linux_sh" ]]; then
+    continue
+  fi
+  sudo rm -f "$f"
+  printf '[zenlink publish] removed stale bundle: %s\n' "$b"
+done
+shopt -u nullglob
 REMOTE
 
 echo "[publish] uploaded (version v${VERSION}):"

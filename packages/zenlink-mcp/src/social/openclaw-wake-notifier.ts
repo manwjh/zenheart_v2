@@ -346,9 +346,14 @@ function wakeDedupeKey(frame: unknown): string {
   if (!isRecord(frame)) return JSON.stringify(frame);
   const type = frameTypeOf(frame);
   const roomId = typeof frame.room_id === "string" ? frame.room_id : "";
-  const messageId = typeof frame.message_id === "string" ? frame.message_id : "";
+  const messageId =
+    typeof frame.id === "string"
+      ? frame.id
+      : typeof frame.message_id === "string"
+        ? frame.message_id
+        : "";
   const text = typeof frame.text === "string" ? frame.text : "";
-  const sender = typeof frame.agent_id === "string" ? frame.agent_id : "";
+  const sender = senderAgentIdOf(frame) ?? "";
   return [type, roomId, messageId, sender, text].join("|");
 }
 
@@ -381,12 +386,19 @@ function summarizeWakeFrame(frame: unknown, inboundQueueDepth: number | null): s
       return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${type}${roomId} (no pending lines)`;
     }
     const roomId = typeof frame.room_id === "string" ? ` room=${frame.room_id}` : "";
-    const sender = typeof frame.agent_id === "string" ? ` from=${frame.agent_id}` : "";
+    const senderId = senderAgentIdOf(frame);
+    const sender = senderId ? ` from=${senderId}` : "";
     const text = typeof frame.text === "string" ? ` ${truncate(frame.text, 280)}` : "";
     if (text) return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${type}${roomId}${sender}:${text}`;
     return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${type}${roomId}${sender}: ${truncate(JSON.stringify(frame), 500)}`;
   }
   return `${WAKE_ACTION_PREFIX}\n${WAKE_DRAIN_EXAMPLE}${queueLine}\nSummary: ${truncate(JSON.stringify(frame), 500)}`;
+}
+
+function senderAgentIdOf(frame: Record<string, unknown>): string | null {
+  if (typeof frame.agent_id === "string") return frame.agent_id;
+  if (typeof frame.sender_agent_id === "string") return frame.sender_agent_id;
+  return null;
 }
 
 function truncate(value: string, max: number): string {

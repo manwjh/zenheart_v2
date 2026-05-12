@@ -29,6 +29,8 @@ interface SendMessageOptions {
   roomId?: string;
   mentionAgentIds?: string[];
   imageUrl?: string;
+  replyToMessageId?: string;
+  expectedLastMessageId?: string;
 }
 
 export interface ZenlinkSessionStatus {
@@ -242,6 +244,15 @@ export class ZenlinkSession {
     };
   }
 
+  inboundDepthFor(types?: string[], filter: InboundFilterOptions = {}): Record<string, unknown> {
+    const roomId = this.resolveInboundRoomFilter(filter);
+    return {
+      raw_depth: this.inboundQueue.length,
+      matching_depth: this.countMatchingInbound(types, roomId),
+      room_filter: roomId,
+    };
+  }
+
   inboundPoll(
     limit: number,
     types?: string[],
@@ -361,7 +372,7 @@ export class ZenlinkSession {
   }
 
   async pullRoomTopicsTool(roomId: string, limit?: number): Promise<Record<string, unknown>> {
-    return this.wsRpc(["room_topics"], () => {
+    return this.wsRpc(["pull_room_topics_ok"], () => {
       this.client.sendJson({ type: "pull_room_topics", room_id: roomId, ...(limit !== undefined ? { limit } : {}) });
     });
   }
@@ -399,6 +410,8 @@ export class ZenlinkSession {
         this.client.sendSocialMessage(text, {
           mentionAgentIds: options.mentionAgentIds,
           imageUrl: options.imageUrl,
+          replyToMessageId: options.replyToMessageId,
+          expectedLastMessageId: options.expectedLastMessageId,
         }),
     );
   }
@@ -627,7 +640,7 @@ export class ZenlinkSession {
   private dropSelfEcho(frame: Record<string, unknown>): boolean {
     const isMessage = frame.type === "message";
     const isNotifyMessage = frame.type === "social_notify" && frame.kind === "message";
-    if ((isMessage || isNotifyMessage) && frame.agent_id === this.client.agentId) {
+    if ((isMessage || isNotifyMessage) && senderAgentIdOf(frame) === this.client.agentId) {
       this.selfEchoDroppedTotal++;
       return true;
     }
@@ -636,6 +649,7 @@ export class ZenlinkSession {
 
   private enqueueInbound(frame: Record<string, unknown>): void {
     if (this.inboundQueueMax === 0) return;
+    this.coalesceInboundSnapshot(frame);
     if (this.inboundQueue.length >= this.inboundQueueMax) {
       const dropIndex = this.inboundQueue.findIndex(
         (queuedFrame) => !isRetainedMessageFrame(queuedFrame),
@@ -645,6 +659,19 @@ export class ZenlinkSession {
     }
     this.inboundQueue.push(frame);
     this.lastInboundEnqueueAt = new Date().toISOString();
+  }
+
+  private coalesceInboundSnapshot(frame: Record<string, unknown>): void {
+    if (frame.type !== "topic_suggestions_pending" || typeof frame.room_id !== "string") return;
+    for (let i = this.inboundQueue.length - 1; i >= 0; i -= 1) {
+      const queuedFrame = this.inboundQueue[i];
+      if (
+        queuedFrame?.type === "topic_suggestions_pending" &&
+        queuedFrame.room_id === frame.room_id
+      ) {
+        this.inboundQueue.splice(i, 1);
+      }
+    }
   }
 
   private shouldDropInbound(frame: Record<string, unknown>): boolean {
@@ -658,8 +685,7 @@ export class ZenlinkSession {
     for (let i = 0; i < this.inboundQueue.length && out.length < limit; ) {
       const frame = this.inboundQueue[i];
       if (!frame) break;
-      const type = typeof frame.type === "string" ? frame.type : "unknown";
-      if ((!wanted || wanted.has(type)) && matchesRoomFilter(frame, roomId)) {
+      if (matchesInboundFrame(frame, wanted, roomId)) {
         out.push(frame);
         this.inboundQueue.splice(i, 1);
       } else {
@@ -667,6 +693,15 @@ export class ZenlinkSession {
       }
     }
     return out;
+  }
+
+  private countMatchingInbound(types?: string[], roomId?: string | null): number {
+    const wanted = types ? new Set(types) : null;
+    let count = 0;
+    for (const frame of this.inboundQueue) {
+      if (matchesInboundFrame(frame, wanted, roomId)) count++;
+    }
+    return count;
   }
 
   private recordAndReturnDequeue(
@@ -839,6 +874,21 @@ function matchesRoomFilter(frame: Record<string, unknown>, roomId?: string | nul
   if (roomId === undefined) return true;
   if (roomId === null) return false;
   return frame.room_id === roomId;
+}
+
+function matchesInboundFrame(
+  frame: Record<string, unknown>,
+  wanted: Set<string> | null,
+  roomId?: string | null,
+): boolean {
+  const type = typeof frame.type === "string" ? frame.type : "unknown";
+  return (!wanted || wanted.has(type)) && matchesRoomFilter(frame, roomId);
+}
+
+function senderAgentIdOf(frame: Record<string, unknown>): string | null {
+  if (typeof frame.agent_id === "string") return frame.agent_id;
+  if (typeof frame.sender_agent_id === "string") return frame.sender_agent_id;
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

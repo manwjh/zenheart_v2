@@ -51,6 +51,8 @@ export const ZenlinkSendMessageSchema = z.object({
   room_id: z.string().min(1).optional(),
   image_url: z.string().min(1).max(2048).optional(),
   mention_agent_ids: z.array(z.string()).optional(),
+  reply_to_message_id: z.string().uuid().optional(),
+  expected_last_message_id: z.string().uuid().optional(),
 }).refine((v) => Boolean(v.text?.trim()) || Boolean(v.image_url?.trim()), {
   message: "text or image_url is required",
 });
@@ -103,6 +105,71 @@ export const ZenlinkMsgboxQuerySchema = z.object({
   unread_only: z.boolean().optional(),
   limit: z.number().int().positive().optional(),
   before_id: z.string().optional(),
+});
+
+const SpaceSelfRelationshipTypeSchema = z.enum([
+  "known",
+  "friend",
+  "trusted",
+  "muted",
+  "blocked",
+]);
+
+const SpaceSelfVisibilitySchema = z.enum(["private", "public"]);
+
+const SpaceSelfResourceTypeSchema = z.enum([
+  "room",
+  "gallery_work",
+  "news_article",
+  "topic",
+  "link",
+]);
+
+const SpaceSelfResourceRelationTypeSchema = z.enum([
+  "saved",
+  "pinned",
+  "featured",
+  "avoided",
+]);
+
+export const ZenlinkSelfSnapshotSchema = z.object({
+  limit: z.number().int().min(1).max(30).optional(),
+});
+
+export const ZenlinkSelfRelationshipsListSchema = z.object({
+  relation_type: SpaceSelfRelationshipTypeSchema.optional(),
+  limit: z.number().int().min(1).max(300).optional(),
+});
+
+export const ZenlinkSelfRelationshipUpsertSchema = z.object({
+  target_agent_id: z.string().min(1).max(80),
+  relation_type: SpaceSelfRelationshipTypeSchema,
+  visibility: SpaceSelfVisibilitySchema.optional(),
+  note: z.string().max(2000).optional(),
+});
+
+export const ZenlinkSelfRelationshipDeleteSchema = z.object({
+  target_agent_id: z.string().min(1).max(80),
+});
+
+export const ZenlinkSelfResourcesListSchema = z.object({
+  resource_type: SpaceSelfResourceTypeSchema.optional(),
+  relation_type: SpaceSelfResourceRelationTypeSchema.optional(),
+  limit: z.number().int().min(1).max(300).optional(),
+});
+
+export const ZenlinkSelfResourceUpsertSchema = z.object({
+  resource_type: SpaceSelfResourceTypeSchema,
+  resource_id: z.string().min(1).max(160),
+  relation_type: SpaceSelfResourceRelationTypeSchema.optional(),
+  visibility: SpaceSelfVisibilitySchema.optional(),
+  title: z.string().max(200).optional(),
+  url: z.string().max(2048).optional(),
+  note: z.string().max(2000).optional(),
+});
+
+export const ZenlinkSelfResourceDeleteSchema = z.object({
+  resource_pin_id: z.string().min(1),
 });
 
 export const ZenlinkSendDmSchema = z.object({
@@ -216,6 +283,19 @@ export const ZenlinkA2aSchema = z.object({
     "send_dm",
     "patch_profile",
     "social_grounding",
+  ]),
+  payload: ZenlinkFacadePayloadSchema,
+});
+
+export const ZenlinkSelfSchema = z.object({
+  action: z.enum([
+    "snapshot",
+    "list_relationships",
+    "upsert_relationship",
+    "delete_relationship",
+    "list_resources",
+    "upsert_resource",
+    "delete_resource",
   ]),
   payload: ZenlinkFacadePayloadSchema,
 });

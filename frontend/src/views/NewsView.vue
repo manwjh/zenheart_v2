@@ -56,6 +56,9 @@ const loadingPublishers = ref(false);
 /** Two-tab navigation: Category (curated), Agents (by publisher). */
 const activeTab = ref<"category" | "agents">("category");
 const activeAgentId = ref<string | null>(null);
+const isNarrowAgentsLayout = ref(false);
+const isAgentListExpanded = ref(false);
+let agentsLayoutMedia: MediaQueryList | null = null;
 
 const { markCoverFailed, showCover } = useArticleCover();
 
@@ -106,6 +109,20 @@ function selectAgent(agentId: string | null) {
     name: "news",
     query: buildNewsQuery("agents", agentId?.trim() || null),
   });
+}
+
+function handleAllAgentsClick() {
+  if (isNarrowAgentsLayout.value) {
+    isAgentListExpanded.value = !isAgentListExpanded.value;
+  }
+  selectAgent(null);
+}
+
+function handleAgentListItemClick(agentId: string) {
+  if (isNarrowAgentsLayout.value) {
+    isAgentListExpanded.value = false;
+  }
+  selectAgent(agentId);
 }
 
 /** One navigation step; avoids double replace + double fetch from setActiveTab + selectAgent. */
@@ -177,13 +194,22 @@ const filteredSidebarAgents = computed(() => {
 });
 
 watch(activeTab, (tab) => {
-  if (tab !== "agents") agentSidebarFilter.value = "";
+  if (tab !== "agents") {
+    agentSidebarFilter.value = "";
+    isAgentListExpanded.value = false;
+  } else if (isNarrowAgentsLayout.value) {
+    isAgentListExpanded.value = false;
+  }
 });
 
 const totalAgentCount = computed(() => newsPublishers.value.length);
 
 const totalTrackedArticles = computed(() =>
   newsPublishers.value.reduce((sum, p) => sum + p.article_count, 0)
+);
+
+const showAgentListDetails = computed(
+  () => !isNarrowAgentsLayout.value || isAgentListExpanded.value
 );
 
 const agentsPanelTitle = computed(() =>
@@ -415,7 +441,15 @@ watch([listHasMore, () => list.value.length], () => {
   nextTick(() => bindLoadMoreObserver());
 });
 
+function syncAgentsLayoutMedia(event: MediaQueryList | MediaQueryListEvent) {
+  isNarrowAgentsLayout.value = event.matches;
+  isAgentListExpanded.value = false;
+}
+
 onMounted(() => {
+  agentsLayoutMedia = window.matchMedia("(max-width: 900px)");
+  syncAgentsLayoutMedia(agentsLayoutMedia);
+  agentsLayoutMedia.addEventListener("change", syncAgentsLayoutMedia);
   void Promise.all([fetchPrimaryCategories(), fetchColumnAuthors(), fetchNewsPublishers()]).then(() => {
     nextTick(() => bindLoadMoreObserver());
   });
@@ -424,6 +458,8 @@ onMounted(() => {
 onUnmounted(() => {
   loadMoreObserver?.disconnect();
   loadMoreObserver = null;
+  agentsLayoutMedia?.removeEventListener("change", syncAgentsLayoutMedia);
+  agentsLayoutMedia = null;
 });
 </script>
 
@@ -505,6 +541,7 @@ onUnmounted(() => {
             <span v-if="loadingPublishers || loadingColumns" class="agent-sidebar-loading">…</span>
           </div>
           <input
+            v-if="showAgentListDetails"
             v-model="agentSidebarFilter"
             type="search"
             class="agent-sidebar-search"
@@ -518,25 +555,52 @@ onUnmounted(() => {
                 type="button"
                 class="agent-list-item"
                 :class="{ 'agent-list-item-active': activeAgentId === null }"
-                @click="selectAgent(null)"
+                :aria-expanded="isNarrowAgentsLayout ? isAgentListExpanded : undefined"
+                @click="handleAllAgentsClick"
               >
                 <span class="agent-name">{{ newsUi.allAgents }}</span>
-                <b class="agent-count">{{ totalTrackedArticles }}</b>
+                <span class="agent-list-item__meta">
+                  <b class="agent-count">{{ totalTrackedArticles }}</b>
+                  <svg
+                    class="agent-list-toggle-icon"
+                    :class="{ 'agent-list-toggle-icon--open': isAgentListExpanded }"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M4 6L8 10L12 6"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </span>
               </button>
-              <button
-                v-for="p in filteredSidebarAgents"
-                :key="`agent-${p.agent_id}`"
-                type="button"
-                class="agent-list-item"
-                :class="{ 'agent-list-item-active': activeAgentId === p.agent_id }"
-                @click="selectAgent(p.agent_id)"
-              >
-                <span class="agent-name">{{ p.display_name }}</span>
-                <b class="agent-count">{{ p.article_count }}</b>
-              </button>
+              <template v-if="showAgentListDetails">
+                <button
+                  v-for="p in filteredSidebarAgents"
+                  :key="`agent-${p.agent_id}`"
+                  type="button"
+                  class="agent-list-item"
+                  :class="{ 'agent-list-item-active': activeAgentId === p.agent_id }"
+                  @click="handleAgentListItemClick(p.agent_id)"
+                >
+                  <span class="agent-name">{{ p.display_name }}</span>
+                  <b class="agent-count">{{ p.article_count }}</b>
+                </button>
+              </template>
             </div>
             <p
-              v-if="agentSidebarFilter.trim() && filteredSidebarAgents.length === 0"
+              v-if="
+                showAgentListDetails &&
+                agentSidebarFilter.trim() &&
+                filteredSidebarAgents.length === 0
+              "
               class="agent-filter-empty muted"
             >
               {{ newsUi.noMatches }}
@@ -859,6 +923,28 @@ onUnmounted(() => {
   background: rgba(var(--brand-rgb), 0.15);
   color: var(--fg);
   font-weight: 500;
+}
+
+.agent-list-item__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.agent-list-toggle-icon {
+  display: none;
+  color: currentColor;
+  transition: transform 0.15s ease;
+}
+
+.agent-list-toggle-icon--open {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 900px) {
+  .agent-list-toggle-icon {
+    display: block;
+  }
 }
 
 .agent-name {

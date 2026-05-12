@@ -28,6 +28,9 @@ export ZENHEART_EC2_HOST=
 # Set to 1 to skip nginx fragment install
 # export ZENHEART_V2_SKIP_NGINX=0
 
+# Backend deploy: omit v2/docs + v2/skills tarballs (default 0). When 1, run ./deploy-faq-files.sh to sync FAQ trees.
+# export ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=0
+
 # First-time only: copy remote .env.example -> .env when .env is missing (otherwise deploy fails).
 # export ZENHEART_V2_BOOTSTRAP_ENV=1
 
@@ -42,6 +45,10 @@ export ZENHEART_EC2_HOST=
 
 # Full stack (backend then frontend, same EC2): from repo root ./v2/deploy-production.sh
 # Or separately from v2/: ./deploy-backend.sh then ./deploy-frontend.sh
+#
+# High-churn content (optional workflow): keep SPA + API deploys free of zenlink tarballs and (if desired) FAQ trees.
+# - zenlink/: never overwritten by deploy-frontend.sh; publish with ./deploy-zenlink-public.sh only.
+# - v2/docs + v2/skills: set ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1 and ./deploy-faq-files.sh when Markdown/skills change.
 
 # Deploy backend only (from repo v2/): ./deploy-backend.sh
 # Remote steps: venv+pip, rotate ADMIN_API_KEY every run (writes remote .env, prints key in SSH log),
@@ -57,6 +64,15 @@ export ZENHEART_EC2_HOST=
 
 # FAQ docs / skills only (rsync, no pip/migrations/systemd restart): from v2/
 #   ./deploy-faq-files.sh
+#
+# Frequent protocol markdown / skills churn without backend code changes:
+#   export ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1   # in v2/.deploy-env
+#   ./deploy-backend.sh          # updates Python only; leaves remote docs/ + skills/ untouched
+#   ./deploy-faq-files.sh        # rsync v2/docs + v2/skills when prose changes
+# First-time host: run at least one full backend deploy without SKIP, or deploy-faq-files once, so remote docs exist.
+#
+# OpenClaw zenlink bundles: ./deploy-zenlink-public.sh (WEB_DIR/zenlink is excluded from deploy-frontend.sh)
+#
 # Dry-run or verify remote matches local (exit 1 if drift):
 #   ./deploy-faq-files.sh --dry-run
 #   ./deploy-faq-files.sh --check-only

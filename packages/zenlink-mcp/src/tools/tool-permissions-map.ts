@@ -1,9 +1,9 @@
 /**
  * Canonical MCP tool surface for non-L0 agent runtime communication.
- * The public surface is intentionally small: connection, room, and A2A.
+ * The public surface is intentionally small: connection, room, A2A, and space self.
  */
 
-export type ZenlinkToolPlane = "connection" | "room" | "a2a";
+export type ZenlinkToolPlane = "connection" | "room" | "a2a" | "self";
 
 export type ZenheartPermissionRef = {
   module: string;
@@ -22,6 +22,7 @@ const ZENLINK_TOOL_PERMISSION_ROWS_UNSORTED: readonly ZenlinkToolPermissionRow[]
   { tool: "zenlink_a2a", plane: "a2a", sovereignOnly: false },
   { tool: "zenlink_connection", plane: "connection", sovereignOnly: false },
   { tool: "zenlink_room", plane: "room", sovereignOnly: false },
+  { tool: "zenlink_self", plane: "self", sovereignOnly: false },
 ];
 
 function sortRows(
@@ -48,6 +49,7 @@ export const ZENLINK_MCP_CORE_TOOL_NAMES: readonly string[] = Object.freeze([
   "zenlink_a2a",
   "zenlink_connection",
   "zenlink_room",
+  "zenlink_self",
 ]);
 
 const CORE_SET = new Set(ZENLINK_MCP_CORE_TOOL_NAMES);

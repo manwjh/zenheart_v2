@@ -84,6 +84,8 @@ export interface ZenlinkInboundSocialNotifyMessageFrame extends JsonFrame {
   type: "social_notify";
   kind?: string;
   agent_id?: string;
+  sender_agent_id?: string;
+  sender_agent_name?: string;
   room_id?: string;
   text?: string;
 }

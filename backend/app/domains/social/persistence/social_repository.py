@@ -1,11 +1,10 @@
 """
 Async helpers for persisting A2A social room data to the database.
 
-Room **creation** and **join** (inbound on ``/v2/agent/ws``) use :func:`create_room_record` and
-:func:`record_member_join` as **strict** calls: they return ``True``/``False``, and the
-handler rolls back in-memory state if persistence fails. Other writers (messages,
-leave, dissolve) remain best-effort with logging so a single DB blip does not tear down
-an already-accepted session.
+Room **creation**, **join**, and **messages** (inbound on ``/v2/agent/ws``) use strict
+calls: they return ``True``/``False``, and handlers avoid broadcasting state that failed
+to persist. Other writers (leave, dissolve) remain best-effort with logging so a single
+DB blip does not tear down an already-accepted session.
 
 Tables written:
   social_rooms        - room lifecycle, last_message_at, dissolved metadata
@@ -15,6 +14,7 @@ Tables written:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -42,6 +42,13 @@ PENDING_TOPIC_SUGGESTIONS_CAP = 10
 
 # Visitor `submit_topic_suggestion` on `/v2/social/observe` (not A2A chat body limit).
 VISITOR_TOPIC_SUGGESTION_TEXT_MAX_LEN = 500
+
+
+@dataclass(frozen=True)
+class SocialMessagePersistResult:
+    ok: bool
+    stale: bool = False
+    current_last_message: Optional[dict[str, Any]] = None
 
 
 async def create_room_record(
@@ -145,15 +152,38 @@ async def record_social_message(
     image_url: Optional[str],
     mentions: list[str],
     sent_at: datetime,
-) -> None:
+    message_id: Optional[uuid.UUID] = None,
+    reply_to_message_id: Optional[uuid.UUID] = None,
+    expected_last_message_id: Optional[uuid.UUID] = None,
+) -> SocialMessagePersistResult:
+    """Persist a room line with the id used by broadcast WS frames."""
+    mid = message_id or uuid.uuid4()
     try:
         async with session_factory() as session:
+            await session.execute(
+                select(SocialRoom)
+                .where(SocialRoom.room_id == room_id)
+                .with_for_update()
+            )
+            current_last = await _get_last_social_message_for_update(session, room_id)
+            if expected_last_message_id is not None:
+                current_last_id = current_last.id if current_last is not None else None
+                if current_last_id != expected_last_message_id:
+                    return SocialMessagePersistResult(
+                        ok=False,
+                        stale=True,
+                        current_last_message=_social_message_row_to_dict(current_last)
+                        if current_last is not None
+                        else None,
+                    )
             session.add(SocialMessage(
+                id=mid,
                 room_id=room_id,
                 agent_id=agent_id,
                 text=text,
                 image_url=image_url,
                 mentions=mentions or None,
+                reply_to_message_id=reply_to_message_id,
                 sent_at=sent_at,
             ))
             await session.execute(
@@ -165,11 +195,41 @@ async def record_social_message(
                 )
             )
             await session.commit()
+        return SocialMessagePersistResult(ok=True)
     except Exception:
         logger.exception(
             "social_repository: failed to record message room_id=%s agent_id=%s",
             room_id, agent_id,
         )
+        return SocialMessagePersistResult(ok=False)
+
+
+async def _get_last_social_message_for_update(
+    session: AsyncSession,
+    room_id: str,
+) -> Optional[SocialMessage]:
+    result = await session.execute(
+        select(SocialMessage)
+        .where(SocialMessage.room_id == room_id)
+        .order_by(SocialMessage.sent_at.desc(), SocialMessage.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _social_message_row_to_dict(row: Optional[SocialMessage]) -> Optional[dict[str, Any]]:
+    if row is None:
+        return None
+    return {
+        "id": str(row.id),
+        "room_id": row.room_id,
+        "agent_id": row.agent_id,
+        "text": row.text,
+        "image_url": row.image_url,
+        "mentions": row.mentions or [],
+        "reply_to_message_id": str(row.reply_to_message_id) if row.reply_to_message_id else None,
+        "sent_at": row.sent_at.isoformat(),
+    }
 
 
 def parse_client_iso_datetime(raw: object) -> Optional[datetime]:
@@ -215,6 +275,7 @@ async def get_room_messages(
                     "text": r.text,
                     "image_url": r.image_url,
                     "mentions": r.mentions or [],
+                    "reply_to_message_id": str(r.reply_to_message_id) if r.reply_to_message_id else None,
                     "sent_at": r.sent_at.isoformat(),
                 }
                 for r in reversed(rows)

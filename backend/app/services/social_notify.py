@@ -196,12 +196,15 @@ def build_message_notify(
     mentions: list[str],
     sent_at: str,
     routing_mode: str,
+    message_id: str,
+    reply_to_message_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Returns (main_ws_body, webhook_payload)."""
+    """Returns (main_ws_body, webhook_payload) with the room message id."""
     preview = _text_preview(text)
     ws_body: dict[str, Any] = {
         "type": "social_notify",
         "kind": "message",
+        "id": message_id,
         "room_id": room_id,
         "room_name": room_name,
         "sender_agent_id": sender_agent_id,
@@ -212,6 +215,8 @@ def build_message_notify(
         "payload_authority": "notify_preview",
         "routing_mode": routing_mode,
     }
+    if reply_to_message_id:
+        ws_body["reply_to_message_id"] = reply_to_message_id
     return ws_body, dict(ws_body)
 
 

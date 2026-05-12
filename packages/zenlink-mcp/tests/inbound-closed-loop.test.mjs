@@ -54,6 +54,51 @@ test("inbound frame is queued and mirrored to OpenClaw wake notifier", async () 
   }
 });
 
+test("self social_notify message preview is dropped before FIFO and wake", async () => {
+  const previous = process.env.ZENLINK_MCP_LONG_LIVED;
+  process.env.ZENLINK_MCP_LONG_LIVED = "0";
+  const requests = [];
+  try {
+    const notifier = new OpenClawWakeNotifier({
+      hookBase: "http://127.0.0.1:18789/hooks",
+      hookToken: "secret",
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), init });
+        return new Response("{}", { status: 200 });
+      },
+    });
+    const client = new ZenlinkClient({
+      agentId: "agent-a",
+      token: "token-a",
+      host: "example.invalid",
+      useTls: false,
+      wsTimeoutMs: 100,
+    });
+    const session = new ZenlinkSession(client, notifier);
+
+    session.injectInboundForTest({
+      type: "social_notify",
+      kind: "message",
+      id: "msg-self",
+      room_id: "room-1",
+      sender_agent_id: "agent-a",
+      sender_agent_name: "Agent A",
+      text_preview: "收到 21 -> 22",
+      payload_authority: "notify_preview",
+    });
+
+    assert.equal(requests.length, 0);
+    assert.equal(session.inboundStats().depth, 0);
+    assert.equal(session.status().self_echo_dropped_total, 1);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ZENLINK_MCP_LONG_LIVED;
+    } else {
+      process.env.ZENLINK_MCP_LONG_LIVED = previous;
+    }
+  }
+});
+
 test("inbound_wait wakes immediately when a matching frame arrives", async () => {
   const previous = process.env.ZENLINK_MCP_LONG_LIVED;
   process.env.ZENLINK_MCP_LONG_LIVED = "0";
@@ -146,6 +191,48 @@ test("inbound drain can filter by room_id without consuming other rooms", async 
   }
 });
 
+test("topic suggestion snapshots replace stale pending queue entries", async () => {
+  const previous = process.env.ZENLINK_MCP_LONG_LIVED;
+  process.env.ZENLINK_MCP_LONG_LIVED = "0";
+  try {
+    const client = new ZenlinkClient({
+      agentId: "agent-a",
+      token: "token-a",
+      host: "example.invalid",
+      useTls: false,
+      wsTimeoutMs: 100,
+    });
+    client.socket = { readyState: 1 };
+    client.markAuthenticatedForTest();
+    const session = new ZenlinkSession(
+      client,
+      new OpenClawWakeNotifier({ hookBase: "", hookToken: "" }),
+    );
+
+    session.injectInboundForTest({
+      type: "topic_suggestions_pending",
+      room_id: "room-1",
+      topics: [{ id: "topic-1", text: "old topic", created_at: "2026-05-12T00:00:00Z" }],
+    });
+    session.injectInboundForTest({
+      type: "topic_suggestions_pending",
+      room_id: "room-1",
+      topics: [],
+    });
+
+    assert.equal(session.inboundStats().depth, 1);
+    const result = session.inboundPoll(4, ["topic_suggestions_pending"]);
+    assert.equal(result.frames.length, 1);
+    assert.deepEqual(result.frames[0].topics, []);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ZENLINK_MCP_LONG_LIVED;
+    } else {
+      process.env.ZENLINK_MCP_LONG_LIVED = previous;
+    }
+  }
+});
+
 test("send_message with room_id joins target room before sending", async () => {
   const previous = process.env.ZENLINK_MCP_LONG_LIVED;
   process.env.ZENLINK_MCP_LONG_LIVED = "0";
@@ -192,10 +279,14 @@ test("send_message with room_id joins target room before sending", async () => {
     const result = await dispatchZenlinkTool(session, "zenlink_send_message", {
       room_id: "room-b",
       text: "reply to B",
+      reply_to_message_id: "00000000-0000-4000-8000-000000000001",
+      expected_last_message_id: "00000000-0000-4000-8000-000000000001",
     });
     const echo = JSON.parse(result.content[0].text);
     assert.equal(echo.room_id, "room-b");
     assert.deepEqual(sent.map((frame) => frame.type), ["join_room", "send_message"]);
+    assert.equal(sent[1].reply_to_message_id, "00000000-0000-4000-8000-000000000001");
+    assert.equal(sent[1].expected_last_message_id, "00000000-0000-4000-8000-000000000001");
     assert.equal(session.status().current_room_id, "room-b");
   } finally {
     if (previous === undefined) {
@@ -434,9 +525,117 @@ test("wake_drain remains controlled by per-call tool arguments", async () => {
     assert.equal(payload.inbound.frames[0].type, "message");
     assert.equal(payload.inbox_summary, null);
     assert.equal(payload.inbox, null);
-    assert.equal(payload.remaining_inbound_queue_depth, 1);
-    assert.equal(payload.continue_drain, true);
+    assert.equal(payload.remaining_inbound_queue_depth, 0);
+    assert.equal(payload.remaining_matching_inbound_queue_depth, 0);
+    assert.equal(payload.remaining_raw_inbound_queue_depth, 1);
+    assert.equal(payload.continue_drain, false);
   } finally {
+    if (previous === undefined) {
+      delete process.env.ZENLINK_MCP_LONG_LIVED;
+    } else {
+      process.env.ZENLINK_MCP_LONG_LIVED = previous;
+    }
+  }
+});
+
+test("zenlink_self facade calls agent space-self HTTP endpoints", async () => {
+  const previous = process.env.ZENLINK_MCP_LONG_LIVED;
+  const previousFetch = globalThis.fetch;
+  process.env.ZENLINK_MCP_LONG_LIVED = "0";
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const href = String(url);
+    const request = {
+      method: init.method ?? "GET",
+      href,
+      body: init.body ? JSON.parse(String(init.body)) : null,
+      agentId: init.headers?.["X-Agent-Id"],
+    };
+    requests.push(request);
+    if (request.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    return new Response(JSON.stringify({ ok: true, href, method: request.method }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const client = new ZenlinkClient({
+      agentId: "agent-a",
+      token: "token-a",
+      host: "example.invalid",
+      useTls: false,
+      wsTimeoutMs: 100,
+    });
+    const session = new ZenlinkSession(
+      client,
+      new OpenClawWakeNotifier({ hookBase: "", hookToken: "" }),
+    );
+
+    await dispatchZenlinkTool(session, "zenlink_self", {
+      action: "snapshot",
+      payload: { limit: 5 },
+    });
+    await dispatchZenlinkTool(session, "zenlink_self", {
+      action: "list_relationships",
+      payload: { relation_type: "trusted", limit: 20 },
+    });
+    await dispatchZenlinkTool(session, "zenlink_self", {
+      action: "upsert_relationship",
+      payload: {
+        target_agent_id: "agent-b",
+        relation_type: "trusted",
+        visibility: "private",
+        note: "Good collaborator.",
+      },
+    });
+    await dispatchZenlinkTool(session, "zenlink_self", {
+      action: "delete_relationship",
+      payload: { target_agent_id: "agent-b" },
+    });
+    await dispatchZenlinkTool(session, "zenlink_self", {
+      action: "list_resources",
+      payload: { resource_type: "room", relation_type: "pinned", limit: 10 },
+    });
+    await dispatchZenlinkTool(session, "zenlink_self", {
+      action: "upsert_resource",
+      payload: {
+        resource_type: "topic",
+        resource_id: "protocol-garden",
+        relation_type: "featured",
+        visibility: "public",
+        title: "Protocol Garden",
+        note: "Representative topic.",
+      },
+    });
+    const deleteResult = await dispatchZenlinkTool(session, "zenlink_self", {
+      action: "delete_resource",
+      payload: { resource_pin_id: "pin-1" },
+    });
+    const deletePayload = JSON.parse(deleteResult.content[0].text);
+    assert.deepEqual(deletePayload, { ok: true });
+
+    assert.deepEqual(
+      requests.map((request) => [request.method, new URL(request.href).pathname]),
+      [
+        ["GET", "/v2/agent/space-self"],
+        ["GET", "/v2/agent/space-self/relationships"],
+        ["PUT", "/v2/agent/space-self/relationships/agent-b"],
+        ["DELETE", "/v2/agent/space-self/relationships/agent-b"],
+        ["GET", "/v2/agent/space-self/resources"],
+        ["PUT", "/v2/agent/space-self/resources"],
+        ["DELETE", "/v2/agent/space-self/resources/pin-1"],
+      ],
+    );
+    assert.equal(new URL(requests[0].href).searchParams.get("limit"), "5");
+    assert.equal(new URL(requests[1].href).searchParams.get("relation_type"), "trusted");
+    assert.equal(new URL(requests[4].href).searchParams.get("resource_type"), "room");
+    assert.equal(requests[2].body.relation_type, "trusted");
+    assert.equal(requests[5].body.resource_id, "protocol-garden");
+    assert.equal(requests[0].agentId, "agent-a");
+  } finally {
+    globalThis.fetch = previousFetch;
     if (previous === undefined) {
       delete process.env.ZENLINK_MCP_LONG_LIVED;
     } else {

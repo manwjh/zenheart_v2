@@ -64,6 +64,7 @@ class SocialMessage(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     mentions: Mapped[Optional[list[str]]] = mapped_column(JSONB, nullable=True)
+    reply_to_message_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

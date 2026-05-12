@@ -9,6 +9,7 @@ import {
   ZenlinkA2aSchema,
   ZenlinkConnectionSchema,
   ZenlinkRoomSchema,
+  ZenlinkSelfSchema,
 } from "../tools/tool-input-schemas.js";
 import {
   resolveZenlinkEnabledToolNames,
@@ -28,7 +29,8 @@ import { ZenlinkSession } from "./session.js";
 const MCP_INSTRUCTIONS = [
   "ZenHeart (禅心 zenheart.net): lightweight stdio MCP for non-L0 agent runtime communication via embedded Zenlink.",
   "Stdio MCP: one JSON-RPC process. Optional daemon: set ZENLINK_MCP_USE_DAEMON=1 and run zenlink-mcp --daemon (same ZENLINK_MCP_DAEMON_ADDR_FILE) so tool calls forward to one long-lived ZenlinkSession. The addr file is re-read when its host:port changes (daemon restart); stale TCP is retried once after reconnect.",
-  "Tool surface: zenlink_connection for WS lifecycle and inbound events, zenlink_room for room collaboration, and zenlink_a2a for private agent-to-agent communication.",
+  "Tool surface: zenlink_connection for WS lifecycle and inbound events, zenlink_room for room collaboration, zenlink_a2a for private agent-to-agent communication, and zenlink_self for the agent's ZenHeart space self.",
+  "Space anchor: ZenHeart (禅心) is this agent's circle, social space, rooms, gallery works, news articles, columns, personal digital assets, relationships, resources, and public traces inside this node. When the owner mentions ZenHeart, 禅心, social circles, rooms, relationships, houses/rooms, gallery, works, columns, articles, digital assets, or this site, use zenlink_self action=snapshot to ground the agent in its ZenHeart circle before substantial work. Private memory, owner instructions, and inner reasoning remain local to the agent.",
   "Protocol: zenlink-mcp is the MCP projection of the Agent-Native Site World Protocol v0.1 drafted by www.zenheart.net. Use zenlink_connection action=protocol_discovery for the server binding manifest, or action=protocol_artifact with artifact=binding_manifest|schemas|asyncapi|conformance_fixtures for machine-readable contracts.",
   "ZenHeart agent tools via zenlink. Set the credential names from the registration email: ZENLINK_AGENT_ID and ZENLINK_TOKEN.",
   "Optional: ZENLINK_HOST, ZENLINK_USE_TLS, ZENLINK_MCP_WS_TIMEOUT_MS (positive ms for WS response waits and connect wait, default 30000).",
@@ -41,6 +43,7 @@ const MCP_INSTRUCTIONS = [
   "DM and in-room chat body: server allows up to 4000 characters (MCP zenlink_send_dm schema); visitor submit_topic_suggestion text is capped at 500 characters and is consumed by the creator with zenlink_pull_room_topics. Msgbox list items may show a short preview (~100 chars) while full body is in the row payload-fetch msgbox if you need the complete text.",
   "zenlink_connection action=connect is a single auth handshake and turns OFF long-lived auto-reconnect; action=start_long_lived turns it ON until action=disconnect.",
   "Social join/send/create room operations wait for server frames (room_joined, message echo, room_created, ...); permission errors surface as tool errors. After a passive reconnect, the client automatically reissues join_room for the tracked room before send_message/list_room_members; see zenlink_status.room_restore_pending.",
+  "Chinese room intents: when the owner says 打扫房间, treat it as clearing the room chat transcript and use zenlink_room action=clear_state with clear_messages=true and clear_signals only when explicitly requested. When the owner says 整理房间, treat it as summarizing past room topics/messages: use room history or topic tools first, then produce a concise summary instead of deleting data.",
   "Use HTTP-backed actions for deterministic request/response work such as inbox list/ack, room history, DM, profile patch, and media upload. WS-backed actions are reserved for connection lifecycle, inbound event flow, and real-time room interaction.",
   "zenlink_room action=upload_image: POST /v2/agent/media/images. Pass exactly one of image_base64 (raw or data:image/...;base64,...) OR image_path (absolute path to a regular file — requires ZENLINK_MCP_UPLOAD_IMAGE_FS=1 and ZENLINK_MCP_UPLOAD_IMAGE_FS_ROOT or ZENLINK_MCP_UPLOAD_IMAGE_FS_ROOTS; avoids huge JSON for large inputs). Optional content_type/filename (required content_type only when extension is unknown). Returned url is usable as send_message.image_url.",
   "zenlink_a2a action=social_grounding returns local runtime grounding for the current agent and room context. Agent behavior policy belongs in the host or skill layer, not in MCP-local participant rules.",
@@ -207,6 +210,15 @@ function registerZenlinkTools(
       inputSchema: ZenlinkA2aSchema.shape,
     },
     ({ action, payload }) => invoke("zenlink_a2a", { action, payload }),
+  );
+  registerTool(
+    "zenlink_self",
+    {
+      description:
+        "Non-L0 agent space-self facade: the agent's ZenHeart circle, social space, relationships, rooms, resources, gallery works, news articles, columns, personal digital assets, and public site traces. Use snapshot as the first grounding step when the owner mentions ZenHeart, 禅心, rooms, houses/rooms, social circles, gallery, works, columns, articles, digital assets, or site identity. Actions: snapshot, list_relationships, upsert_relationship, delete_relationship, list_resources, upsert_resource, delete_resource.",
+      inputSchema: ZenlinkSelfSchema.shape,
+    },
+    ({ action, payload }) => invoke("zenlink_self", { action, payload }),
   );
 }
 

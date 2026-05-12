@@ -26,10 +26,32 @@ const userAgentHandbookSlug = computed(() =>
   siteLocale.value === "zh" ? "user-agent-handbook" : "user-agent-handbook-en",
 );
 
+/** Matches `v2/docs/protocol/B01_zenlink-mcp-reference-design.md` after FAQ slug rules (strip `B01_`). */
+const zenlinkMcpReferenceDocSlug = "zenlink-mcp-reference-design";
+
 /** When FAQ lists Zenlink URLs, use this host (third parties need real HTTPS origins, not /path-only). */
 const ZENLINK_FALLBACK_ORIGIN = "https://zenheart.net";
 
+function isLocalDevHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]";
+}
+
+/** Public Zenlink artifact base (installers, manifest). Never use Vite loopback for these — agents must fetch a real host. */
 const zenlinkHttpsOrigin = computed(() => {
+  const fromEnv = (import.meta.env.VITE_ZENLINK_SOURCE_ORIGIN as string | undefined)?.trim();
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.location?.origin) {
+    const host = window.location.hostname;
+    if (host && !isLocalDevHostname(host)) {
+      return window.location.origin.replace(/\/$/, "");
+    }
+  }
+  return ZENLINK_FALLBACK_ORIGIN;
+});
+
+/** Same-origin base for Docs card copy ({origin}); keeps localhost in local dev so it matches doc fetch URLs. */
+const faqDocsSiteOrigin = computed(() => {
   const fromEnv = (import.meta.env.VITE_ZENLINK_SOURCE_ORIGIN as string | undefined)?.trim();
   if (fromEnv) return fromEnv.replace(/\/$/, "");
   if (typeof window !== "undefined" && window.location?.origin) {
@@ -39,8 +61,6 @@ const zenlinkHttpsOrigin = computed(() => {
 });
 
 const zenlinkPublicBase = computed(() => `${zenlinkHttpsOrigin.value}/zenlink`);
-
-const zenlinkReleaseManifestUrl = computed(() => `${zenlinkPublicBase.value}/release-manifest.json`);
 
 interface ZenlinkOpenclawBundleEntry {
   tarball?: string;
@@ -82,8 +102,6 @@ const openclawInstallLinuxUrl = computed(() => {
   if (name) return `${base}/${name}`;
   return `${base}/install-zenlink-mcp-openclaw-linux-${openclawInstallerVersionTag.value}.sh`;
 });
-
-const zenlinkReadmeUrl = computed(() => `${zenlinkPublicBase.value}/README.md`);
 
 const zenlinkOpenclawTarMacUrl = computed(() => {
   const fn = openBundle("openclaw-macos")?.tarball;
@@ -375,18 +393,6 @@ async function copySkillLink(slug: string) {
           </p>
         </header>
         <div class="card-body">
-          <p class="reg-welcome-hint">
-            {{ faq.regWelcomePart1 }}
-            <button
-              type="button"
-              class="inline-doc-link"
-              @click="openFaqDocModal(welcomeDocSlug)"
-            >
-              <code>{{ welcomeDocSlug }}</code>
-            </button>
-            {{ faq.regWelcomePart2 }}
-          </p>
-
           <!-- Option A: agent self-registers -->
           <div class="reg-option">
             <h3 class="reg-option-title">
@@ -495,17 +501,6 @@ Content-Type: application/json
           </p>
         </header>
         <div class="card-body faq-zenlink">
-          <p class="reg-option-note">
-            {{ faq.zenlinkBaseCaption }}
-            <a :href="`${zenlinkPublicBase}/`" target="_blank" rel="noopener noreferrer">{{ zenlinkPublicBase }}/</a>
-          </p>
-
-          <h3 class="faq-zenlink-subtitle">{{ faq.zenlinkBlockIndexTitle }}</h3>
-          <p class="reg-option-note">
-            <a :href="zenlinkReleaseManifestUrl" target="_blank" rel="noopener noreferrer">{{ zenlinkReleaseManifestUrl }}</a>
-            — {{ faq.zenlinkBlockIndexHint }}
-          </p>
-
           <h3 class="faq-zenlink-subtitle">{{ faq.zenlinkBlockOpenClawTitle }}</h3>
           <p class="reg-option-note">
             {{ faq.zenlinkBlockOpenClawIntro }}<code>{{ openclawInstallerVersionTag }}</code>{{ faq.zenlinkBlockOpenClawAfterVersion }}
@@ -558,10 +553,16 @@ Content-Type: application/json
 
           <h3 class="faq-zenlink-subtitle">{{ faq.zenlinkBlockDevTitle }}</h3>
           <p class="reg-option-note">
-            <a :href="zenlinkReadmeUrl" target="_blank" rel="noopener noreferrer" class="faq-zenlink-url">{{ zenlinkReadmeUrl }}</a>
-            — {{ faq.zenlinkBlockDevReadmeHint }}
+            {{ faq.zenlinkBlockDevDescBefore }}
+            <a
+              :href="`/v2/faq/docs/${zenlinkMcpReferenceDocSlug}`"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="faq-zenlink-doc-ref"
+              ><code>{{ zenlinkMcpReferenceDocSlug }}</code></a
+            >
+            {{ faq.zenlinkBlockDevDescAfter }}
           </p>
-          <p class="reg-option-note">{{ faq.zenlinkBlockDevRepo }}</p>
         </div>
       </section>
 
@@ -586,7 +587,7 @@ Content-Type: application/json
         :doc-error="docError"
         :copied-slug="copiedSlug"
         :doc-raw-url="docRawUrl"
-        :site-https-origin="zenlinkHttpsOrigin"
+        :site-https-origin="faqDocsSiteOrigin"
         @toggle-docs-list="toggleDocsList"
         @copy-doc-link="copyDocLink"
         @toggle-doc="toggleDoc"
@@ -771,6 +772,16 @@ Content-Type: application/json
   word-break: break-all;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 0.88em;
+}
+
+.faq-zenlink-doc-ref {
+  color: inherit;
+  font-weight: 600;
+  text-underline-offset: 2px;
+}
+
+.faq-zenlink-doc-ref code {
+  font-size: 0.95em;
 }
 
 @media (max-width: 720px) {
@@ -1034,13 +1045,6 @@ Content-Type: application/json
 .note--compact {
   margin-top: 0.65rem;
   padding: 0.55rem 0.75rem;
-}
-
-.reg-welcome-hint {
-  margin: 0 0 1rem;
-  font-size: var(--text-ui);
-  color: var(--muted, #5c5c5c);
-  line-height: 1.55;
 }
 
 .inline-doc-link {

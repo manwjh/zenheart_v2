@@ -64,6 +64,17 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
   let observeChannel: ReturnType<typeof createWebSocketChannel> | null = null;
   let msgSeq = 0;
 
+  function nextLocalMessageSeq(): number {
+    msgSeq += 1;
+    return msgSeq;
+  }
+
+  /** Prefer server `id` (room message UUID); matches `GET` room history keys. */
+  function resolveObserveMessageId(serverId: unknown): number | string {
+    if (typeof serverId === "string" && serverId.trim()) return serverId.trim();
+    return nextLocalMessageSeq();
+  }
+
   /** Match server `get_room_messages` default; keep UI list bounded during long observe sessions. */
   const OBSERVE_FEED_MAX_MESSAGES = 50;
 
@@ -183,7 +194,7 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
 
   function pushSystemMessage(text: string) {
     observeMessages.value.push({
-      id: ++msgSeq,
+      id: nextLocalMessageSeq(),
       agent_id: "",
       agent_name: "System",
       text,
@@ -248,7 +259,7 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
       const recent = (frame.recent_messages as Array<Record<string, unknown>>) ?? [];
       if (recent.length > 0) {
         observeMessages.value = recent.map((m) => ({
-          id: ++msgSeq,
+          id: resolveObserveMessageId(m.id),
           agent_id: m.agent_id as string,
           agent_name: m.agent_name as string,
           text: m.text as string,
@@ -268,7 +279,7 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
           : `Cannot subscribe: ${r || "unknown"}`;
     } else if (type === "message") {
       observeMessages.value.push({
-        id: ++msgSeq,
+        id: resolveObserveMessageId(frame.id),
         agent_id: frame.agent_id as string,
         agent_name: frame.agent_name as string,
         text: frame.text as string,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import WebSocket
@@ -89,6 +90,27 @@ def _extract_agent_id_mentions_from_text(text: str) -> list[str]:
         seen.add(token_s)
         result.append(token_s)
     return result
+
+
+def _parse_optional_message_uuid(raw: object, field: str) -> uuid.UUID | dict | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return {
+            "type": "error",
+            "reason": "invalid_send_message_payload",
+            "detail": f"{field} must be a message UUID string when provided",
+            "field": field,
+        }
+    try:
+        return uuid.UUID(raw.strip())
+    except ValueError:
+        return {
+            "type": "error",
+            "reason": "invalid_send_message_payload",
+            "detail": f"{field} must be a valid UUID",
+            "field": field,
+        }
 
 
 def _room_join_payload(
@@ -583,6 +605,18 @@ async def _handle_send_message(
         }))
         return
 
+    reply_to_message_id = _parse_optional_message_uuid(data.get("reply_to_message_id"), "reply_to_message_id")
+    if isinstance(reply_to_message_id, dict):
+        await ws.send_text(_jdump(reply_to_message_id))
+        return
+    expected_last_message_id = _parse_optional_message_uuid(
+        data.get("expected_last_message_id"),
+        "expected_last_message_id",
+    )
+    if isinstance(expected_last_message_id, dict):
+        await ws.send_text(_jdump(expected_last_message_id))
+        return
+
     name_to_id = await social.get_name_to_id_map(agent_id)
     raw_mention_ids = data.get("mention_agent_ids")
     mentions: list[str]
@@ -662,14 +696,58 @@ async def _handle_send_message(
                     if mid not in mentions:
                         mentions.append(mid)
 
-    room_id = await social.record_message(agent_id)
+    room_id = await social.current_room_id(agent_id)
     if room_id is None:
         await ws.send_text(_jdump({"type": "error", "reason": "not_in_room"}))
         return
 
-    sent_at = datetime.now(timezone.utc).isoformat()
+    sent_at_dt = datetime.now(timezone.utc)
+    sent_at = sent_at_dt.isoformat()
+    message_uuid = uuid.uuid4()
+    persisted = await record_social_message(
+        session_factory,
+        room_id=room_id,
+        agent_id=agent_id,
+        text=text,
+        image_url=image_url,
+        mentions=mentions,
+        sent_at=sent_at_dt,
+        message_id=message_uuid,
+        reply_to_message_id=reply_to_message_id,
+        expected_last_message_id=expected_last_message_id,
+    )
+    persisted_ok = persisted is True or bool(getattr(persisted, "ok", False))
+    if not persisted_ok and bool(getattr(persisted, "stale", False)):
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "stale_room_state",
+            "code": "stale_room_state",
+            "message": "The room changed after the agent read it, so the message was not sent.",
+            "hint": "Fetch the latest room messages and retry with the current last message id.",
+            "retryable": True,
+            "category": "conflict",
+            "action": "refresh_state",
+            "expected_last_message_id": str(expected_last_message_id) if expected_last_message_id else None,
+            "current_last_message": getattr(persisted, "current_last_message", None),
+        }))
+        return
+    if not persisted_ok:
+        await ws.send_text(_jdump({
+            "type": "error",
+            "reason": "message_persist_failed",
+            "code": "message_persist_failed",
+            "message": "The room message could not be persisted, so it was not broadcast.",
+            "hint": "Retry after storage recovers.",
+            "retryable": True,
+            "category": "server",
+            "action": "retry_later",
+        }))
+        return
+
+    await social.apply_message_after_persist(room_id, sent_at_dt)
     frame: dict = {
         "type": "message",
+        "id": str(message_uuid),
         "room_id": room_id,
         "agent_id": agent_id,
         "agent_name": agent_name,
@@ -679,6 +757,8 @@ async def _handle_send_message(
         "payload_authority": "message",
         "routing_mode": routing_mode,
     }
+    if reply_to_message_id is not None:
+        frame["reply_to_message_id"] = str(reply_to_message_id)
     if mentions:
         frame["mentions"] = mentions
     if out_of_room_mentions:
@@ -686,15 +766,6 @@ async def _handle_send_message(
         frame["out_of_room_mention_count"] = len(out_of_room_mentions)
 
     await social.broadcast_to_room(room_id, frame)
-    await record_social_message(
-        session_factory,
-        room_id=room_id,
-        agent_id=agent_id,
-        text=text,
-        image_url=image_url,
-        mentions=mentions,
-        sent_at=datetime.fromisoformat(sent_at),
-    )
     await record_agent_event(
         session_factory, event="a2a_message_sent", agent_id=agent_id,
         detail={
@@ -736,6 +807,8 @@ async def _handle_send_message(
                 mentions=mentions,
                 sent_at=sent_at,
                 routing_mode=routing_mode,
+                message_id=str(message_uuid),
+                reply_to_message_id=str(reply_to_message_id) if reply_to_message_id else None,
             )
             schedule_social_notify(
                 session_factory=session_factory,

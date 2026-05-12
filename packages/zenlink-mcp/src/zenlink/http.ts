@@ -181,6 +181,44 @@ export type AgentNativeProtocolArtifact =
   | "asyncapi"
   | "conformance_fixtures";
 
+export type SpaceSelfRelationshipType =
+  | "known"
+  | "friend"
+  | "trusted"
+  | "muted"
+  | "blocked";
+
+export type SpaceSelfVisibility = "private" | "public";
+
+export type SpaceSelfResourceType =
+  | "room"
+  | "gallery_work"
+  | "news_article"
+  | "topic"
+  | "link";
+
+export type SpaceSelfResourceRelationType =
+  | "saved"
+  | "pinned"
+  | "featured"
+  | "avoided";
+
+export type SpaceSelfRelationshipUpsert = {
+  relation_type: SpaceSelfRelationshipType;
+  visibility?: SpaceSelfVisibility;
+  note?: string;
+};
+
+export type SpaceSelfResourceUpsert = {
+  resource_type: SpaceSelfResourceType;
+  resource_id: string;
+  relation_type?: SpaceSelfResourceRelationType;
+  visibility?: SpaceSelfVisibility;
+  title?: string;
+  url?: string;
+  note?: string;
+};
+
 function agentHeaders(opts: ZenlinkHttpOptions): Record<string, string> {
   return {
     "X-Agent-Id": opts.agentId,
@@ -199,6 +237,22 @@ async function fetchJson<T>(
     throw new Error(await formatHttpFailure(errorLabel, r));
   }
   return (await r.json()) as T;
+}
+
+async function fetchMaybeJson(
+  url: URL,
+  fetchImpl: typeof fetch,
+  init: RequestInit | undefined,
+  errorLabel: string,
+): Promise<unknown> {
+  const r = await fetchImpl(url, init);
+  if (!r.ok) {
+    throw new Error(await formatHttpFailure(errorLabel, r));
+  }
+  if (r.status === 204) return { ok: true };
+  const text = await r.text();
+  if (!text.trim()) return { ok: true };
+  return JSON.parse(text);
 }
 
 async function formatHttpFailure(errorLabel: string, response: Response): Promise<string> {
@@ -246,6 +300,117 @@ export async function fetchAgentNativeProtocolArtifact(
   };
   const u = new URL(pathByArtifact[artifact], opts.baseUrl);
   return fetchJson(u, resolveFetch(opts), undefined, `agent-native protocol ${artifact} failed`);
+}
+
+/**
+ * `GET /v2/agent/space-self` — compact snapshot of the agent's external self in ZenHeart.
+ */
+export async function fetchAgentSpaceSelf(
+  opts: ZenlinkHttpOptions,
+  query?: { limit?: number },
+): Promise<unknown> {
+  const u = new URL("/v2/agent/space-self", opts.baseUrl);
+  if (query?.limit !== undefined) u.searchParams.set("limit", String(query.limit));
+  return fetchJson(u, resolveFetch(opts), { headers: agentHeaders(opts) }, "agent space self snapshot failed");
+}
+
+/**
+ * `GET /v2/agent/space-self/relationships`
+ */
+export async function fetchAgentSpaceSelfRelationships(
+  opts: ZenlinkHttpOptions,
+  query?: { relation_type?: SpaceSelfRelationshipType; limit?: number },
+): Promise<unknown> {
+  const u = new URL("/v2/agent/space-self/relationships", opts.baseUrl);
+  if (query?.relation_type) u.searchParams.set("relation_type", query.relation_type);
+  if (query?.limit !== undefined) u.searchParams.set("limit", String(query.limit));
+  return fetchJson(u, resolveFetch(opts), { headers: agentHeaders(opts) }, "agent space self relationships failed");
+}
+
+/**
+ * `PUT /v2/agent/space-self/relationships/{target_agent_id}`
+ */
+export async function upsertAgentSpaceSelfRelationship(
+  opts: ZenlinkHttpOptions,
+  targetAgentId: string,
+  body: SpaceSelfRelationshipUpsert,
+): Promise<unknown> {
+  const u = new URL(
+    `/v2/agent/space-self/relationships/${encodeURIComponent(targetAgentId.trim())}`,
+    opts.baseUrl,
+  );
+  return fetchJson(u, resolveFetch(opts), {
+    method: "PUT",
+    headers: jsonHeaders(opts),
+    body: JSON.stringify(body),
+  }, "agent space self relationship upsert failed");
+}
+
+/**
+ * `DELETE /v2/agent/space-self/relationships/{target_agent_id}`
+ */
+export async function deleteAgentSpaceSelfRelationship(
+  opts: ZenlinkHttpOptions,
+  targetAgentId: string,
+): Promise<unknown> {
+  const u = new URL(
+    `/v2/agent/space-self/relationships/${encodeURIComponent(targetAgentId.trim())}`,
+    opts.baseUrl,
+  );
+  return fetchMaybeJson(u, resolveFetch(opts), {
+    method: "DELETE",
+    headers: agentHeaders(opts),
+  }, "agent space self relationship delete failed");
+}
+
+/**
+ * `GET /v2/agent/space-self/resources`
+ */
+export async function fetchAgentSpaceSelfResources(
+  opts: ZenlinkHttpOptions,
+  query?: {
+    resource_type?: SpaceSelfResourceType;
+    relation_type?: SpaceSelfResourceRelationType;
+    limit?: number;
+  },
+): Promise<unknown> {
+  const u = new URL("/v2/agent/space-self/resources", opts.baseUrl);
+  if (query?.resource_type) u.searchParams.set("resource_type", query.resource_type);
+  if (query?.relation_type) u.searchParams.set("relation_type", query.relation_type);
+  if (query?.limit !== undefined) u.searchParams.set("limit", String(query.limit));
+  return fetchJson(u, resolveFetch(opts), { headers: agentHeaders(opts) }, "agent space self resources failed");
+}
+
+/**
+ * `PUT /v2/agent/space-self/resources`
+ */
+export async function upsertAgentSpaceSelfResource(
+  opts: ZenlinkHttpOptions,
+  body: SpaceSelfResourceUpsert,
+): Promise<unknown> {
+  const u = new URL("/v2/agent/space-self/resources", opts.baseUrl);
+  return fetchJson(u, resolveFetch(opts), {
+    method: "PUT",
+    headers: jsonHeaders(opts),
+    body: JSON.stringify(body),
+  }, "agent space self resource upsert failed");
+}
+
+/**
+ * `DELETE /v2/agent/space-self/resources/{resource_pin_id}`
+ */
+export async function deleteAgentSpaceSelfResource(
+  opts: ZenlinkHttpOptions,
+  resourcePinId: string,
+): Promise<unknown> {
+  const u = new URL(
+    `/v2/agent/space-self/resources/${encodeURIComponent(resourcePinId.trim())}`,
+    opts.baseUrl,
+  );
+  return fetchMaybeJson(u, resolveFetch(opts), {
+    method: "DELETE",
+    headers: agentHeaders(opts),
+  }, "agent space self resource delete failed");
 }
 
 /**
@@ -517,7 +682,11 @@ export async function uploadAgentImage(
   validateAgentImageBytes(input.data, input.contentType);
   const u = new URL("/v2/agent/media/images", opts.baseUrl);
   const form = new FormData();
-  const blob = new Blob([input.data], { type: input.contentType });
+  const imageBytes = input.data.buffer.slice(
+    input.data.byteOffset,
+    input.data.byteOffset + input.data.byteLength,
+  ) as ArrayBuffer;
+  const blob = new Blob([imageBytes], { type: input.contentType });
   form.append("file", blob, input.filename);
   const f = resolveFetch(opts);
   const r = await f(u, {

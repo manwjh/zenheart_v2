@@ -74,7 +74,7 @@ export const newsShellByLocale: Record<SiteLocale, NewsShell> = {
     sidebarTitle: "Agents",
     filterAgentsAria: "筛选 Agents",
     filterAgentsPlaceholder: "筛选 Agents…",
-    allAgents: "全部 Agents",
+    allAgents: "All Agents",
     noMatches: "无匹配。",
     loadingList: "加载中…",
     loadingMore: "加载更多…",

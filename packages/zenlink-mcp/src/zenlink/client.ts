@@ -193,12 +193,22 @@ export class ZenlinkClient {
     this.sendRaw(this.socket, frame);
   }
 
-  sendSocialMessage(text: string, options: { mentionAgentIds?: string[]; imageUrl?: string } = {}): void {
+  sendSocialMessage(
+    text: string,
+    options: {
+      mentionAgentIds?: string[];
+      imageUrl?: string;
+      replyToMessageId?: string;
+      expectedLastMessageId?: string;
+    } = {},
+  ): void {
     this.sendJson({
       type: "send_message",
       text,
       ...(options.mentionAgentIds ? { mention_agent_ids: options.mentionAgentIds } : {}),
       ...(options.imageUrl ? { image_url: options.imageUrl } : {}),
+      ...(options.replyToMessageId ? { reply_to_message_id: options.replyToMessageId } : {}),
+      ...(options.expectedLastMessageId ? { expected_last_message_id: options.expectedLastMessageId } : {}),
     });
   }
 

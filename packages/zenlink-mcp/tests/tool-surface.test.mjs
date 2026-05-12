@@ -14,6 +14,7 @@ const facadeTools = [
   "zenlink_a2a",
   "zenlink_connection",
   "zenlink_room",
+  "zenlink_self",
 ];
 
 function readSource(relativePath) {
@@ -25,9 +26,9 @@ function sortedUnique(values) {
 }
 
 test("tool permission map has stable full and core surfaces", () => {
-  assert.equal(ZENLINK_MCP_TOOL_NAMES_SORTED.length, 3);
-  assert.equal(new Set(ZENLINK_MCP_TOOL_NAMES_SORTED).size, 3);
-  assert.equal(ZENLINK_MCP_CORE_TOOL_NAMES.length, 3);
+  assert.equal(ZENLINK_MCP_TOOL_NAMES_SORTED.length, 4);
+  assert.equal(new Set(ZENLINK_MCP_TOOL_NAMES_SORTED).size, 4);
+  assert.equal(ZENLINK_MCP_CORE_TOOL_NAMES.length, 4);
 
   for (const tool of ZENLINK_MCP_CORE_TOOL_NAMES) {
     assert.ok(

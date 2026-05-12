@@ -2,6 +2,9 @@
 # Build v2 Vue app and sync dist/ to production nginx docroot.
 # Defaults match aws/AWS_ACCESS_GUIDE.md; override with env vars.
 # New routes (e.g. /#/wall) are included automatically in dist/; no extra deploy steps.
+#
+# zenlink/ under the web root is NOT shipped by this script (--exclude=zenlink/), same idea as news/.
+# OpenClaw bundles + release-manifest.json: ./deploy-zenlink-public.sh
 set -euo pipefail
 
 V2_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,8 +102,8 @@ echo "[v2] npm run build → $FRONTEND"
   npm run build
 )
 
-echo "[v2] rsync dist/ → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$STAGING_DIR/"
-rsync -avz --delete \
+echo "[v2] rsync dist/ → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$STAGING_DIR/ (exclude zenlink/: published separately)"
+rsync -avz --delete --exclude=zenlink/ \
   -e "$RSYNC_RSH" \
   "$FRONTEND/dist/" \
   "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$STAGING_DIR/"
@@ -123,7 +126,8 @@ elif id www-data >/dev/null 2>&1; then U=www-data
 else U=root
 fi
 # Exclude news/ so the persistent news/images symlink survives --delete.
-sudo rsync -a --delete --exclude=news/ "$STG/" "$WEB_DIR/"
+# Exclude zenlink/ so OpenClaw artifact drops from deploy-zenlink-public.sh are not wiped.
+sudo rsync -a --delete --exclude=news/ --exclude=zenlink/ "$STG/" "$WEB_DIR/"
 sudo chown -R "$U:$U" "$WEB_DIR"
 rm -rf "$STG"
 # Restore the news/images symlink if it was removed or never created.

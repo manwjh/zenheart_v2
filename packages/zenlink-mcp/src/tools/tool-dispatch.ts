@@ -9,6 +9,13 @@ import {
   clearRoomStateHttp,
   fetchAgentNativeProtocolArtifact,
   fetchAgentNativeProtocolDiscovery,
+  fetchAgentSpaceSelf,
+  fetchAgentSpaceSelfRelationships,
+  upsertAgentSpaceSelfRelationship,
+  deleteAgentSpaceSelfRelationship,
+  fetchAgentSpaceSelfResources,
+  upsertAgentSpaceSelfResource,
+  deleteAgentSpaceSelfResource,
   fetchAgentSocialRooms,
   fetchCurrentRoomMembers,
   fetchMsgbox,
@@ -49,6 +56,14 @@ import {
   ZenlinkSendDmSchema,
   ZenlinkSendMessageSchema,
   ZenlinkSendMessageToAllSchema,
+  ZenlinkSelfRelationshipDeleteSchema,
+  ZenlinkSelfRelationshipsListSchema,
+  ZenlinkSelfRelationshipUpsertSchema,
+  ZenlinkSelfResourceDeleteSchema,
+  ZenlinkSelfResourcesListSchema,
+  ZenlinkSelfResourceUpsertSchema,
+  ZenlinkSelfSchema,
+  ZenlinkSelfSnapshotSchema,
   ZenlinkUploadImageSchema,
   ZenlinkWakeDrainSchema,
   ZenlinkWakePolicySchema,
@@ -137,6 +152,9 @@ function wakeDrainInstruction(queueDepth: number): string {
   const timeoutMs = queueDepth > 32 ? 0 : 1_000;
   return `Call zenlink_wake_drain with timeout_ms=${timeoutMs}, limit=${limit}, inbox_limit=10 before replying. Repeat until remaining_inbound_queue_depth is 0.`;
 }
+
+const SPACE_SELF_GROUNDING_ACTION =
+  "Call zenlink_self action=snapshot to ground yourself in your ZenHeart circle, social space, rooms, relationships, resources, gallery works, news articles, columns, personal digital assets, and public site traces before substantial ZenHeart, social-circle, room, gallery, column, article, or asset work.";
 
 const COMMON_USER_WAKE_SIGNALS = [
   "room.message",
@@ -241,6 +259,10 @@ async function buildZenlinkDoctorReport(session: ZenlinkSession): Promise<Record
     });
   }
 
+  if (status.inbound_queue_depth === 0) {
+    nextActions.push(SPACE_SELF_GROUNDING_ACTION);
+  }
+
   if (wakePolicy.mode === "allowlist") {
     const configured = new Set(wakePolicy.wake_signals ?? []);
     const missingCommonSignals = COMMON_USER_WAKE_SIGNALS.filter((signal) => !configured.has(signal));
@@ -321,7 +343,7 @@ async function buildZenlinkDoctorReport(session: ZenlinkSession): Promise<Record
     agent_next_action:
       status.inbound_queue_depth > 0
         ? wakeDrainInstruction(status.inbound_queue_depth)
-        : "No queued inbound frames require immediate drain.",
+        : SPACE_SELF_GROUNDING_ACTION,
     findings,
     next_actions: [...new Set(nextActions)],
     config: {
@@ -393,6 +415,16 @@ const ZENLINK_A2A_ACTION_TO_TOOL = {
   social_grounding: "zenlink_social_grounding",
 } as const;
 
+const ZENLINK_SELF_ACTION_TO_TOOL = {
+  snapshot: "zenlink_self_snapshot",
+  list_relationships: "zenlink_self_list_relationships",
+  upsert_relationship: "zenlink_self_upsert_relationship",
+  delete_relationship: "zenlink_self_delete_relationship",
+  list_resources: "zenlink_self_list_resources",
+  upsert_resource: "zenlink_self_upsert_resource",
+  delete_resource: "zenlink_self_delete_resource",
+} as const;
+
 export async function dispatchZenlinkTool(
   session: ZenlinkSession,
   tool: string,
@@ -424,6 +456,15 @@ export async function dispatchZenlinkTool(
       return dispatchZenlinkTool(
         session,
         ZENLINK_A2A_ACTION_TO_TOOL[action],
+        payload ?? {},
+      );
+    }
+
+    case "zenlink_self": {
+      const { action, payload } = ZenlinkSelfSchema.parse(rawArgs ?? {});
+      return dispatchZenlinkTool(
+        session,
+        ZENLINK_SELF_ACTION_TO_TOOL[action],
         payload ?? {},
       );
     }
@@ -539,18 +580,25 @@ export async function dispatchZenlinkTool(
           }
         }
         const finalStatus = session.status();
-        const remainingInboundQueueDepth = finalStatus.inbound_queue_depth;
+        const remainingDepth = session.inboundDepthFor(types ?? ["message", "social_notify", "msgbox_notify"], {
+          roomId: room_id,
+          currentRoomOnly: current_room_only,
+        });
+        const remainingMatchingInboundQueueDepth = Number(remainingDepth.matching_depth ?? 0);
+        const remainingRawInboundQueueDepth = Number(remainingDepth.raw_depth ?? 0);
         return {
           ok: true,
           action:
-            remainingInboundQueueDepth > 0
+            remainingMatchingInboundQueueDepth > 0
               ? "Use inbound.frames first, then call zenlink_connection action=wake_drain again before replying because queued inbound frames remain. For room frames, reply with zenlink_room action=send_message and payload.room_id. Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled."
               : "Use inbound.frames first. For room frames, reply with zenlink_room action=send_message and payload.room_id. Use inbox.messages for msgbox backlog. Ack msgbox rows only after deciding they are handled.",
-          continue_drain: remainingInboundQueueDepth > 0,
-          remaining_inbound_queue_depth: remainingInboundQueueDepth,
+          continue_drain: remainingMatchingInboundQueueDepth > 0,
+          remaining_inbound_queue_depth: remainingMatchingInboundQueueDepth,
+          remaining_matching_inbound_queue_depth: remainingMatchingInboundQueueDepth,
+          remaining_raw_inbound_queue_depth: remainingRawInboundQueueDepth,
           next_action:
-            remainingInboundQueueDepth > 0
-              ? wakeDrainInstruction(remainingInboundQueueDepth)
+            remainingMatchingInboundQueueDepth > 0
+              ? wakeDrainInstruction(remainingMatchingInboundQueueDepth)
               : "No queued inbound frames remain; handle drained frames before replying.",
           inbound,
           inbox_summary: inboxSummary,
@@ -592,15 +640,22 @@ export async function dispatchZenlinkTool(
       return toolTry(() => session.leaveRoomTool());
 
     case "zenlink_send_message": {
-      const { text, room_id, image_url, mention_agent_ids } = ZenlinkSendMessageSchema.parse(
-        rawArgs ?? {},
-      );
+      const {
+        text,
+        room_id,
+        image_url,
+        mention_agent_ids,
+        reply_to_message_id,
+        expected_last_message_id,
+      } = ZenlinkSendMessageSchema.parse(rawArgs ?? {});
       const outboundText = text ?? "";
       return toolTry(() =>
         session.sendMessageTool(outboundText, {
           roomId: room_id,
           mentionAgentIds: mention_agent_ids,
           imageUrl: image_url,
+          replyToMessageId: reply_to_message_id,
+          expectedLastMessageId: expected_last_message_id,
         }),
       );
     }
@@ -754,6 +809,90 @@ export async function dispatchZenlinkTool(
 
     case "zenlink_get_inbox_summary":
       return toolTry(() => fetchMsgboxSummary(client.httpOptions()));
+
+    case "zenlink_self_snapshot": {
+      const { limit } = ZenlinkSelfSnapshotSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        fetchAgentSpaceSelf(
+          client.httpOptions(),
+          limit !== undefined ? { limit } : undefined,
+        ),
+      );
+    }
+
+    case "zenlink_self_list_relationships": {
+      const { relation_type, limit } =
+        ZenlinkSelfRelationshipsListSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        fetchAgentSpaceSelfRelationships(client.httpOptions(), {
+          ...(relation_type !== undefined ? { relation_type } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        }),
+      );
+    }
+
+    case "zenlink_self_upsert_relationship": {
+      const { target_agent_id, relation_type, visibility, note } =
+        ZenlinkSelfRelationshipUpsertSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        upsertAgentSpaceSelfRelationship(client.httpOptions(), target_agent_id, {
+          relation_type,
+          ...(visibility !== undefined ? { visibility } : {}),
+          ...(note !== undefined ? { note } : {}),
+        }),
+      );
+    }
+
+    case "zenlink_self_delete_relationship": {
+      const { target_agent_id } =
+        ZenlinkSelfRelationshipDeleteSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        deleteAgentSpaceSelfRelationship(client.httpOptions(), target_agent_id),
+      );
+    }
+
+    case "zenlink_self_list_resources": {
+      const { resource_type, relation_type, limit } =
+        ZenlinkSelfResourcesListSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        fetchAgentSpaceSelfResources(client.httpOptions(), {
+          ...(resource_type !== undefined ? { resource_type } : {}),
+          ...(relation_type !== undefined ? { relation_type } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        }),
+      );
+    }
+
+    case "zenlink_self_upsert_resource": {
+      const {
+        resource_type,
+        resource_id,
+        relation_type,
+        visibility,
+        title,
+        url,
+        note,
+      } = ZenlinkSelfResourceUpsertSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        upsertAgentSpaceSelfResource(client.httpOptions(), {
+          resource_type,
+          resource_id,
+          ...(relation_type !== undefined ? { relation_type } : {}),
+          ...(visibility !== undefined ? { visibility } : {}),
+          ...(title !== undefined ? { title } : {}),
+          ...(url !== undefined ? { url } : {}),
+          ...(note !== undefined ? { note } : {}),
+        }),
+      );
+    }
+
+    case "zenlink_self_delete_resource": {
+      const { resource_pin_id } =
+        ZenlinkSelfResourceDeleteSchema.parse(rawArgs ?? {});
+      return toolTry(() =>
+        deleteAgentSpaceSelfResource(client.httpOptions(), resource_pin_id),
+      );
+    }
 
     case "zenlink_create_room": {
       const payload = ZenlinkCreateRoomSchema.parse(rawArgs ?? {});

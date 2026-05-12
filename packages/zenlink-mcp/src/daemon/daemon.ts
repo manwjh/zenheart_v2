@@ -44,6 +44,13 @@ export async function runDaemon(): Promise<void> {
   const server = createServer((socket) => {
     socket.setEncoding("utf8");
     let buffer = "";
+    socket.on("error", (error) => {
+      if (!isSocketDisconnectError(error)) {
+        console.error(
+          `zenlink-mcp daemon socket error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    });
     socket.on("data", (chunk) => {
       buffer += chunk;
       for (;;) {
@@ -105,10 +112,10 @@ export async function runDaemon(): Promise<void> {
         throw new Error("daemon request missing tool");
       }
       const result = await dispatchWithSessionOrder(msg.tool, msg.args);
-      socket.write(JSON.stringify({ id: msg.id, result }) + "\n");
+      writeDaemonResponse(socket, { id: msg.id, result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      socket.write(JSON.stringify({ id: msg.id ?? null, error: message }) + "\n");
+      writeDaemonResponse(socket, { id: msg.id ?? null, error: message });
     }
   }
 
@@ -251,6 +258,35 @@ function probeTcp(host: string, port: number, timeoutMs: number): Promise<boolea
     socket.once("connect", () => finish(true));
     socket.once("error", () => finish(false));
   });
+}
+
+export function writeDaemonResponse(
+  socket: Pick<import("node:net").Socket, "destroyed" | "writableEnded" | "write">,
+  payload: unknown,
+): boolean {
+  if (socket.destroyed || socket.writableEnded) return false;
+  try {
+    socket.write(`${JSON.stringify(payload)}\n`);
+    return true;
+  } catch (error) {
+    if (isSocketDisconnectError(error)) return false;
+    throw error;
+  }
+}
+
+export function isSocketDisconnectError(error: unknown): boolean {
+  const maybe = error as { code?: unknown; message?: unknown };
+  const code = typeof maybe?.code === "string" ? maybe.code : "";
+  const message = typeof maybe?.message === "string" ? maybe.message : String(error);
+  return (
+    code === "EPIPE" ||
+    code === "ECONNRESET" ||
+    code === "ERR_STREAM_DESTROYED" ||
+    message.includes("EPIPE") ||
+    message.includes("ECONNRESET") ||
+    message.includes("write after end") ||
+    message.includes("This socket has been ended")
+  );
 }
 
 export function canRunWithoutSessionMutation(tool: string): boolean {

@@ -9,7 +9,11 @@ import {
   parseAddrFileLine,
   readDaemonTokenFile,
 } from "../dist/daemon/daemon-ipc.js";
-import { canRunWithoutSessionMutation } from "../dist/daemon/daemon.js";
+import {
+  canRunWithoutSessionMutation,
+  isSocketDisconnectError,
+  writeDaemonResponse,
+} from "../dist/daemon/daemon.js";
 
 test("daemon addr parsing keeps host and port stable", () => {
   assert.deepEqual(parseAddrFileLine("127.0.0.1:54321\n"), {
@@ -70,4 +74,31 @@ test("daemon serializes queue-draining tools", () => {
   ]) {
     assert.equal(canRunWithoutSessionMutation(tool), true);
   }
+});
+
+test("daemon response write ignores closed sockets", () => {
+  const writes = [];
+  const socket = {
+    destroyed: true,
+    writableEnded: false,
+    write(value) {
+      writes.push(value);
+    },
+  };
+  assert.equal(writeDaemonResponse(socket, { id: 1, result: { ok: true } }), false);
+  assert.deepEqual(writes, []);
+});
+
+test("daemon response write treats EPIPE as disconnect", () => {
+  const socket = {
+    destroyed: false,
+    writableEnded: false,
+    write() {
+      const error = new Error("write EPIPE");
+      error.code = "EPIPE";
+      throw error;
+    },
+  };
+  assert.equal(writeDaemonResponse(socket, { id: 1, result: { ok: true } }), false);
+  assert.equal(isSocketDisconnectError(Object.assign(new Error("boom"), { code: "ECONNRESET" })), true);
 });

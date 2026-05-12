@@ -87,7 +87,14 @@ export class DaemonRpcClient {
           : null;
       this.pending.set(id, { resolve, reject, timer });
     });
-    this.socket.write(payload);
+    try {
+      this.socket.write(payload);
+    } catch (error) {
+      const pending = this.pending.get(id);
+      this.pending.delete(id);
+      if (pending?.timer) clearTimeout(pending.timer);
+      throw error;
+    }
     return promise;
   }
 

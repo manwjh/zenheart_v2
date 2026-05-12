@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -774,7 +775,8 @@ def test_room_creator_receives_message_notify_after_leaving_room(monkeypatch) ->
         )
         assert not isinstance(joined, str)
 
-        notify_recipient_ids = []
+        notify_calls = []
+        recorded_messages = []
 
         async def fake_check_permission(*_args, **_kwargs):
             return True
@@ -782,14 +784,18 @@ def test_room_creator_receives_message_notify_after_leaving_room(monkeypatch) ->
         async def fake_noop(*_args, **_kwargs):
             return None
 
+        async def fake_record_social_message(*_args, **kwargs):
+            recorded_messages.append(kwargs)
+            return True
+
         monkeypatch.setattr(ws_social_inbound, "check_permission", fake_check_permission)
-        monkeypatch.setattr(ws_social_inbound, "record_social_message", fake_noop)
+        monkeypatch.setattr(ws_social_inbound, "record_social_message", fake_record_social_message)
         monkeypatch.setattr(ws_social_inbound, "record_agent_event", fake_noop)
         monkeypatch.setattr(ws_social_inbound, "award_points", fake_noop)
         monkeypatch.setattr(
             ws_social_inbound,
             "schedule_social_notify",
-            lambda **kwargs: notify_recipient_ids.extend(kwargs["recipient_agent_ids"]),
+            lambda **kwargs: notify_calls.append(kwargs),
         )
 
         await ws_social_inbound._handle_send_message(
@@ -805,7 +811,12 @@ def test_room_creator_receives_message_notify_after_leaving_room(monkeypatch) ->
         )
 
         assert peer_ws.sent[-1]["type"] == "message"
-        assert notify_recipient_ids == ["agent-a"]
+        mid = peer_ws.sent[-1]["id"]
+        uuid.UUID(mid)
+        assert str(recorded_messages[0]["message_id"]) == mid
+        assert notify_calls[0]["recipient_agent_ids"] == ["agent-a"]
+        assert notify_calls[0]["ws_body"]["id"] == mid
+        assert notify_calls[0]["webhook_payload"]["id"] == mid
 
     asyncio.run(run())
 
@@ -833,7 +844,8 @@ def test_out_of_room_mentions_are_dropped_not_msgbox_enqueued(monkeypatch) -> No
 
         events = []
         msgbox_calls = []
-        notify_recipient_ids = []
+        notify_calls = []
+        recorded_messages = []
 
         async def fake_check_permission(*_args, **_kwargs):
             return True
@@ -847,19 +859,23 @@ def test_out_of_room_mentions_are_dropped_not_msgbox_enqueued(monkeypatch) -> No
         async def fake_noop(*_args, **_kwargs):
             return None
 
+        async def fake_record_social_message(*_args, **kwargs):
+            recorded_messages.append(kwargs)
+            return True
+
         async def fake_push_message(*args, **kwargs):
             msgbox_calls.append((args, kwargs))
             return "msgbox-id"
 
         monkeypatch.setattr(ws_social_inbound, "check_permission", fake_check_permission)
         monkeypatch.setattr(ws_social_inbound, "_find_unknown_agent_ids", fake_find_unknown)
-        monkeypatch.setattr(ws_social_inbound, "record_social_message", fake_noop)
+        monkeypatch.setattr(ws_social_inbound, "record_social_message", fake_record_social_message)
         monkeypatch.setattr(ws_social_inbound, "record_agent_event", fake_record_event)
         monkeypatch.setattr(ws_social_inbound, "award_points", fake_noop)
         monkeypatch.setattr(
             ws_social_inbound,
             "schedule_social_notify",
-            lambda **kwargs: notify_recipient_ids.extend(kwargs["recipient_agent_ids"]),
+            lambda **kwargs: notify_calls.append(kwargs),
         )
         monkeypatch.setattr(ws_send_direct_message, "push_message", fake_push_message)
 
@@ -875,18 +891,173 @@ def test_out_of_room_mentions_are_dropped_not_msgbox_enqueued(monkeypatch) -> No
             {
                 "text": "hello",
                 "mention_agent_ids": ["agent-b", "agent-c"],
+                "reply_to_message_id": "00000000-0000-4000-8000-000000000001",
+                "expected_last_message_id": "00000000-0000-4000-8000-000000000001",
             },
         )
 
         echo = sender_ws.sent[-1]
         assert echo["type"] == "message"
+        uuid.UUID(echo["id"])
+        assert str(recorded_messages[0]["message_id"]) == echo["id"]
+        assert str(recorded_messages[0]["reply_to_message_id"]) == "00000000-0000-4000-8000-000000000001"
+        assert str(recorded_messages[0]["expected_last_message_id"]) == "00000000-0000-4000-8000-000000000001"
+        assert echo["reply_to_message_id"] == "00000000-0000-4000-8000-000000000001"
         assert echo["mentions"] == ["agent-b"]
         assert echo["dropped_mention_agent_ids"] == ["agent-c"]
-        assert notify_recipient_ids == ["agent-b"]
+        assert notify_calls[0]["recipient_agent_ids"] == ["agent-b"]
+        assert notify_calls[0]["ws_body"]["id"] == echo["id"]
+        assert notify_calls[0]["ws_body"]["reply_to_message_id"] == "00000000-0000-4000-8000-000000000001"
+        assert notify_calls[0]["webhook_payload"]["id"] == echo["id"]
         assert msgbox_calls == []
         assert any(event["event"] == "a2a_room_mention_dropped" for event in events)
 
     asyncio.run(run())
+
+
+def test_room_message_stale_expected_last_id_is_not_broadcast(monkeypatch) -> None:
+    async def run():
+        registry = SocialRoomRegistry()
+        sender_ws = _FakeWebSocket()
+        peer_ws = _FakeWebSocket()
+        room = await registry.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=sender_ws,
+        )
+        assert not isinstance(room, str)
+        joined = await registry.join_room(
+            room_id=room.room_id,
+            agent_id="agent-b",
+            agent_name="Agent B",
+            ws=peer_ws,
+        )
+        assert not isinstance(joined, str)
+
+        notify_calls = []
+
+        async def fake_check_permission(*_args, **_kwargs):
+            return True
+
+        async def fake_record_social_message(*_args, **_kwargs):
+            return SimpleNamespace(
+                ok=False,
+                stale=True,
+                current_last_message={
+                    "id": "00000000-0000-4000-8000-000000000099",
+                    "text": "newer",
+                },
+            )
+
+        monkeypatch.setattr(ws_social_inbound, "check_permission", fake_check_permission)
+        monkeypatch.setattr(ws_social_inbound, "record_social_message", fake_record_social_message)
+        monkeypatch.setattr(
+            ws_social_inbound,
+            "schedule_social_notify",
+            lambda **kwargs: notify_calls.append(kwargs),
+        )
+
+        await ws_social_inbound._handle_send_message(
+            sender_ws,
+            registry,
+            _FakeSessionFactory(),
+            SimpleNamespace(),
+            SimpleNamespace(social_require_explicit_mentions=False),
+            "agent-a",
+            "Agent A",
+            1,
+            {
+                "text": "stale reply",
+                "expected_last_message_id": "00000000-0000-4000-8000-000000000001",
+            },
+        )
+
+        assert sender_ws.sent[-1]["type"] == "error"
+        assert sender_ws.sent[-1]["reason"] == "stale_room_state"
+        assert sender_ws.sent[-1]["current_last_message"]["id"] == "00000000-0000-4000-8000-000000000099"
+        assert peer_ws.sent == []
+        assert notify_calls == []
+        assert room.message_count == 0
+
+    asyncio.run(run())
+
+
+def test_room_message_is_not_broadcast_when_persist_fails(monkeypatch) -> None:
+    async def run():
+        registry = SocialRoomRegistry()
+        sender_ws = _FakeWebSocket()
+        peer_ws = _FakeWebSocket()
+        room = await registry.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=sender_ws,
+        )
+        assert not isinstance(room, str)
+        joined = await registry.join_room(
+            room_id=room.room_id,
+            agent_id="agent-b",
+            agent_name="Agent B",
+            ws=peer_ws,
+        )
+        assert not isinstance(joined, str)
+
+        notify_calls = []
+
+        async def fake_check_permission(*_args, **_kwargs):
+            return True
+
+        async def fake_record_social_message(*_args, **_kwargs):
+            return False
+
+        monkeypatch.setattr(ws_social_inbound, "check_permission", fake_check_permission)
+        monkeypatch.setattr(ws_social_inbound, "record_social_message", fake_record_social_message)
+        monkeypatch.setattr(
+            ws_social_inbound,
+            "schedule_social_notify",
+            lambda **kwargs: notify_calls.append(kwargs),
+        )
+
+        await ws_social_inbound._handle_send_message(
+            sender_ws,
+            registry,
+            _FakeSessionFactory(),
+            SimpleNamespace(),
+            SimpleNamespace(social_require_explicit_mentions=False),
+            "agent-a",
+            "Agent A",
+            1,
+            {"text": "hello"},
+        )
+
+        assert sender_ws.sent[-1]["type"] == "error"
+        assert sender_ws.sent[-1]["reason"] == "message_persist_failed"
+        assert peer_ws.sent == []
+        assert notify_calls == []
+        assert room.message_count == 0
+
+    asyncio.run(run())
+
+
+def test_build_message_notify_carries_message_id() -> None:
+    from app.services.social_notify import build_message_notify
+
+    ws_body, hook = build_message_notify(
+        room_id="room-1",
+        room_name="Hall",
+        sender_agent_id="agt_a",
+        sender_agent_name="A",
+        text="ping",
+        mentions=["agt_b"],
+        sent_at="2026-05-12T12:00:00+00:00",
+        routing_mode="explicit",
+        message_id="00000000-0000-4000-8000-000000000001",
+    )
+    assert ws_body["id"] == "00000000-0000-4000-8000-000000000001"
+    assert hook["id"] == ws_body["id"]
 
 
 def test_direct_message_still_uses_msgbox(monkeypatch) -> None:

@@ -772,9 +772,9 @@ class SocialRoomRegistry:
 
     # ---------------------------------------------------------------- message helpers
 
-    async def record_message(self, agent_id: str) -> str | None:
+    async def record_message(self, agent_id: str, sent_at: datetime | None = None) -> str | None:
         """Bump message counter, set last_message_at. Returns room_id or None."""
-        now = datetime.now(timezone.utc)
+        now = sent_at or datetime.now(timezone.utc)
         async with self._lock:
             room_id = self._agent_room.get(agent_id)
             if room_id:
@@ -783,6 +783,16 @@ class SocialRoomRegistry:
                     room.message_count += 1
                     room.last_message_at = now
             return room_id
+
+    async def apply_message_after_persist(self, room_id: str, sent_at: datetime) -> bool:
+        """Update live in-memory room counters after the DB accepted a chat message."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return False
+            room.message_count += 1
+            room.last_message_at = sent_at
+            return True
 
     # ---------------------------------------------------------------- broadcast helpers
 

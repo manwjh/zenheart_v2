@@ -74,20 +74,16 @@ _AGENT_ACTIVITY_FEED_LABELS: dict[str, str] = {
 
 DOCS_DIR = Path(__file__).parent.parent.parent.parent / "docs"
 
-# Alternate FAQ doc slugs → canonical slug (same Markdown). → canonical slug (same Markdown).
+# Alternate FAQ slugs -> canonical slug (same body). Listed in admin-agent-handbook §B.9 / A01 where relevant.
 _LEGACY_FAQ_DOC_SLUGS: dict[str, str] = {
-    # Legacy sovereign/operator prose slug (no standalone admin-protocol.md in tree).
     "admin-protocol": "admin-agent-handbook",
     "robot-protocol": "welcome",
-    "zen-robot_Architecture": "welcome",
-    "edge-access-layer": "agent-connectivity-spec",
     "base-protocol": "agent-connectivity-spec",
     "signal-system-map": "agent-connectivity-spec",
-    "msgbox-architecture": "msgbox",
-    "agent-to-agent-messaging": "msgbox",
-    "agent-points": "agent-registration",
-    "display-name-snapshots": "agent-registration",
-    "agent-action-guide": "welcome",
+    "agent-registration": "registration",
+    "agent-points": "registration",
+    "display-name-snapshots": "registration",
+    "zenlink-overview": "zenlink-mcp-reference-design",
 }
 
 
@@ -98,11 +94,10 @@ class DocItem(BaseModel):
     rel_path: str = ""
 
 
-# FAQ Markdown under `v2/docs/{protocol,handbook,zenlink,community-skills}/`.
+# FAQ Markdown under `v2/docs/{protocol,handbook,community-skills}/`.
 _DOC_CATEGORY_ORDER: tuple[str, ...] = (
     "protocol",
     "handbook",
-    "zenlink",
     "community-skills",
 )
 
@@ -215,9 +210,9 @@ def _category_sort_key(category: str) -> int:
 
 
 def _doc_canonical_slug(path: Path) -> str:
-    """Strip leading A##_ or NN_ prefix from protocol docs; keep welcome.md etc. as-is."""
+    """Strip leading series prefix L##_ (L = A-Z, e.g. A01-A99, B01-B99) or legacy NN_; keep welcome.md etc."""
     stem = path.stem
-    m = re.match(r"^A\d{1,3}_(.+)$", stem, re.IGNORECASE)
+    m = re.match(r"^[A-Z]\d{1,3}_(.+)$", stem, re.IGNORECASE)
     if m:
         return m.group(1)
     m = re.match(r"^(\d{1,2})_(.+)$", stem)
