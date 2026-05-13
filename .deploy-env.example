@@ -22,13 +22,16 @@ export ZENHEART_EC2_HOST=
 # Remote directory for the backend service
 # export ZENHEART_V2_REMOTE_DIR=/opt/zenheart/services/v2_backend
 
+# Optional: local OpenClaw skill bundle directory for deploy-{backend,faq-files}.sh (default: zenheart-agent/skills sibling to v2/)
+# export ZENHEART_SKILLS_DIR=/abs/path/to/zenheart-agent/skills
+
 # Remote web root for the frontend dist
 # export ZENHEART_WEB_DIR=/opt/zenheart/frontend
 
 # Set to 1 to skip nginx fragment install
 # export ZENHEART_V2_SKIP_NGINX=0
 
-# Backend deploy: omit v2/docs + v2/skills tarballs (default 0). When 1, run ./deploy-faq-files.sh to sync FAQ trees.
+# Backend deploy: omit v2/docs + zenheart-agent/skills tarballs (default 0). When 1, run ./deploy-faq-files.sh to sync FAQ trees.
 # export ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=0
 
 # First-time only: copy remote .env.example -> .env when .env is missing (otherwise deploy fails).
@@ -48,7 +51,7 @@ export ZENHEART_EC2_HOST=
 #
 # High-churn content (optional workflow): keep SPA + API deploys free of zenlink tarballs and (if desired) FAQ trees.
 # - zenlink/: never overwritten by deploy-frontend.sh; publish from repo root with ./deploy-zenlink-public.sh only.
-# - v2/docs + v2/skills: set ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1 and ./deploy-faq-files.sh when Markdown/skills change.
+# - v2/docs + zenheart-agent/skills: set ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1 and ./deploy-faq-files.sh when Markdown/skills change.
 
 # Deploy backend only (from repo v2/): ./deploy-backend.sh
 # Remote steps: venv+pip, rotate ADMIN_API_KEY every run (writes remote .env, prints key in SSH log),
@@ -68,7 +71,7 @@ export ZENHEART_EC2_HOST=
 # Frequent protocol markdown / skills churn without backend code changes:
 #   export ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1   # in v2/.deploy-env
 #   ./deploy-backend.sh          # updates Python only; leaves remote docs/ + skills/ untouched
-#   ./deploy-faq-files.sh        # rsync v2/docs + v2/skills when prose changes
+#   ./deploy-faq-files.sh        # rsync v2/docs + zenheart-agent/skills when prose changes
 # First-time host: run at least one full backend deploy without SKIP, or deploy-faq-files once, so remote docs exist.
 #
 # OpenClaw zenlink bundles: ../deploy-zenlink-public.sh from v2/, or ./deploy-zenlink-public.sh from repo root (WEB_DIR/zenlink is excluded from deploy-frontend.sh)

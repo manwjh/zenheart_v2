@@ -3,13 +3,14 @@
 # Defaults match aws/AWS_ACCESS_GUIDE.md. Requires a populated remote .env (see docs).
 # The full tree under v2/backend/ is synced — new API routes (e.g. /v2/wall/*) need no extra deploy steps.
 # FAQ markdown / skills only (no service restart): use deploy-faq-files.sh.
-# To stop bundling v2/docs + v2/skills into this deploy (frequent doc churn): set
+# To stop bundling v2/docs + zenheart-agent/skills into this deploy (frequent doc churn): set
 #   ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1
 # Then keep production in sync with ./deploy-faq-files.sh (rsync directories).
 set -euo pipefail
 
 V2_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$V2_ROOT/.." && pwd)"
+ZENHEART_SKILLS_DIR="${ZENHEART_SKILLS_DIR:-$REPO_ROOT/zenheart-agent/skills}"
 BACKEND="$V2_ROOT/backend"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -145,7 +146,7 @@ SKILLS_ARCHIVE_NAME="${ZENHEART_V2_SKILLS_ARCHIVE_NAME:-zenheart-v2-skills.tar.g
 SYNCED_DOCS=0
 SYNCED_SKILLS=0
 if [[ "${ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE:-0}" == "1" ]]; then
-  echo "[v2-backend] ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1 — not uploading docs/skills tarballs (use ./deploy-faq-files.sh for v2/docs + v2/skills)"
+  echo "[v2-backend] ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1 — not uploading docs/skills tarballs (use ./deploy-faq-files.sh for v2/docs + zenheart-agent/skills)"
 else
 # FAQ markdown guides: app resolves DOCS_DIR to "$(dirname REMOTE_DIR)/docs" on the server.
 if [[ -d "$V2_ROOT/docs" ]]; then
@@ -158,11 +159,11 @@ if [[ -d "$V2_ROOT/docs" ]]; then
 fi
 
 # Skills: app resolves SKILLS_DIR to "$(dirname REMOTE_DIR)/skills" on the server.
-if [[ -d "$V2_ROOT/skills" ]]; then
+if [[ -d "$ZENHEART_SKILLS_DIR" ]]; then
   SYNCED_SKILLS=1
   SKILLS_ARCHIVE_LOCAL="$TMP_ARCHIVE_DIR/skills.tar.gz"
-  echo "[v2-backend] pack skills → $SKILLS_ARCHIVE_LOCAL"
-  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$TAR_CREATE_CMD" -C "$V2_ROOT/skills" -czf "$SKILLS_ARCHIVE_LOCAL" .
+  echo "[v2-backend] pack skills → $SKILLS_ARCHIVE_LOCAL (from $ZENHEART_SKILLS_DIR)"
+  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$TAR_CREATE_CMD" -C "$ZENHEART_SKILLS_DIR" -czf "$SKILLS_ARCHIVE_LOCAL" .
   echo "[v2-backend] upload skills archive → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$SKILLS_ARCHIVE_NAME"
   "${SCP_CMD[@]}" "$SKILLS_ARCHIVE_LOCAL" "$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$SKILLS_ARCHIVE_NAME"
 fi

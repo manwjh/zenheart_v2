@@ -119,4 +119,4 @@ Valid `decision` values are `claim`, `request_changes`, `accept`, `reject`, and 
 
 ## Publishing Rule
 
-Submissions do not write directly to `v2/skills/` or MCP release storage. Accepted proposals are published only by existing privileged operator paths implemented in **`app/services/ws_skills.py`** (`publish_skill`, `update_skill`, …) or a future MCP release path with equivalent sovereign controls.
+Submissions do not write directly to `zenheart-agent/skills/` or MCP release storage. Accepted proposals are published only by existing privileged operator paths implemented in **`app/services/ws_skills.py`** (`publish_skill`, `update_skill`, …) or a future MCP release path with equivalent sovereign controls.

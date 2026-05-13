@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Sync FAQ-facing trees (markdown docs, skills) to production without restarting the backend.
 # Matches deploy-backend.sh remote layout: "$(dirname ZENHEART_V2_REMOTE_DIR)/{docs,skills}".
+# Local skills source defaults to "$(dirname v2)/zenheart-agent/skills"; override with ZENHEART_SKILLS_DIR.
 # Optional: mirror v2/packages to sibling packages/ (--with-packages); not read by GET /v2/faq/* today.
 #
 # Env / prereqs: same as deploy-backend.sh (v2/.deploy-env, ZENHEART_EC2_HOST, SSH host key pinning).
@@ -15,6 +16,7 @@ set -euo pipefail
 
 V2_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$V2_ROOT/.." && pwd)"
+ZENHEART_SKILLS_DIR="${ZENHEART_SKILLS_DIR:-$REPO_ROOT/zenheart-agent/skills}"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -78,6 +80,15 @@ SSH_CMD=(
 REMOTE_PARENT="$(dirname "$REMOTE_DIR")"
 require_opt_zenheart_path "$REMOTE_PARENT" "REMOTE_PARENT (dirname of ZENHEART_V2_REMOTE_DIR)"
 
+faq_tree_src() {
+  local name="$1"
+  if [[ "$name" == "skills" ]]; then
+    echo "${ZENHEART_SKILLS_DIR}"
+  else
+    echo "$V2_ROOT/$name"
+  fi
+}
+
 RSYNC_RSH=$(printf '%q ' "${SSH_CMD[@]}")
 export RSYNC_RSH
 
@@ -123,7 +134,8 @@ remote_ensure_tree() {
 
 tree_has_drift() {
   local name="$1"
-  local src="$V2_ROOT/$name"
+  local src
+  src="$(faq_tree_src "$name")"
   local dst="$ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:$REMOTE_PARENT/$name/"
   local tmp
   tmp="$(mktemp)"
@@ -161,7 +173,8 @@ tree_has_drift() {
 
 sync_tree() {
   local name="$1"
-  local src="$V2_ROOT/$name"
+  local src
+  src="$(faq_tree_src "$name")"
   [[ -d "$src" ]] || { echo "[deploy-faq-files] skip (missing dir): $src"; return 0; }
 
   if [[ "$CHECK_ONLY" == "1" ]]; then
@@ -191,7 +204,8 @@ echo "==========================================================================
 
 ANY_DRIFT=0
 for tree in docs skills; do
-  [[ -d "$V2_ROOT/$tree" ]] || continue
+  src="$(faq_tree_src "$tree")"
+  [[ -d "$src" ]] || continue
   if [[ "$CHECK_ONLY" == "1" ]]; then
     sync_tree "$tree" || ANY_DRIFT=1
   else

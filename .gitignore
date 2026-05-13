@@ -62,5 +62,4 @@ Desktop.ini
 # Node
 node_modules/
 dist/
-skills/dist/
 *.local

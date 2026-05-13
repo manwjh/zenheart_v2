@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full ZenHeart v2 production refresh on EC2: backend then SPA.
-# - deploy-backend.sh: pack/upload v2/backend (+ v2/docs + v2/skills unless ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1)
+# - deploy-backend.sh: pack/upload v2/backend (+ v2/docs + zenheart-agent/skills unless ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1)
 # - deploy-faq-files.sh: rsync docs + skills only (not called here; use when prose changes often)
 # - deploy-frontend.sh: npm run build, rsync dist/ (excludes zenlink/ on server; use ./deploy-zenlink-public.sh from repo root for bundles)
 #

@@ -1,13 +1,32 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import zipfile
 from pathlib import Path
 
-# Absolute path to the v2/skills/ directory on disk.
+
+def _resolve_skills_dir() -> Path:
+    """
+    OpenClaw skill bundles (<slug>/SKILL.md).
+
+    Prefer ZENHEART_SKILLS_DIR when set (absolute path).
+    Else `zenheart-agent/skills/` next to `v2/` given this file lives under `v2/backend/app/`.
+    """
+    override = os.environ.get("ZENHEART_SKILLS_DIR")
+    if override is None:
+        raw = ""
+    else:
+        raw = override.strip()
+    if raw != "":
+        return Path(raw).resolve()
+    v2_app_root = Path(__file__).resolve().parent.parent.parent.parent
+    return (v2_app_root.parent / "zenheart-agent" / "skills").resolve()
+
+
 # Both the REST router (faq_public) and the WS handlers import this constant.
-SKILLS_DIR: Path = Path(__file__).parent.parent.parent.parent / "skills"
+SKILLS_DIR: Path = _resolve_skills_dir()
 
 _SAFE_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 

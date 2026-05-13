@@ -9,7 +9,16 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(__dirname, "..");
 const destRoot = path.join(frontendRoot, "public", "zenlink");
-const syncScript = path.resolve(frontendRoot, "..", "..", "zenlink-mcp", "scripts", "sync-openclaw-site-bundle.mjs");
+const syncScript = path.resolve(
+  frontendRoot,
+  "..",
+  "..",
+  "..",
+  "zenheart-agent",
+  "zenlink-mcp",
+  "scripts",
+  "sync-openclaw-site-bundle.mjs",
+);
 
 const env = {
   ...process.env,

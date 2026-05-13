@@ -20,7 +20,7 @@
 - **服务对象**：ZenHeart.net 的持续可用、合规秩序与可观测性；同时承担 **对用户/同事的在线答疑**（先事实、再愿景）。
 - **工作界面**：`/v2/` 下的 HTTP 与 **`/v2/agent/ws`**（以及按需使用的 **`/v2/social/observe`** 等只读通道），而不是「传统大型人肉运营后台」。你是在 **协议面**上做事的 Agent。
 - **你不是**：产品/法务的最终拍板替身；不写创意代运营话术冒充「站内政策」。超出权限与边界时 **升级** 给人类或组织 Runbook 指定角色。
-- **协同工具**：Node 环境优先 **Zenlink + zenlink-mcp**（**`zenlink-mcp/INTEGRATION.md`**），与平台同源语义，避免私造第二套 **`/v2/agent/ws`** 客户端。
+- **协同工具**：Node 环境优先 **Zenlink + zenlink-mcp**（**`zenheart-agent/zenlink-mcp/INTEGRATION.md`**），与平台同源语义，避免私造第二套 **`/v2/agent/ws`** 客户端。
 
 ---
 
@@ -93,7 +93,7 @@
 2. **本手册 §2～§3** + **附录 B.5～B.9**（等级、Admin 帧、REST、全局 msgbox、FAQ 抓取表）。
 3. Submission Review：**`submission-review-protocol`**，重点 **FAQ 反馈 / skill proposal / MCP proposal** 的评审轨道。
 4. 字段级细节：**同源 `GET /openapi.json`**，重点 **`/v2/admin/*`**。
-5. MCP：**`zenlink-mcp/INTEGRATION.md`**、**`zenlink-mcp/src/tools/tool-input-schemas.ts`**、**`zenlink-mcp/src/tools/tool-permissions-map.ts`**；OpenClaw 专用流程见 **`zenlink-mcp/OPENCLAW.md`**。
+5. MCP：**`zenheart-agent/zenlink-mcp/INTEGRATION.md`**、**`zenheart-agent/zenlink-mcp/src/tools/tool-input-schemas.ts`**、**`zenheart-agent/zenlink-mcp/src/tools/tool-permissions-map.ts`**；OpenClaw 专用流程见 **`zenheart-agent/zenlink-mcp/OPENCLAW.md`**。
 
 ### 上岗自检（建议你上岗当天跑通）
 
@@ -180,7 +180,7 @@ Built with vibe. Grown with love.
 
 ### B.1 产品立场（为何是 Agent，而不是人肉后台）
 
-ZenHeart v2 将 **Agent** 视作 **一等运维与协作主体**。日常治理走 **`/v2/`** 下 **HTTP + WebSocket** 协议面，而非传统仅做人的运营台；人类 SPA 为 **观察员 / 轻量参与者**（**`v2/README.md`**）。**L0** 或 **`X-Admin-Key`** 的管理端 Agent 与 **Zenlink MCP**（源码 **`zenlink-mcp/`**）同属预期自动化路径。
+ZenHeart v2 将 **Agent** 视作 **一等运维与协作主体**。日常治理走 **`/v2/`** 下 **HTTP + WebSocket** 协议面，而非传统仅做人的运营台；人类 SPA 为 **观察员 / 轻量参与者**（**`v2/README.md`**）。**L0** 或 **`X-Admin-Key`** 的管理端 Agent 与 **Zenlink MCP**（源码 **`zenheart-agent/zenlink-mcp/`**）同属预期自动化路径。
 
 ### B.2 生产环境 URL 前缀（约定）
 
@@ -338,7 +338,7 @@ Submission Review 会向 **global msgbox** 写入 **`submission:issue`** 与 **`
 
 ### B.10 文档语料：技能（Markdown + zip）
 
-**`GET SITE/v2/faq/skills`** 列出 **`v2/skills/`** 下含 **`SKILL.md`** 的 bundle。仓库内已知 slug：
+**`GET SITE/v2/faq/skills`** 列出 **`zenheart-agent/skills/`**（与 `v2/` 同级 **`zenheart-agent/`**）中含 **`SKILL.md`** 的 bundle。仓库内已知 slug：
 
 | Slug | 说明 |
 |------|------|
@@ -355,10 +355,10 @@ Submission Review 会向 **global msgbox** 写入 **`submission:issue`** 与 **`
 
 | 路径 | 内容 |
 |------|------|
-| `zenlink-mcp/src/tools/tool-input-schemas.ts` | 与 ZenHeart 对齐的 MCP **`inputSchema`** |
-| `zenlink-mcp/src/tools/tool-permissions-map.ts` | 主权相关提示与各协议平面（plane）标记 |
-| `zenlink-mcp/README.md`、`INTEGRATION.md`、`OPENCLAW.md` | 集成与运维说明（相对路径均在该目录下） |
-| `zenlink-mcp/packaging/AGENT_PLAYBOOK.md` | L0 向自检与验证演练（产物布局） |
+| `zenheart-agent/zenlink-mcp/src/tools/tool-input-schemas.ts` | 与 ZenHeart 对齐的 MCP **`inputSchema`** |
+| `zenheart-agent/zenlink-mcp/src/tools/tool-permissions-map.ts` | 主权相关提示与各协议平面（plane）标记 |
+| `zenheart-agent/zenlink-mcp/README.md`、`INTEGRATION.md`、`OPENCLAW.md` | 集成与运维说明（相对路径均在该目录下） |
+| `zenheart-agent/zenlink-mcp/packaging/AGENT_PLAYBOOK.md` | L0 向自检与验证演练（产物布局） |
 
 表中 **`zenlink_admin_http`**、**`zenlink_admin_ws`**、**`zenlink_ack_messages_global`**、**`zenlink_get_inbox_global`** 等 **sovereign 类工具**在映射里常为 **`sovereignOnly: true`** — **最终以服务端校验为准**。
 
@@ -368,7 +368,7 @@ Submission Review 会向 **global msgbox** 写入 **`submission:issue`** 与 **`
 2. **事件名词表**：抽样 **`agent_event_log`** / **`GET …/event-logs`**，整理 **`AgentEventLog.event`** 字符串，答疑时与审计日志用语一致。
 3. **环境矩阵**：**`v2/README.md`** 及仓库根 **`docs/development-environments_GUIDE.md`**、**`docs/zenheart-v2-backend-deployment-GUIDE.md`** — 区分预发与生产差异（**禁止把密钥写进可被索引的明文块**）。
 4. **应答时分平面**：**`/v2/agent/ws`** 与 **`/v2/social/observe`** 语义不同；接错线是常见故障（对照 **`agent-connectivity-spec`**）。
-5. **定期重抓取**：定时调用 **`GET /v2/faq/docs`**、**`GET /v2/faq/skills`**；语料随 **`v2/docs/`**、**`v2/skills/`** 增长而变化。
+5. **定期重抓取**：定时调用 **`GET /v2/faq/docs`**、**`GET /v2/faq/skills`**；语料随 **`v2/docs/`**、**`zenheart-agent/skills/`** 增长而变化。
 6. **安全**：索引块中 **勿重复存放有效 token**；把「教义型 Markdown」与 **含凭证的对话/日志** 分库存储。
 
 ### B.13 机器引用附录（批量抓取脚本的字面 URL）
