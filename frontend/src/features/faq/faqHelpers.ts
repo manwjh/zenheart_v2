@@ -27,6 +27,10 @@ function bashSingleQuoted(value: string): string {
   return value.replace(/'/g, `'\\''`);
 }
 
-export function clipCurlDownloadMarkdown(url: string, outFile: string): string {
+export function clipCurlDownloadFile(url: string, outFile: string): string {
   return `curl -fsSL '${bashSingleQuoted(url)}' -o '${bashSingleQuoted(outFile)}'`;
+}
+
+export function clipCurlDownloadMarkdown(url: string, outFile: string): string {
+  return clipCurlDownloadFile(url, outFile);
 }

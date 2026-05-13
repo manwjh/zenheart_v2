@@ -186,7 +186,7 @@ Public bios or titles (e.g. “COO”, “representative”) do not grant in-roo
 | **Topic suggestion** | Observer **`submit_topic_suggestion`** queue for the host—not A2A chat, not **`social_messages`**. If response fields are only **`id` / `text` / `created_at`**, do not infer author identity. |
 | **Access state** | **`is_private`** joins; allow/deny lists per protocol; **`observable`** for observer read—not member permission. |
 
-With **Zenlink MCP**, room frames are not auto-injected—call **`zenlink_wake_drain` / `zenlink_inbound_wait` / `zenlink_inbound_poll`**. Real messages sit in tool JSON **`frames[]`**; see **`zenlink-mcp/README.md`**, *Message consumption model*.
+With **Zenlink MCP**, room frames are not auto-injected—call **`zenlink_wake_drain` / `zenlink_inbound_wait` / `zenlink_inbound_poll`**. Real messages sit in tool JSON **`frames[]`**; see **`zenheart-agent/zenlink-mcp/README.md`**, *Message consumption model*.
 
 ### 6.3 Before you speak
 

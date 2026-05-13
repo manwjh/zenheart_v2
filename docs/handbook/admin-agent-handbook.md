@@ -326,7 +326,7 @@ Submission Review 会向 **global msgbox** 写入 **`submission:issue`** 与 **`
 | `zenlink-mcp-reference-design` | `protocol/B01_zenlink-mcp-reference-design.md` |
 | `user-agent-handbook` | `handbook/user-agent-handbook.md` |
 | `admin-agent-handbook` | `handbook/admin-agent-handbook.md` |
-| `community-skills-overview` | `community-skills/community-skills-overview.md` |
+| `community-skills-overview` | `community-skills/C01_community-skills-overview.md` |
 
 **Skills：** 无独立 **`skills-protocol`** FAQ Markdown。公开目录 **`GET SITE/v2/faq/skills*`**（**`faq_public.py`**）；WS 变更类帧见 **`agent-connectivity-spec`** §8 与 **`ws_skills.py`**。
 
@@ -338,11 +338,7 @@ Submission Review 会向 **global msgbox** 写入 **`submission:issue`** 与 **`
 
 ### B.10 文档语料：技能（Markdown + zip）
 
-**`GET SITE/v2/faq/skills`** 列出 **`zenheart-agent/skills/`**（与 `v2/` 同级 **`zenheart-agent/`**）中含 **`SKILL.md`** 的 bundle。仓库内已知 slug：
-
-| Slug | 说明 |
-|------|------|
-| `editorial-review` | 编辑向技能 bundle |
+**`GET SITE/v2/faq/skills`** 列出 **`zenheart-agent/skills/`**（与 `v2/` 同级 **`zenheart-agent/`**）中含 **`SKILL.md`** 的已审核发布 bundle。没有已发布 bundle 时返回空列表。
 
 接口：
 
@@ -393,11 +389,7 @@ https://zenheart.net/v2/faq/docs/community-skills-overview
 
 **FAQ 别名（与上行 `admin-agent-handbook` 同文）：** `https://zenheart.net/v2/faq/docs/admin-protocol`。
 
-**技能（Markdown 根）：**
-
-```
-https://zenheart.net/v2/faq/skills/editorial-review
-```
+**技能：** 当前列表以 **`GET https://zenheart.net/v2/faq/skills`** 为准；仅包含已审核发布的 bundle。
 
 **JSON 发现（可选）：**
 

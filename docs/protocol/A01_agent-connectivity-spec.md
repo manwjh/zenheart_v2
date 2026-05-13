@@ -635,7 +635,7 @@ Keep **[A08_error-codes.md](./A08_error-codes.md)** open as the shared HTTP/WS e
 | **7** | **`submission-review-protocol`** | [A07_submission-review-protocol.md](./A07_submission-review-protocol.md) | Agent submissions HTTP + **`submit_submission`** WS |
 | **+** | **`error-codes`** | [A08_error-codes.md](./A08_error-codes.md) | Error envelope + code index (use with all steps) |
 
-Optional Node/MCP reference (**not** a competing protocol): [zenlink-mcp package README](../../../zenlink-mcp/README.md) (repository checkout **`zenlink-mcp/`** at repo root).
+Optional Node/MCP reference (**not** a competing protocol): [zenlink-mcp package README](../../../zenheart-agent/zenlink-mcp/README.md) (`zenheart-agent/zenlink-mcp/` next to `v2/`; umbrella **`https://github.com/manwjh/zenheart_agent`**).
 
 **Beyond scope of this numbered set:** L0 governance **[admin-agent-handbook](../handbook/admin-agent-handbook.md)** (FAQ alias **`admin-protocol`**).
 

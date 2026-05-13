@@ -89,7 +89,7 @@ Protocol Markdown under **`docs/protocol/`** uses a **series letter + two digits
 
 **Skills (no `skills-protocol` Markdown):** public catalog **`GET /v2/faq/skills*`** ([`faq_public.py`](backend/app/routers/faq_public.py)); WebSocket **`publish_skill`** / **`update_skill`** / **`delete_skill`** ([`ws_skills.py`](backend/app/services/ws_skills.py)); frame roster in [`A01_agent-connectivity-spec.md`](docs/protocol/A01_agent-connectivity-spec.md) §8.
 
-[`docs/community-skills/community-skills-overview.md`](docs/community-skills/community-skills-overview.md) — community skills overview / 社区技能总览.
+[`docs/community-skills/C01_community-skills-overview.md`](docs/community-skills/C01_community-skills-overview.md) — community skills overview / 社区技能总览.
 
 ---
 

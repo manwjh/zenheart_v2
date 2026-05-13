@@ -8,7 +8,7 @@ import FaqDocsSection from "@/components/faq/FaqDocsSection.vue";
 import FaqFeedbackSection from "@/components/faq/FaqFeedbackSection.vue";
 import FaqSkillsSection from "@/components/faq/FaqSkillsSection.vue";
 import {
-  clipCurlDownloadMarkdown,
+  clipCurlDownloadFile,
   stripSkillFrontmatter,
 } from "@/features/faq/faqHelpers";
 import { openFaqDocModal } from "@/features/faq/faqDocModal";
@@ -177,6 +177,9 @@ onMounted(async () => {
     hash = "docs";
     docsListExpanded.value = true;
   }
+  if (hash === "feedback") {
+    hash = "submissions";
+  }
   if (hash === "docs" || isDocAnchor) {
     docsListExpanded.value = true;
   }
@@ -252,6 +255,10 @@ function skillRawUrl(slug: string) {
   return `${skillApiBase.value}/${encodeURIComponent(slug)}`;
 }
 
+function skillBundleUrl(slug: string) {
+  return `${skillRawUrl(slug)}/bundle`;
+}
+
 function clawhubSkillUrl(slug: string) {
   return `https://clawhub.ai/skills/${encodeURIComponent(slug)}`;
 }
@@ -286,7 +293,7 @@ async function toggleSkill(slug: string) {
 async function copySkillLink(slug: string) {
   try {
     await navigator.clipboard.writeText(
-      clipCurlDownloadMarkdown(skillRawUrl(slug), `${slug}.md`)
+      clipCurlDownloadFile(skillBundleUrl(slug), `${slug}.zip`)
     );
     copiedSkillSlug.value = slug;
     setTimeout(() => {
@@ -311,8 +318,8 @@ async function copySkillLink(slug: string) {
             <span><b>2</b> {{ faq.navRegister }}</span>
             <span><b>3</b> {{ faq.navHandbook }}</span>
             <span><b>4</b> {{ faq.navZenlink }}</span>
-            <span><b>5</b> {{ faq.navSkills }}</span>
-            <span><b>6</b> {{ faq.navDocs }}</span>
+            <span><b>5</b> {{ faq.navDocs }}</span>
+            <span><b>6</b> {{ faq.navSkills }}</span>
             <span><b>7</b> {{ faq.navFeedback }}</span>
           </div>
           <p class="zh-hero__note">
@@ -343,15 +350,15 @@ async function copySkillLink(slug: string) {
             <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M5 3.5L1.5 8 5 12.5M11 3.5L14.5 8 11 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             {{ faq.navZenlink }}
           </a>
-          <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
-            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 1l2 4 4 .5-3 3 1 4.5L8 11l-4 2 1-4.5-3-3L6 5l2-4z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
-            {{ faq.navSkills }}
-          </a>
           <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
             <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
             {{ faq.navDocs }}
           </a>
-          <a class="sidebar-link" href="#/faq#feedback" @click.prevent="scrollTo('feedback')">
+          <a class="sidebar-link" href="#/faq#skills" @click.prevent="scrollTo('skills')">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M8 1l2 4 4 .5-3 3 1 4.5L8 11l-4 2 1-4.5-3-3L6 5l2-4z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+            {{ faq.navSkills }}
+          </a>
+          <a class="sidebar-link" href="#/faq#submissions" @click.prevent="scrollTo('submissions')">
             <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 3.5h10a1 1 0 011 1v6a1 1 0 01-1 1H8l-3.5 2v-2H3a1 1 0 01-1-1v-6a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M5 6.5h6M5 8.8h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
             {{ faq.navFeedback }}
           </a>
@@ -565,18 +572,6 @@ Content-Type: application/json
         </div>
       </section>
 
-      <FaqSkillsSection
-        :skills="skills"
-        :expanded-skill-slug="expandedSkillSlug"
-        :copied-skill-slug="copiedSkillSlug"
-        :skill-content="skillContent"
-        :skill-loading="skillLoading"
-        :skill-error="skillError"
-        :clawhub-skill-url="clawhubSkillUrl"
-        @toggle-skill="toggleSkill"
-        @copy-skill-link="copySkillLink"
-      />
-
       <FaqDocsSection
         :docs="docs"
         :docs-list-expanded="docsListExpanded"
@@ -590,6 +585,18 @@ Content-Type: application/json
         @toggle-docs-list="toggleDocsList"
         @copy-doc-link="copyDocLink"
         @toggle-doc="toggleDoc"
+      />
+
+      <FaqSkillsSection
+        :skills="skills"
+        :expanded-skill-slug="expandedSkillSlug"
+        :copied-skill-slug="copiedSkillSlug"
+        :skill-content="skillContent"
+        :skill-loading="skillLoading"
+        :skill-error="skillError"
+        :clawhub-skill-url="clawhubSkillUrl"
+        @toggle-skill="toggleSkill"
+        @copy-skill-link="copySkillLink"
       />
 
       <FaqFeedbackSection />

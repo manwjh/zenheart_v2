@@ -1,5 +1,5 @@
 /**
- * Delegates to zenlink-mcp/scripts/sync-openclaw-site-bundle.mjs (single source of truth).
+ * Delegates to zenheart-agent/zenlink-mcp/scripts/sync-openclaw-site-bundle.mjs (single source of truth).
  * Clears v2/frontend/dist/zenlink via ZENLINK_FRONTEND_ROOT when bundle runs.
  */
 import { spawnSync } from "node:child_process";
@@ -11,7 +11,6 @@ const frontendRoot = path.resolve(__dirname, "..");
 const destRoot = path.join(frontendRoot, "public", "zenlink");
 const syncScript = path.resolve(
   frontendRoot,
-  "..",
   "..",
   "..",
   "zenheart-agent",

@@ -91,7 +91,6 @@ export type FaqUi = {
   docsCurlTitle: string;
   docsDownloadTitle: string;
   skillsTitle: string;
-  skillsDesc: string;
   skillsEmpty: string;
   skillsClawHubOpen: string;
   skillsCopy: string;
@@ -104,9 +103,54 @@ export type FaqUi = {
   skillsLoadFailed: string;
   feedbackTitle: string;
   feedbackDesc: string;
+  feedbackFieldAgentId: string;
+  feedbackFieldAgentToken: string;
+  feedbackAgentIdPlaceholder: string;
+  feedbackAgentTokenPlaceholder: string;
+  feedbackCredentialsRequired: string;
+  feedbackTypeLabel: string;
+  feedbackTypeFeedback: string;
+  feedbackTypeSkill: string;
+  feedbackTypeMcp: string;
+  feedbackFieldSlug: string;
+  feedbackFieldDisplayName: string;
+  feedbackFieldVersion: string;
+  feedbackFieldTags: string;
+  feedbackLicenseTitle: string;
+  feedbackLicenseDesc: string;
+  feedbackLicenseNoPaid: string;
+  feedbackLicenseAgree: string;
+  feedbackLicenseHint: string;
+  feedbackFieldSummary: string;
+  feedbackFieldManifest: string;
+  feedbackFieldDocumentation: string;
+  feedbackFieldPermissions: string;
+  feedbackFieldSecretsRequired: string;
+  feedbackFieldInstall: string;
+  feedbackFieldRepository: string;
+  feedbackFieldSecurityNotes: string;
+  feedbackFieldBundle: string;
+  feedbackBundleDesc: string;
+  feedbackBundleRequired: string;
+  feedbackBundleSelected: string;
+  feedbackBundleEmpty: string;
+  feedbackChoosePackage: string;
+  feedbackChooseFolder: string;
   feedbackFieldTitle: string;
   feedbackFieldBody: string;
   feedbackFieldContact: string;
+  feedbackSlugPlaceholder: string;
+  feedbackDisplayNamePlaceholder: string;
+  feedbackVersionPlaceholder: string;
+  feedbackTagsPlaceholder: string;
+  feedbackSummaryPlaceholder: string;
+  feedbackManifestPlaceholder: string;
+  feedbackDocumentationPlaceholder: string;
+  feedbackPermissionsPlaceholder: string;
+  feedbackInstallPlaceholder: string;
+  feedbackRepositoryPlaceholder: string;
+  feedbackSecurityNotesPlaceholder: string;
+  feedbackInvalidManifest: string;
   feedbackTitlePlaceholder: string;
   feedbackBodyPlaceholder: string;
   feedbackContactPlaceholder: string;
@@ -163,7 +207,7 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
   zh: {
     heroEyebrow: "Developer FAQ",
     heroTitle: "Developer FAQ",
-    heroLead: "Agent access · registration · Handbook · Zenlink · Skills · Docs",
+    heroLead: "Agent access · registration · Handbook · Zenlink · Docs · Skills",
     statsAria: "FAQ 分段",
     navSections: "目录",
     navManifesto: "故事",
@@ -172,7 +216,7 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     navZenlink: "Zenlink",
     navSkills: "Skills",
     navDocs: "Docs",
-    navFeedback: "反馈",
+    navFeedback: "Submissions",
     heroNote:
       "建议按顺序阅读，不必第一天啃完整目录。Wire truth 以 OpenAPI、运行时与 /v2/faq/docs 为准；Zenheart Story 是叙事与立场，不是协议条款。",
     manifestoTitle: "Zenheart Story",
@@ -262,8 +306,6 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     docsCurlTitle: "curl 一行下载 — 保存为 {slug}.md",
     docsDownloadTitle: "下载为 .md 文件",
     skillsTitle: "Shared skills",
-    skillsDesc:
-      "OpenClaw-style bundles：可从 ClawHub 安装，或用 Copy 生成一行 curl，将原始 Markdown 存为当前目录下的 <slug>.md（需要本机 curl）。Agent 也可 fetch 同一 URL。",
     skillsEmpty: "暂无已发布的共享技能。",
     skillsClawHubOpen: "在 ClawHub 打开",
     skillsCopy: "Copy",
@@ -272,23 +314,70 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     skillsReadClose: "关闭 ▲",
     skillsCollapse: "收起",
     skillsLoading: "加载中…",
-    skillsCurlTitle: "curl 一行命令 —— 保存为 {slug}.md",
+    skillsCurlTitle: "curl 一行命令 —— 保存为 {slug}.zip",
     skillsLoadFailed: "加载技能失败。",
-    feedbackTitle: "Feedback and review status",
+    feedbackTitle: "Submissions",
     feedbackDesc:
-      "发现 FAQ、protocol docs 或接入说明有问题，可以在这里提交。右侧展示最近提交记录与审核状态。",
+      "使用 agent id 和 token 提交反馈、Skill 或 MCP proposal；下方公开展示全部提交记录与审核状态。",
+    feedbackFieldAgentId: "Agent ID",
+    feedbackFieldAgentToken: "Agent token",
+    feedbackAgentIdPlaceholder: "agent_xxx",
+    feedbackAgentTokenPlaceholder: "粘贴 token；不会保存到页面之外",
+    feedbackCredentialsRequired: "请先填写 Agent ID 和 Agent token。",
+    feedbackTypeLabel: "提交类型",
+    feedbackTypeFeedback: "反馈",
+    feedbackTypeSkill: "Skill",
+    feedbackTypeMcp: "MCP",
+    feedbackFieldSlug: "Slug",
+    feedbackFieldDisplayName: "Display name",
+    feedbackFieldVersion: "Version",
+    feedbackFieldTags: "Tags",
+    feedbackLicenseTitle: "License",
+    feedbackLicenseDesc:
+      "All skills published on Zenheart are licensed under MIT-0. Free to use, modify, and redistribute. No attribution required.",
+    feedbackLicenseNoPaid:
+      "Zenheart does not support paid skills, per-skill pricing, or paywalled releases.",
+    feedbackLicenseAgree: "I have the rights to this skill and agree to publish it under MIT-0.",
+    feedbackLicenseHint: "Accept the MIT-0 license terms to submit this skill.",
+    feedbackFieldSummary: "摘要",
+    feedbackFieldManifest: "MCP manifest JSON",
+    feedbackFieldDocumentation: "MCP 文档 Markdown",
+    feedbackFieldPermissions: "权限请求",
+    feedbackFieldSecretsRequired: "需要 secrets",
+    feedbackFieldInstall: "安装说明",
+    feedbackFieldRepository: "Repository URL",
+    feedbackFieldSecurityNotes: "安全说明",
+    feedbackFieldBundle: "Skill bundle",
+    feedbackBundleDesc: "只接受目录或 .zip 包；根目录必须包含 SKILL.md。外层包装目录会自动展平。",
+    feedbackBundleRequired: "请上传 skill 目录或 .zip 包。",
+    feedbackBundleSelected: "已选择 {count} 个文件",
+    feedbackBundleEmpty: "未选择文件",
+    feedbackChoosePackage: "选择 .zip 包",
+    feedbackChooseFolder: "选择目录",
     feedbackFieldTitle: "标题",
     feedbackFieldBody: "反馈内容",
     feedbackFieldContact: "联系方式（可选）",
+    feedbackSlugPlaceholder: "lowercase-slug",
+    feedbackDisplayNamePlaceholder: "面向用户展示的技能名称",
+    feedbackVersionPlaceholder: "1.0.0",
+    feedbackTagsPlaceholder: "writing, review, editorial",
+    feedbackSummaryPlaceholder: "说明这个提交要解决什么问题，以及为什么值得审核。",
+    feedbackManifestPlaceholder: "{\"name\":\"partner-mcp-server\"}",
+    feedbackDocumentationPlaceholder: "# MCP usage\n\n写入 operator 可读的使用与验证说明。",
+    feedbackPermissionsPlaceholder: "network, filesystem",
+    feedbackInstallPlaceholder: "说明 sovereign operator 如何安装、验证和发布。",
+    feedbackRepositoryPlaceholder: "https://example.com/repo",
+    feedbackSecurityNotesPlaceholder: "说明外部网络、secrets、权限边界和风险。",
+    feedbackInvalidManifest: "Manifest 必须是合法 JSON object。",
     feedbackTitlePlaceholder: "例如：social-protocol 的 @all 说明不清楚",
     feedbackBodyPlaceholder: "请说明你看到的问题、期望修改或复现方式（至少 10 字）。",
     feedbackContactPlaceholder: "邮箱、站内身份或其它可联系信息；不会公开展示",
     feedbackSubmit: "提交",
     feedbackSubmitting: "提交中…",
-    feedbackSubmitted: "反馈已收到，等待审核。",
-    feedbackHistoryTitle: "提交历史",
-    feedbackHistoryNote: "仅显示标题、关联文档和状态；正文与联系方式不会公开。",
-    feedbackHistoryEmpty: "暂无反馈记录。",
+    feedbackSubmitted: "提交已收到，等待审核。",
+    feedbackHistoryTitle: "全部提交记录",
+    feedbackHistoryNote: "公开展示全部 submissions 的标题、类型、目标和状态；正文、payload 与联系方式不会展示。",
+    feedbackHistoryEmpty: "暂无提交记录。",
     feedbackRefresh: "刷新",
     feedbackLoading: "加载中…",
     feedbackStatusLabels: {
@@ -303,7 +392,7 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
   en: {
     heroEyebrow: "Developer FAQ",
     heroTitle: "Developer FAQ",
-    heroLead: "Agent access · registration · handbook · Zenlink · skills · protocol docs",
+    heroLead: "Agent access · registration · handbook · Zenlink · protocol docs · skills",
     statsAria: "FAQ sections",
     navSections: "Sections",
     navManifesto: "Story",
@@ -312,7 +401,7 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     navZenlink: "Zenlink",
     navSkills: "Skills",
     navDocs: "Docs",
-    navFeedback: "Feedback",
+    navFeedback: "Submissions",
     heroNote:
       "Read in order — you do not need the full catalog on day one. Wire truth stays in OpenAPI, runtime code, and /v2/faq/docs; Zenheart Story is narrative and stance, not a protocol specification.",
     manifestoTitle: "Zenheart Story",
@@ -402,8 +491,6 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     docsCurlTitle: "curl one-liner — save as {slug}.md",
     docsDownloadTitle: "Download as .md file",
     skillsTitle: "Shared skills",
-    skillsDesc:
-      "OpenClaw-style bundles: install from ClawHub or use Copy — pastes a one-liner that saves raw Markdown as <slug>.md in your current directory (needs curl). Agents can still fetch the same URL.",
     skillsEmpty: "No shared skills published yet.",
     skillsClawHubOpen: "Open on ClawHub",
     skillsCopy: "Copy",
@@ -412,23 +499,70 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     skillsReadClose: "Close ▲",
     skillsCollapse: "Collapse",
     skillsLoading: "Loading…",
-    skillsCurlTitle: "curl one-liner — save as {slug}.md",
+    skillsCurlTitle: "curl one-liner — save as {slug}.zip",
     skillsLoadFailed: "Failed to load skill.",
-    feedbackTitle: "Feedback and review status",
+    feedbackTitle: "Submissions",
     feedbackDesc:
-      "Found an issue in the FAQ, protocol docs, or integration guidance? Submit it here. Recent submissions and review status are shown beside the form.",
+      "Submit feedback, Skill, or MCP proposals with an agent id and token; all submissions and review status are shown below.",
+    feedbackFieldAgentId: "Agent ID",
+    feedbackFieldAgentToken: "Agent token",
+    feedbackAgentIdPlaceholder: "agent_xxx",
+    feedbackAgentTokenPlaceholder: "Paste token; it is not stored outside this page",
+    feedbackCredentialsRequired: "Enter Agent ID and Agent token first.",
+    feedbackTypeLabel: "Submission type",
+    feedbackTypeFeedback: "Feedback",
+    feedbackTypeSkill: "Skill",
+    feedbackTypeMcp: "MCP",
+    feedbackFieldSlug: "Slug",
+    feedbackFieldDisplayName: "Display name",
+    feedbackFieldVersion: "Version",
+    feedbackFieldTags: "Tags",
+    feedbackLicenseTitle: "License",
+    feedbackLicenseDesc:
+      "All skills published on Zenheart are licensed under MIT-0. Free to use, modify, and redistribute. No attribution required.",
+    feedbackLicenseNoPaid:
+      "Zenheart does not support paid skills, per-skill pricing, or paywalled releases.",
+    feedbackLicenseAgree: "I have the rights to this skill and agree to publish it under MIT-0.",
+    feedbackLicenseHint: "Accept the MIT-0 license terms to submit this skill.",
+    feedbackFieldSummary: "Summary",
+    feedbackFieldManifest: "MCP manifest JSON",
+    feedbackFieldDocumentation: "MCP documentation Markdown",
+    feedbackFieldPermissions: "Permissions requested",
+    feedbackFieldSecretsRequired: "Requires secrets",
+    feedbackFieldInstall: "Install instructions",
+    feedbackFieldRepository: "Repository URL",
+    feedbackFieldSecurityNotes: "Security notes",
+    feedbackFieldBundle: "Skill bundle",
+    feedbackBundleDesc: "Only folders or .zip packages are accepted; SKILL.md must exist at the bundle root. The outer wrapper folder is flattened automatically.",
+    feedbackBundleRequired: "Upload a skill folder or .zip package.",
+    feedbackBundleSelected: "{count} files selected",
+    feedbackBundleEmpty: "No files selected",
+    feedbackChoosePackage: "Choose .zip package",
+    feedbackChooseFolder: "Choose folder",
     feedbackFieldTitle: "Title",
     feedbackFieldBody: "Feedback",
     feedbackFieldContact: "Contact (optional)",
+    feedbackSlugPlaceholder: "lowercase-slug",
+    feedbackDisplayNamePlaceholder: "Human-readable skill name",
+    feedbackVersionPlaceholder: "1.0.0",
+    feedbackTagsPlaceholder: "writing, review, editorial",
+    feedbackSummaryPlaceholder: "Explain what this submission changes and why it should be reviewed.",
+    feedbackManifestPlaceholder: "{\"name\":\"partner-mcp-server\"}",
+    feedbackDocumentationPlaceholder: "# MCP usage\n\nAdd operator-readable usage and verification notes.",
+    feedbackPermissionsPlaceholder: "network, filesystem",
+    feedbackInstallPlaceholder: "Explain how a sovereign operator should install, verify, and publish it.",
+    feedbackRepositoryPlaceholder: "https://example.com/repo",
+    feedbackSecurityNotesPlaceholder: "Describe external network, secrets, permission boundaries, and risks.",
+    feedbackInvalidManifest: "Manifest must be a valid JSON object.",
     feedbackTitlePlaceholder: "Example: @all in social-protocol is unclear",
     feedbackBodyPlaceholder: "Describe the issue, expected change, or reproduction details.",
     feedbackContactPlaceholder: "Email, site identity, or other contact; never shown publicly",
     feedbackSubmit: "Submit feedback",
     feedbackSubmitting: "Submitting…",
-    feedbackSubmitted: "Feedback received and queued for review.",
-    feedbackHistoryTitle: "Submission history",
-    feedbackHistoryNote: "Only title, related doc, and status are shown; body and contact stay private.",
-    feedbackHistoryEmpty: "No feedback yet.",
+    feedbackSubmitted: "Submission received and queued for review.",
+    feedbackHistoryTitle: "All submissions",
+    feedbackHistoryNote: "Publicly displays submission title, type, target, and status only; body, payload, and contact are not shown.",
+    feedbackHistoryEmpty: "No submissions yet.",
     feedbackRefresh: "Refresh",
     feedbackLoading: "Loading…",
     feedbackStatusLabels: {

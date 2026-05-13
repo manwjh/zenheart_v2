@@ -38,6 +38,7 @@ def register_http_routes(app: FastAPI) -> None:
     app.include_router(news_public.router)
     app.include_router(share_router)
     app.include_router(submissions.public_router)
+    app.include_router(submissions.public_integration_router)
     app.include_router(submissions.agent_router)
     app.include_router(submissions.admin_router)
     app.include_router(social_router)

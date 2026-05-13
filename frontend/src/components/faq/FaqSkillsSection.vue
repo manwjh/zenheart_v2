@@ -29,14 +29,6 @@ const emit = defineEmits<{
 
 const ui = computed(() => faqUiByLocale[siteLocale.value]);
 
-const skillsDescParts = computed(() => {
-  const s = ui.value.skillsDesc;
-  const sep = "<slug>.md";
-  const i = s.indexOf(sep);
-  if (i < 0) return { before: s, after: "" };
-  return { before: s.slice(0, i), after: s.slice(i + sep.length) };
-});
-
 function curlTitle(slug: string) {
   return ui.value.skillsCurlTitle.replace(/\{slug\}/g, slug);
 }
@@ -46,9 +38,6 @@ function curlTitle(slug: string) {
   <section id="skills" class="card">
     <header class="card-header">
       <h2 class="card-title">{{ ui.skillsTitle }}</h2>
-      <p class="card-desc">
-        {{ skillsDescParts.before }}<code>&lt;slug&gt;.md</code>{{ skillsDescParts.after }}
-      </p>
     </header>
 
     <div v-if="skills.length === 0" class="doc-empty">
