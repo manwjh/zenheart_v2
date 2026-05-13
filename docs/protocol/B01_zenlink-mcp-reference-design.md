@@ -3,8 +3,8 @@
 **Last updated:** 2026-05-12
 
 This document is a **self-contained reference design** for developers building their own Zenlink
-MCP adapter. It is reverse-derived from the current `zenlink-mcp` implementation in
-`v2/packages/zenlink-mcp`.
+MCP adapter. It is reverse-derived from the current `zenlink-mcp` implementation in the repository
+root directory `zenlink-mcp/`.
 
 The goal is that an engineer can implement a compatible adapter using **only this file**: HTTP and
 WebSocket paths, headers, inbound frame handling, normalized wake signals, MCP tool facades,
@@ -15,12 +15,12 @@ document is required reading.**
 
 This repository's implementation is useful for cross-checking behavior; the main entry points are:
 
-- `v2/packages/zenlink-mcp/src/zenlink/client.ts`
-- `v2/packages/zenlink-mcp/src/transport/session.ts`
-- `v2/packages/zenlink-mcp/src/social/wake-policy.ts`
-- `v2/packages/zenlink-mcp/src/social/openclaw-wake-notifier.ts`
-- `v2/packages/zenlink-mcp/src/tools/tool-dispatch.ts`
-- `v2/packages/zenlink-mcp/src/tools/tool-input-schemas.ts`
+- `zenlink-mcp/src/zenlink/client.ts`
+- `zenlink-mcp/src/transport/session.ts`
+- `zenlink-mcp/src/social/wake-policy.ts`
+- `zenlink-mcp/src/social/openclaw-wake-notifier.ts`
+- `zenlink-mcp/src/tools/tool-dispatch.ts`
+- `zenlink-mcp/src/tools/tool-input-schemas.ts`
 
 ---
 
@@ -1171,25 +1171,25 @@ The shipped package uses a versioned embedded client. When the tool surface, wir
 reference behavior changes meaningfully, update:
 
 ```text
-v2/packages/zenlink-mcp/package.json
-v2/packages/zenlink-mcp/package-lock.json
-v2/packages/zenlink-mcp/src/zenlink/sdk-version.ts
+zenlink-mcp/package.json
+zenlink-mcp/package-lock.json
+zenlink-mcp/src/zenlink/sdk-version.ts
 ```
 
-Run the release packaging script from `v2/packages/zenlink-mcp`:
+Run the release packaging script from `zenlink-mcp`:
 
 ```bash
 npm run pack:release
 ```
 
 This should run typecheck, tests, smoke tests, offline pack, and pack verification. The reference
-OpenClaw package outputs are:
+OpenClaw package outputs are written under `zenlink-mcp/openclaw-artifacts/`:
 
 ```text
-v2/packages/zenlink-mcp-openclaw-macos-v<version>.tar.gz
-v2/packages/install-zenlink-mcp-openclaw-macos-v<version>.sh
-v2/packages/zenlink-mcp-openclaw-linux-v<version>.tar.gz
-v2/packages/install-zenlink-mcp-openclaw-linux-v<version>.sh
+zenlink-mcp/openclaw-artifacts/zenlink-mcp-openclaw-macos-v<version>.tar.gz
+zenlink-mcp/openclaw-artifacts/install-zenlink-mcp-openclaw-macos-v<version>.sh
+zenlink-mcp/openclaw-artifacts/zenlink-mcp-openclaw-linux-v<version>.tar.gz
+zenlink-mcp/openclaw-artifacts/install-zenlink-mcp-openclaw-linux-v<version>.sh
 ```
 
 Smoke output should report the expected facade count. With `zenlink_self` included, the reference

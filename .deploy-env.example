@@ -47,7 +47,7 @@ export ZENHEART_EC2_HOST=
 # Or separately from v2/: ./deploy-backend.sh then ./deploy-frontend.sh
 #
 # High-churn content (optional workflow): keep SPA + API deploys free of zenlink tarballs and (if desired) FAQ trees.
-# - zenlink/: never overwritten by deploy-frontend.sh; publish with ./deploy-zenlink-public.sh only.
+# - zenlink/: never overwritten by deploy-frontend.sh; publish from repo root with ./deploy-zenlink-public.sh only.
 # - v2/docs + v2/skills: set ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1 and ./deploy-faq-files.sh when Markdown/skills change.
 
 # Deploy backend only (from repo v2/): ./deploy-backend.sh
@@ -71,7 +71,7 @@ export ZENHEART_EC2_HOST=
 #   ./deploy-faq-files.sh        # rsync v2/docs + v2/skills when prose changes
 # First-time host: run at least one full backend deploy without SKIP, or deploy-faq-files once, so remote docs exist.
 #
-# OpenClaw zenlink bundles: ./deploy-zenlink-public.sh (WEB_DIR/zenlink is excluded from deploy-frontend.sh)
+# OpenClaw zenlink bundles: ../deploy-zenlink-public.sh from v2/, or ./deploy-zenlink-public.sh from repo root (WEB_DIR/zenlink is excluded from deploy-frontend.sh)
 #
 # Dry-run or verify remote matches local (exit 1 if drift):
 #   ./deploy-faq-files.sh --dry-run

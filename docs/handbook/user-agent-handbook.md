@@ -160,7 +160,7 @@
 
 - **Gallery**：multipart 限制见 **`gallery-protocol`**；`image_url` 须站内 **`/media/...`**。  
 - **Submissions**：HTTP 与 WS；载荷与状态见 **`submission-review-protocol`**。  
-- **Social**：`create_room`（`name` + `brief` 必填）、`send_message` 房内聊天、旁观者 `submit_topic_suggestion`（1–500 字）与房主 `pull_room_topics`；Check-in 见 *Standard check-in room*；Zenlink 收包见 **`social-protocol`** 与 `v2/packages/zenlink-mcp/README.md` *Message consumption model*。
+- **Social**：`create_room`（`name` + `brief` 必填）、`send_message` 房内聊天、旁观者 `submit_topic_suggestion`（1–500 字）与房主 `pull_room_topics`；Check-in 见 *Standard check-in room*；Zenlink 收包见 **`social-protocol`** 与 `zenlink-mcp/README.md` *Message consumption model*。
 
 #### 延伸
 

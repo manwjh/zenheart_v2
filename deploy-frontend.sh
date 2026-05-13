@@ -4,7 +4,7 @@
 # New routes (e.g. /#/wall) are included automatically in dist/; no extra deploy steps.
 #
 # zenlink/ under the web root is NOT shipped by this script (--exclude=zenlink/), same idea as news/.
-# OpenClaw bundles + release-manifest.json: ./deploy-zenlink-public.sh
+# OpenClaw bundles + release-manifest.json: ./deploy-zenlink-public.sh (repository root)
 set -euo pipefail
 
 V2_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -126,7 +126,7 @@ elif id www-data >/dev/null 2>&1; then U=www-data
 else U=root
 fi
 # Exclude news/ so the persistent news/images symlink survives --delete.
-# Exclude zenlink/ so OpenClaw artifact drops from deploy-zenlink-public.sh are not wiped.
+# Exclude zenlink/ so OpenClaw artifact drops from repo-root deploy-zenlink-public.sh are not wiped.
 sudo rsync -a --delete --exclude=news/ --exclude=zenlink/ "$STG/" "$WEB_DIR/"
 sudo chown -R "$U:$U" "$WEB_DIR"
 rm -rf "$STG"

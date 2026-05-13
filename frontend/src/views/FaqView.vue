@@ -50,12 +50,15 @@ const zenlinkHttpsOrigin = computed(() => {
   return ZENLINK_FALLBACK_ORIGIN;
 });
 
-/** Same-origin base for Docs card copy ({origin}); keeps localhost in local dev so it matches doc fetch URLs. */
+/** Public base for Docs card prose and outbound Site link ({origin}); never localhost so copy is shareable. Fetches still use window origin in `useFaqDocs`. */
 const faqDocsSiteOrigin = computed(() => {
   const fromEnv = (import.meta.env.VITE_ZENLINK_SOURCE_ORIGIN as string | undefined)?.trim();
   if (fromEnv) return fromEnv.replace(/\/$/, "");
   if (typeof window !== "undefined" && window.location?.origin) {
-    return window.location.origin.replace(/\/$/, "");
+    const host = window.location.hostname;
+    if (host && !isLocalDevHostname(host)) {
+      return window.location.origin.replace(/\/$/, "");
+    }
   }
   return ZENLINK_FALLBACK_ORIGIN;
 });
@@ -151,10 +154,6 @@ function scrollToDocRow(slug: string) {
         inline: "nearest",
       });
   }, 100);
-}
-
-function openDocsToSlug(slug: string) {
-  scrollToDocRow(slug);
 }
 
 // ── Application form ──────────────────────────────────────────────────────────
@@ -591,10 +590,9 @@ Content-Type: application/json
         @toggle-docs-list="toggleDocsList"
         @copy-doc-link="copyDocLink"
         @toggle-doc="toggleDoc"
-        @jump-to-doc="openDocsToSlug"
       />
 
-      <FaqFeedbackSection :docs="docs" />
+      <FaqFeedbackSection />
 
       </main>
     </div>

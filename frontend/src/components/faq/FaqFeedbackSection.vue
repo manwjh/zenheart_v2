@@ -5,8 +5,6 @@ import { faqUiByLocale } from "@/features/faq/faqCopy";
 import { formatErrorDetail } from "@/features/faq/faqHelpers";
 import { siteLocale } from "@/features/locale/siteLocale";
 
-type DocItem = { slug: string; title: string };
-
 type FaqFeedbackRow = {
   id: string;
   title: string;
@@ -17,14 +15,9 @@ type FaqFeedbackRow = {
   reviewed_at?: string | null;
 };
 
-const props = defineProps<{
-  docs: DocItem[];
-}>();
-
 const ui = computed(() => faqUiByLocale[siteLocale.value]);
 const title = ref("");
 const body = ref("");
-const docSlug = ref("");
 const contact = ref("");
 const busy = ref(false);
 const loading = ref(false);
@@ -72,7 +65,7 @@ async function submitFeedback() {
       body: JSON.stringify({
         title: title.value.trim(),
         body: body.value.trim(),
-        doc_slug: docSlug.value || null,
+        doc_slug: null,
         page_url: typeof window !== "undefined" ? window.location.href : null,
         contact: contact.value.trim() || null,
       }),
@@ -85,7 +78,6 @@ async function submitFeedback() {
       typeof data.message === "string" ? data.message : ui.value.feedbackSubmitted;
     title.value = "";
     body.value = "";
-    docSlug.value = "";
     contact.value = "";
     await loadHistory();
   } catch (e) {
@@ -118,16 +110,6 @@ onMounted(loadHistory);
             required
             :placeholder="ui.feedbackTitlePlaceholder"
           />
-        </label>
-
-        <label class="field">
-          <span class="label">{{ ui.feedbackFieldDoc }}</span>
-          <select v-model="docSlug" class="input">
-            <option value="">{{ ui.feedbackDocAny }}</option>
-            <option v-for="doc in props.docs" :key="doc.slug" :value="doc.slug">
-              {{ doc.title }}
-            </option>
-          </select>
         </label>
 
         <label class="field">

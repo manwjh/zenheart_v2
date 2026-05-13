@@ -11,9 +11,16 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv_py311/
 venv/
 ENV/
 env/
+
+# Local-only backend artifacts (never push)
+backend/local-data/
+
+# Frontend test coverage output
+frontend/coverage/
 
 # Environment variables and secrets
 .env

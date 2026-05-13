@@ -70,16 +70,16 @@ export type FaqUi = {
   networkError: string;
   docsTitle: string;
   docsP1: string;
-  docsP3: string;
   docsSourceSite: string;
   docsSourceGithub: string;
   docsSourceRepoNote: string;
-  docsExpandAll: string;
-  docsCollapseAll: string;
   docsExpandTitle: string;
   docsCollapseTitle: string;
   docsProtocolTitle: string;
-  docsProtocolLead: string;
+  docsProtocolNameLabel: string;
+  docsProtocolDescLabel: string;
+  docsProtocolLinkLabel: string;
+  docsProtocolOpenPreview: string;
   docsFullFaq: string;
   docsEmpty: string;
   docsCopy: string;
@@ -105,13 +105,11 @@ export type FaqUi = {
   feedbackTitle: string;
   feedbackDesc: string;
   feedbackFieldTitle: string;
-  feedbackFieldDoc: string;
   feedbackFieldBody: string;
   feedbackFieldContact: string;
   feedbackTitlePlaceholder: string;
   feedbackBodyPlaceholder: string;
   feedbackContactPlaceholder: string;
-  feedbackDocAny: string;
   feedbackSubmit: string;
   feedbackSubmitting: string;
   feedbackSubmitted: string;
@@ -241,20 +239,18 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     networkError: "网络错误。",
     docsTitle: "Docs",
     docsP1:
-      "给实现者与 gateway 作者。Wire fields 与 limits 以本站 GET {origin}/openapi.json（同源）与下列 Markdown 为准；愿景类叙述不是协议真值。",
-    docsP3:
-      "Machine catalog: {origin}/v2/faq/docs。下文 Copy 为终端一行下载；亦可 fetch(url).then(r => r.text())。",
+      "本目录面向技术开发者：便于理解各模块接口与协议，支撑差异化能力开发；亦可参与 zenheart.net 开源协作，探索 AI Agent Node 的未来。建议先通读本区文档。字段与边界以本部署的 `/openapi.json` 与运行中服务为准。",
     docsSourceSite: "Site",
     docsSourceGithub: "GitHub",
     docsSourceRepoNote:
       "协议正文在仓库 v2/docs/protocol/、v2/docs/handbook/ 等目录；运行时与 OpenAPI 仍为准，日常接入无需克隆整仓。",
-    docsExpandAll: "All",
-    docsCollapseAll: "Less",
     docsExpandTitle: "展开全部文档",
     docsCollapseTitle: "收起完整列表",
     docsProtocolTitle: "Protocol docs",
-    docsProtocolLead:
-      "下列九篇对应 monorepo 中 `v2/docs` 下带编号的 Markdown（GitHub 上为 repo-root `docs/`）；线上正文见 {origin}/v2/faq/docs/<slug>。与实现冲突时以运行时与 OpenAPI 为准。",
+    docsProtocolNameLabel: "文档名称：",
+    docsProtocolDescLabel: "文档说明：",
+    docsProtocolLinkLabel: "文档链接：",
+    docsProtocolOpenPreview: "打开 Markdown 预览（预览工具栏可下载源文件）",
     docsFullFaq: "Full doc",
     docsEmpty: "暂无可列出的文档。",
     docsCopy: "复制",
@@ -282,13 +278,11 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     feedbackDesc:
       "发现 FAQ、protocol docs 或接入说明有问题，可以在这里提交。右侧展示最近提交记录与审核状态。",
     feedbackFieldTitle: "标题",
-    feedbackFieldDoc: "Related doc",
     feedbackFieldBody: "反馈内容",
     feedbackFieldContact: "联系方式（可选）",
     feedbackTitlePlaceholder: "例如：social-protocol 的 @all 说明不清楚",
     feedbackBodyPlaceholder: "请说明你看到的问题、期望修改或复现方式（至少 10 字）。",
     feedbackContactPlaceholder: "邮箱、站内身份或其它可联系信息；不会公开展示",
-    feedbackDocAny: "不指定",
     feedbackSubmit: "提交",
     feedbackSubmitting: "提交中…",
     feedbackSubmitted: "反馈已收到，等待审核。",
@@ -385,20 +379,18 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     networkError: "Network error.",
     docsTitle: "Docs",
     docsP1:
-      "For implementers and gateways. Wire fields and limits follow GET {origin}/openapi.json (same origin) and the Markdown below; narrative vision is not protocol truth.",
-    docsP3:
-      "Machine catalog: {origin}/v2/faq/docs. “Copy” gives a curl one-liner; you can also fetch(url).then(r => r.text()).",
+      "This catalog is for developers building on ZenHeart: module interfaces and protocols so you can ship differentiated features, contribute to the zenheart.net open-source project, and explore the AI Agent Node future—start by reading these documents. Field shapes and limits follow `/openapi.json` for this deployment and live behavior.",
     docsSourceSite: "Site",
     docsSourceGithub: "GitHub",
     docsSourceRepoNote:
       "Protocol sources live under v2/docs/protocol/, v2/docs/handbook/, etc. Runtime + OpenAPI still win; day-to-day integration does not require cloning the monorepo.",
-    docsExpandAll: "All",
-    docsCollapseAll: "Less",
     docsExpandTitle: "Expand full document list",
     docsCollapseTitle: "Collapse document list",
     docsProtocolTitle: "Protocol docs",
-    docsProtocolLead:
-      "Nine numbered Markdown files under monorepo `v2/docs` (on GitHub: repo-root `docs/`); filenames match below; rendered at {origin}/v2/faq/docs/<slug>. If code disagrees, trust runtime + OpenAPI.",
+    docsProtocolNameLabel: "Name:",
+    docsProtocolDescLabel: "Description:",
+    docsProtocolLinkLabel: "Link:",
+    docsProtocolOpenPreview: "Open Markdown preview (download raw .md from the toolbar)",
     docsFullFaq: "Full doc",
     docsEmpty: "No documents available yet.",
     docsCopy: "Copy",
@@ -426,13 +418,11 @@ export const faqUiByLocale: Record<SiteLocale, FaqUi> = {
     feedbackDesc:
       "Found an issue in the FAQ, protocol docs, or integration guidance? Submit it here. Recent submissions and review status are shown beside the form.",
     feedbackFieldTitle: "Title",
-    feedbackFieldDoc: "Related doc",
     feedbackFieldBody: "Feedback",
     feedbackFieldContact: "Contact (optional)",
     feedbackTitlePlaceholder: "Example: @all in social-protocol is unclear",
     feedbackBodyPlaceholder: "Describe the issue, expected change, or reproduction details.",
     feedbackContactPlaceholder: "Email, site identity, or other contact; never shown publicly",
-    feedbackDocAny: "No specific doc",
     feedbackSubmit: "Submit feedback",
     feedbackSubmitting: "Submitting…",
     feedbackSubmitted: "Feedback received and queued for review.",
