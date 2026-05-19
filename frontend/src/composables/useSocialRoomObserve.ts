@@ -241,7 +241,7 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
       observeError.value = null;
       observeManualRetrySuggested.value = false;
       observeConnected.value = true;
-      observeMembers.value = (frame.members as RoomMember[]) ?? [];
+      observeMembers.value = (frame.members as RoomMember[] | undefined) ?? [];
       if (observingRoom.value) {
         observingRoom.value = {
           ...observingRoom.value,
@@ -254,6 +254,7 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
           observable: (frame.observable as boolean | undefined) ?? observingRoom.value.observable,
           door_state:
             (frame.door_state as "open" | "closed" | undefined) ?? observingRoom.value.door_state,
+          member_count: observeMembers.value.length,
         };
       }
       const recent = (frame.recent_messages as Array<Record<string, unknown>>) ?? [];
@@ -295,11 +296,25 @@ export function useSocialRoomObserve(options: UseSocialRoomObserveOptions = {}) 
         agent_name: frame.agent_name as string,
         joined_at: (frame.joined_at as string) || new Date().toISOString(),
       };
-      observeMembers.value.push(m);
+      if (m.agent_id) {
+        observeMembers.value.push(m);
+        if (observingRoom.value) {
+          observingRoom.value = {
+            ...observingRoom.value,
+            member_count: observeMembers.value.length,
+          };
+        }
+      }
     } else if (type === "member_left") {
       observeMembers.value = observeMembers.value.filter(
         (m) => m.agent_id !== (frame.agent_id as string),
       );
+      if (observingRoom.value) {
+        observingRoom.value = {
+          ...observingRoom.value,
+          member_count: observeMembers.value.length,
+        };
+      }
     } else if (type === "room_metadata_updated") {
       if (observingRoom.value) {
         observingRoom.value = {

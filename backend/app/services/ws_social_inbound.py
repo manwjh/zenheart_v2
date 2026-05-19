@@ -4,10 +4,14 @@ A2A social room WebSocket inbound handlers for the unified agent channel.
 Inbound frame types (`list_rooms`, `create_room`, `join_room`, etc.) are
 dispatched from `/v2/agent/ws` after `auth_ok`. Room lifecycle cleanup on
 disconnect calls `cleanup_social_room_on_disconnect`.
+
+This module is not a second social participant endpoint. `/v2/social/observe`
+is implemented separately for read-only observers.
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -18,7 +22,8 @@ from sqlalchemy import select
 from app.config import Settings
 from app.model_defs import Agent
 from app.services.agent_event_log import record_agent_event
-from app.services.ws_errors import enrich_error_payload
+from app.services.perception import attach_ws_outbound_perception_if_missing, zenlink_site_anchor_id
+from app.services.ws_errors import enrich_error_payload, ws_error
 from app.services.permission_service import check_permission, get_limit_value
 from app.services.points_service import award_points
 from app.services.image_check import is_trusted_media_url
@@ -55,8 +60,12 @@ from app.social_registry import (
 from app.ws_registry import AgentConnectionRegistry
 
 
+logger = logging.getLogger(__name__)
+
+
 def _jdump(obj: dict) -> str:
     obj = enrich_error_payload(obj)
+    obj = attach_ws_outbound_perception_if_missing(obj, site_id=zenlink_site_anchor_id())
     return json.dumps(obj, ensure_ascii=False)
 
 
@@ -145,7 +154,13 @@ def _room_join_payload(
         payload["allowed_agent_ids"] = sorted(room.allowlist_agent_ids)
     if room.denylist_agent_ids:
         payload["denied_agent_ids"] = sorted(room.denylist_agent_ids)
-    return payload
+    return room_perception(
+        payload,
+        room_id=room.room_id,
+        perception_kind="snapshot",
+        refresh_surface="room",
+        refresh_path=f"/v2/social/rooms/{room.room_id}/messages",
+    )
 
 
 async def _send_pending_topic_suggestions_if_owner(
@@ -157,11 +172,11 @@ async def _send_pending_topic_suggestions_if_owner(
     if agent_id != room.creator_id:
         return
     pending_topics = await list_pending_topic_suggestions(session_factory, room.room_id)
-    await ws.send_text(_jdump({
+    await ws.send_text(_jdump(room_perception({
         "type": "topic_suggestions_pending",
         "room_id": room.room_id,
         "topics": pending_topics,
-    }))
+    }, room_id=room.room_id, perception_kind="attention")))
 
 
 def _message_notify_recipient_ids(room: ChatRoom, sender_agent_id: str) -> list[str]:
@@ -352,6 +367,13 @@ async def _handle_create_room(
         _created["allowed_agent_ids"] = sorted(room.allowlist_agent_ids)
     if room.denylist_agent_ids:
         _created["denied_agent_ids"] = sorted(room.denylist_agent_ids)
+    room_perception(
+        _created,
+        room_id=room.room_id,
+        perception_kind="action_feedback",
+        refresh_surface="room",
+        refresh_path=f"/v2/social/rooms/{room.room_id}/messages",
+    )
     await ws.send_text(_jdump(_created))
     await record_agent_event(
         session_factory, event="a2a_room_created", agent_id=agent_id,
@@ -363,6 +385,47 @@ async def _handle_create_room(
 
 
 async def _handle_join_room(
+    ws: WebSocket,
+    social: SocialRoomRegistry,
+    session_factory: object,
+    registry: AgentConnectionRegistry,
+    settings: Settings,
+    agent_id: str,
+    agent_name: str,
+    level: int,
+    data: dict,
+) -> None:
+    try:
+        await _handle_join_room_core(
+            ws,
+            social,
+            session_factory,
+            registry,
+            settings,
+            agent_id,
+            agent_name,
+            level,
+            data,
+        )
+    except Exception as exc:
+        logger.exception(
+            "join_room handler failed agent_id=%s room_id=%s",
+            agent_id,
+            data.get("room_id"),
+        )
+        try:
+            await social.leave_room(agent_id)
+        except Exception:
+            logger.exception("leave_room cleanup after join_room failure agent_id=%s", agent_id)
+        try:
+            await ws.send_text(
+                _jdump(ws_error("join_room_internal_error", detail=str(exc)[:500]))
+            )
+        except Exception:
+            logger.exception("failed to send join_room_internal_error to client")
+
+
+async def _handle_join_room_core(
     ws: WebSocket,
     social: SocialRoomRegistry,
     session_factory: object,
@@ -459,6 +522,11 @@ async def _handle_join_room(
         "agent_name": agent_name,
         "joined_at": joined_at_str,
     }
+    room_perception(
+        broadcast_frame,
+        room_id=room.room_id,
+        perception_kind="live_delta",
+    )
     await social.broadcast_to_room(room.room_id, broadcast_frame, exclude_agent=agent_id)
     await record_agent_event(
         session_factory, event="a2a_room_joined", agent_id=agent_id,
@@ -501,11 +569,11 @@ async def _handle_leave_room(
 
     now = datetime.now(timezone.utc)
     left_at_str = now.isoformat()
-    await ws.send_text(_jdump({
+    await ws.send_text(_jdump(room_perception({
         "type": "room_left",
         "room_id": room.room_id,
         "name": room.name,
-    }))
+    }, room_id=room.room_id, perception_kind="action_feedback")))
     await record_member_leave(session_factory, room.room_id, agent_id, now)
     await record_agent_event(
         session_factory, event="a2a_room_left", agent_id=agent_id,
@@ -764,6 +832,13 @@ async def _handle_send_message(
     if out_of_room_mentions:
         frame["dropped_mention_agent_ids"] = out_of_room_mentions
         frame["out_of_room_mention_count"] = len(out_of_room_mentions)
+    room_perception(
+        frame,
+        room_id=room_id,
+        perception_kind="live_delta",
+        refresh_surface="room",
+        refresh_path=f"/v2/social/rooms/{room_id}/messages",
+    )
 
     await social.broadcast_to_room(room_id, frame)
     await record_agent_event(
@@ -851,6 +926,7 @@ async def _broadcast_member_left(
     }
     if left_at:
         left_frame["left_at"] = left_at
+    room_perception(left_frame, room_id=room.room_id, perception_kind="live_delta")
     await social.broadcast_to_room(room.room_id, left_frame)
 
 
@@ -954,12 +1030,12 @@ async def _handle_update_room_access_lists(
     if aerr:
         await ws.send_text(_jdump({"type": "error", "reason": aerr}))
         return
-    await ws.send_text(_jdump({
+    await ws.send_text(_jdump(room_perception({
         "type": response_type,
         "room_id": room_id,
         "allowed_agent_ids": sorted(norm_allow),
         "denied_agent_ids": sorted(norm_deny),
-    }))
+    }, room_id=room_id, perception_kind="action_feedback")))
 
 
 async def _handle_update_room_metadata(
@@ -1065,6 +1141,13 @@ async def _handle_update_room_metadata(
         "creator_agent_name": updated.creator_name,
         "updated_fields": sorted(updates_seen),
     }
+    room_perception(
+        frame,
+        room_id=updated.room_id,
+        perception_kind="live_delta",
+        refresh_surface="room",
+        refresh_path=f"/v2/social/rooms/{updated.room_id}/messages",
+    )
     await ws.send_text(_jdump(frame))
     await social.broadcast_to_room(room_id, frame, exclude_agent=agent_id)
     await record_agent_event(
@@ -1137,6 +1220,7 @@ async def _handle_update_room_door(
         "creator_agent_id": room.creator_id,
         "kicked_agent_ids": [member.agent_id for member in kicked_members],
     }
+    room_perception(frame, room_id=room.room_id, perception_kind="live_delta")
     await ws.send_text(_jdump(frame))
 
     now = datetime.now(timezone.utc)
@@ -1148,6 +1232,7 @@ async def _handle_update_room_door(
         "detail": "Room owner closed the door; you were removed from the room.",
         "closed_at": now.isoformat(),
     }
+    room_perception(kicked_frame, room_id=room.room_id, perception_kind="live_delta")
     if door_closed:
         for member in kicked_members:
             await record_member_leave(session_factory, room.room_id, member.agent_id, now)
@@ -1237,6 +1322,13 @@ async def _handle_clear_room_state(
         "cleared_messages": clear_messages,
         "cleared_signals": clear_signals,
     }
+    room_perception(
+        frame,
+        room_id=room.room_id,
+        perception_kind="live_delta",
+        refresh_surface="room",
+        refresh_path=f"/v2/social/rooms/{room.room_id}/messages",
+    )
     await ws.send_text(_jdump(frame))
     await social.broadcast_to_room(room_id, frame, exclude_agent=agent_id)
     await record_agent_event(
@@ -1262,12 +1354,12 @@ async def _handle_list_room_members(
     if snapshot is None:
         await ws.send_text(_jdump({"type": "error", "reason": "not_in_room"}))
         return
-    await ws.send_text(_jdump({
+    await ws.send_text(_jdump(room_perception({
         "type": "room_members_list",
         "room_id": snapshot["room_id"],
         "name": snapshot["name"],
         "members": snapshot["members"],
-    }))
+    }, room_id=snapshot["room_id"], perception_kind="snapshot")))
 
 
 async def _handle_pull_room_topics(
@@ -1311,11 +1403,11 @@ async def _handle_pull_room_topics(
     if err == "persistence_failed":
         await ws.send_text(_jdump({"type": "error", "reason": "persistence_failed"}))
         return
-    await ws.send_text(_jdump({
+    await ws.send_text(_jdump(room_perception({
         "type": "pull_room_topics_ok",
         "room_id": room_id,
         "topics": topics,
-    }))
+    }, room_id=room_id, perception_kind="action_feedback")))
     await social.notify_topic_suggestions_pending(session_factory, room_id)
 
 
@@ -1491,5 +1583,11 @@ async def cleanup_social_room_on_disconnect(
 
 
 async def handle_social_list_rooms(ws: WebSocket, social: SocialRoomRegistry) -> None:
-    await ws.send_text(_jdump({"type": "rooms_list", "rooms": social.list_rooms_snapshot()}))
+    await ws.send_text(_jdump(site_perception(
+        {"type": "rooms_list", "rooms": social.list_rooms_snapshot()},
+        site_id="zenheart.net",
+        perception_kind="snapshot",
+        refresh_surface="social_rooms",
+        refresh_path="/v2/social/rooms",
+    )))
 

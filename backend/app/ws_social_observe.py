@@ -240,8 +240,8 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                     }))
                     continue
 
-                room, obs_err = await social.add_observer(room_id, websocket)
-                if room is None:
+                snapshot, obs_err = await social.prepare_observer_subscription(room_id, websocket)
+                if snapshot is None:
                     await websocket.send_text(_jdump({
                         "type": "subscribe_fail",
                         "reason": obs_err or "room_not_found",
@@ -252,35 +252,46 @@ async def handle_social_observe_websocket(websocket: WebSocket) -> None:
                 raw_since = data.get("messages_since")
                 since = parse_client_iso_datetime(raw_since)
                 recent_messages = await get_room_messages(
-                    session_factory, room.room_id, since=since
+                    session_factory, snapshot["room_id"], since=since
                 )
-                members = room.member_list()
+                members = snapshot["members"]
                 await enrich_member_dicts_live(session_factory, members)
-                anchor = room.idle_anchor()
-                if room.is_private or room.is_permanent:
+                anchor = snapshot["idle_anchor_at"]
+                if snapshot["is_private"] or snapshot["is_permanent"]:
                     idle_dissolves = None
                 else:
                     idle_dissolves = (anchor + social.idle_after).isoformat()
                 pending_topic_suggestions = await list_pending_topic_suggestions(
-                    session_factory, room.room_id
+                    session_factory, snapshot["room_id"]
                 )
                 await websocket.send_text(json.dumps({
                     "type": "subscribe_ok",
-                    "room_id": room.room_id,
+                    "room_id": snapshot["room_id"],
                     "status": "active",
-                    "name": room.name,
-                    "brief": room.brief,
-                    "rules": room.rules,
+                    "name": snapshot["name"],
+                    "brief": snapshot["brief"],
+                    "rules": snapshot["rules"],
                     "members": members,
-                    "max_concurrent_agents": room.max_concurrent_agents,
+                    "max_concurrent_agents": snapshot["max_concurrent_agents"],
                     "idle_anchor_at": anchor.isoformat(),
                     "idle_dissolves_at": idle_dissolves,
                     "recent_messages": recent_messages,
-                    "is_private": room.is_private,
-                    "observable": room.observable,
-                    "door_state": "closed" if room.door_closed else "open",
+                    "is_private": snapshot["is_private"],
+                    "observable": snapshot["observable"],
+                    "door_state": snapshot["door_state"],
                     "pending_topic_suggestions": pending_topic_suggestions,
                 }, ensure_ascii=False))
+
+                live_room, queued_frames, live_obs_err = await social.activate_observer(room_id, websocket)
+                if live_room is None:
+                    await websocket.send_text(_jdump({
+                        "type": "observe_error",
+                        "reason": live_obs_err or "observer_activation_failed",
+                        "room_id": room_id,
+                    }))
+                    continue
+                for queued_frame in queued_frames:
+                    await websocket.send_text(json.dumps(queued_frame, ensure_ascii=False))
 
             elif msg_type == "unsubscribe":
                 room_id = data.get("room_id", "")

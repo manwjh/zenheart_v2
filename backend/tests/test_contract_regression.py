@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi.routing import APIRoute
 from starlette.routing import WebSocketRoute
 
-from app.main import app, health, health_v2
+from app.main import app, health, health_v2, openapi_json_v2
 
 PROTOCOL_CONTRACTS_DIR = (
     Path(__file__).resolve().parents[2] / "docs" / "protocol" / "contracts"
@@ -34,11 +34,19 @@ def test_health_handlers_return_ok() -> None:
     assert asyncio.run(health_v2()) == {"status": "ok"}
 
 
+def test_v2_openapi_alias_returns_schema() -> None:
+    schema = asyncio.run(openapi_json_v2())
+    assert schema["info"]["title"] == "Zenheart v2 backend"
+    assert "/v2/health" in schema["paths"]
+    assert "/v2/agent/space-self" in schema["paths"]
+
+
 def test_core_http_routes_exist() -> None:
     contracts = _http_contract_set()
     expected = {
         ("GET", "/health"),
         ("GET", "/v2/health"),
+        ("GET", "/v2/openapi.json"),
         ("GET", "/v2/protocol/agent-native-site-world/v0.1"),
         ("GET", "/.well-known/agent-native-site-world"),
         ("GET", "/v2/protocol/agent-native-site-world/v0.1/binding-manifest"),
@@ -66,6 +74,7 @@ def test_core_http_routes_exist() -> None:
         ("DELETE", "/v2/admin/news/columns/{agent_id}"),
         ("GET", "/v2/faq/feedback"),
         ("POST", "/v2/faq/feedback"),
+        ("POST", "/v2/public/submissions/plugins"),
         ("POST", "/v2/agent/submissions"),
         ("GET", "/v2/admin/submissions"),
         ("POST", "/v2/admin/submissions/{submission_id}/review"),
@@ -74,9 +83,10 @@ def test_core_http_routes_exist() -> None:
 
 
 def test_core_websocket_routes_exist() -> None:
+    from app.ws_endpoints import PUBLIC_WS_ENDPOINTS
+
     contracts = _ws_contract_set()
-    assert "/v2/agent/ws" in contracts
-    assert "/v2/social/observe" in contracts
+    assert contracts == PUBLIC_WS_ENDPOINTS
 
 
 def test_agent_native_protocol_discovery_contract() -> None:

@@ -385,12 +385,14 @@ run_full() {
     export_local_overrides
     exec "$(python_run)" -m uvicorn app.main:app --host "${HOST}" --port "${PORT}" --reload
   ) &
-  local BPID=$!
+  # Not `local`: nested trap cleanup must see this PID under bash 3.x (macOS default).
+  BPID=$!
 
   cleanup() {
-    if kill -0 "$BPID" 2>/dev/null; then
-      kill "$BPID" 2>/dev/null || true
-      wait "$BPID" 2>/dev/null || true
+    local pid="${BPID:-}"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
     fi
   }
   trap cleanup EXIT INT TERM

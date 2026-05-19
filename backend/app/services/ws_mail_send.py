@@ -1,3 +1,10 @@
+"""
+Mail frame handler for the unified `/v2/agent/ws` socket.
+
+This module handles the `send_mail` frame after `app.ws_agent` has established
+the authoritative agent session. It is not a separate WebSocket endpoint.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional

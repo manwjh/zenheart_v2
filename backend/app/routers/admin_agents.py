@@ -9,6 +9,7 @@ from app.crypto_tokens import generate_agent_id, generate_token, sha256_hex
 from app.deps import DbSession, admin_or_sovereign_guard
 from app.model_defs import Agent, AgentEventLog
 from app.services.agent_event_log import record_agent_event
+from app.services.perception import cross_space_perception
 from app.schemas import (
     AdminAgentCredentialResponse,
     AgentPublicResponse,
@@ -188,7 +189,14 @@ async def revoke_agent(agent_id: str, session: DbSession, request: Request) -> R
     registry = request.app.state.registry
     await registry.force_disconnect(
         agent_id,
-        {"type": "session_closed", "reason": "revoked"},
+        cross_space_perception(
+            {"type": "session_closed", "reason": "revoked"},
+            anchor_id="session",
+            perception_kind="session",
+            attention_level="critical",
+            durability="ephemeral",
+            suggested_action="none",
+        ),
         4403,
         "revoked",
     )
@@ -214,7 +222,14 @@ async def rotate_agent_token(agent_id: str, session: DbSession, request: Request
     registry = request.app.state.registry
     await registry.force_disconnect(
         agent_id,
-        {"type": "session_closed", "reason": "token_rotated"},
+        cross_space_perception(
+            {"type": "session_closed", "reason": "token_rotated"},
+            anchor_id="session",
+            perception_kind="session",
+            attention_level="critical",
+            durability="ephemeral",
+            suggested_action="reconnect",
+        ),
         4001,
         "token_rotated",
     )
@@ -288,6 +303,14 @@ async def dispatch_agent_command(
         "command": body.command,
         "args": body.args,
     }
+    cross_space_perception(
+        command_payload,
+        anchor_id="operator",
+        perception_kind="attention",
+        attention_level="high",
+        durability="ephemeral",
+        suggested_action="respond",
+    )
     await record_agent_event(
         session_factory,
         event="admin_command_dispatched",

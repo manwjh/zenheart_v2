@@ -1,3 +1,11 @@
+"""
+Authoritative `/v2/agent/ws` session owner and frame dispatcher.
+
+This is the single realtime body for one authenticated agent identity. Modules
+under `app.services.ws_*` are frame-family handlers invoked from this dispatcher;
+they are not independent WebSocket endpoints.
+"""
+
 import asyncio
 import json
 import time
@@ -10,6 +18,11 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import get_summary as msgbox_get_summary
+from app.services.perception import (
+    attach_ws_outbound_perception_if_missing,
+    cross_space_perception,
+    site_perception,
+)
 from app.services.ws_errors import enrich_error_payload, ws_error
 from app.services.ws_profile import get_agent_profile
 from app.services.permission_service import get_limit_value
@@ -89,11 +102,18 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
     agent_id = auth.agent_id
     agent = auth.agent
 
+    site_anchor_id = (
+        (settings.public_site_base_url or "").strip() or "zenheart.net"
+    )
+
     connection_id = str(uuid.uuid4())
     tap = getattr(websocket.app.state, "ws_debug_tap", None)
 
     async def agent_send_json(payload: dict[str, Any]) -> None:
         payload = enrich_error_payload(payload)
+        payload = attach_ws_outbound_perception_if_missing(
+            payload, site_id=site_anchor_id
+        )
         raw = json.dumps(payload, ensure_ascii=False)
         await websocket.send_text(raw)
         if tap is not None:
@@ -116,11 +136,19 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
         try:
             await previous.send_text(
                 json.dumps(
-                    {
-                        "type": "superseded",
-                        "message": "Replaced by a new authenticated connection",
-                        "agent_id": agent_id,
-                    }
+                    cross_space_perception(
+                        {
+                            "type": "superseded",
+                            "message": "Replaced by a new authenticated connection",
+                            "agent_id": agent_id,
+                        },
+                        anchor_id="agent-session",
+                        perception_kind="attention",
+                        attention_level="high",
+                        durability="ephemeral",
+                        suggested_action="none",
+                    ),
+                    ensure_ascii=False,
                 )
             )
             await record_agent_event(
@@ -145,20 +173,26 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
             label=agent.label,
         ),
     )
-    auth_ok_body = {
-        "type": "auth_ok",
-        "connection_id": connection_id,
-        "agent_id": agent_id,
-        "level": agent.level,
-        "server_time": datetime.now(timezone.utc).isoformat(),
-        "my_profile": my_profile,
-        "msgbox_summary": msgbox_summary,
-        "social_limits": {
-            "max_concurrent_agents_per_room": social.max_concurrent_agents,
-            "max_concurrent_observers_per_room": social.max_concurrent_observers,
-            "room_idle_hours": settings.social_room_idle_hours,
+    auth_ok_body = site_perception(
+        {
+            "type": "auth_ok",
+            "connection_id": connection_id,
+            "agent_id": agent_id,
+            "level": agent.level,
+            "server_time": datetime.now(timezone.utc).isoformat(),
+            "my_profile": my_profile,
+            "msgbox_summary": msgbox_summary,
+            "social_limits": {
+                "max_concurrent_agents_per_room": social.max_concurrent_agents,
+                "max_concurrent_observers_per_room": social.max_concurrent_observers,
+                "room_idle_hours": settings.social_room_idle_hours,
+            },
         },
-    }
+        site_id=site_anchor_id,
+        perception_kind="session",
+        refresh_surface="space_self",
+        refresh_path="/v2/agent/space-self",
+    )
     await agent_send_json(auth_ok_body)
     await record_agent_event(
         session_factory,
@@ -171,14 +205,22 @@ async def handle_agent_websocket(websocket: WebSocket) -> None:
     if unread_count > 0:
         # Proactively notify the agent that offline backlog exists.
         # This avoids relying solely on client-side polling after reconnect.
-        await agent_send_json({
-            "type": "msgbox_notify",
-            "kind": "backlog_summary",
-            "message_id": "",
-            "unread_count": unread_count,
-            "top_type": msgbox_summary.get("top_type"),
-            "has_high_priority": bool(msgbox_summary.get("has_high_priority")),
-        })
+        await agent_send_json(
+            cross_space_perception(
+                {
+                    "type": "msgbox_notify",
+                    "kind": "backlog_summary",
+                    "message_id": "",
+                    "unread_count": unread_count,
+                    "top_type": msgbox_summary.get("top_type"),
+                    "has_high_priority": bool(msgbox_summary.get("has_high_priority")),
+                },
+                anchor_id="agent-inbox",
+                perception_kind="attention",
+                refresh_surface="msgbox",
+                refresh_path="/v2/agent/msgbox?unread_only=true",
+            )
+        )
         await record_agent_event(
             session_factory,
             event="ws_message_out",

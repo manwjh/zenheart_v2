@@ -9,18 +9,21 @@ type FaqFeedbackRow = {
   id: string;
   title: string;
   status: string;
+  body_preview?: string | null;
   kind?: string | null;
   artifact_type?: string | null;
   source?: string | null;
   target_slug?: string | null;
   target_path?: string | null;
+  submitter_type?: string | null;
+  submitter_name?: string | null;
   created_at: string;
   updated_at: string;
   reviewed_at?: string | null;
   published_at?: string | null;
 };
 
-type SubmissionMode = "feedback" | "skill" | "mcp";
+type SubmissionMode = "feedback" | "skill" | "plugin";
 
 const ui = computed(() => faqUiByLocale[siteLocale.value]);
 const agentId = ref("");
@@ -56,13 +59,28 @@ function displayStatus(status: string) {
   return ui.value.feedbackStatusLabels[status] ?? status;
 }
 
-function displayType(row: FaqFeedbackRow) {
-  if (row.artifact_type) return row.artifact_type;
-  return row.kind || "submission";
+function displaySubmissionType(row: FaqFeedbackRow) {
+  const labels = ui.value;
+  if (row.kind === "proposal" && row.artifact_type === "skill") return labels.feedbackSubmissionTypeSkill;
+  if (row.kind === "proposal" && row.artifact_type === "plugin") return labels.feedbackSubmissionTypePlugin;
+  if (row.kind === "proposal" && row.artifact_type) return row.artifact_type;
+  if (row.kind === "issue") {
+    if (row.source === "faq") return labels.feedbackSubmissionTypeFaq;
+    return labels.feedbackSubmissionTypeFeedback;
+  }
+  return row.kind || "—";
 }
 
-function displayTarget(row: FaqFeedbackRow) {
-  return row.target_slug || row.target_path || row.source || row.id;
+function displaySubmitter(row: FaqFeedbackRow) {
+  const labels = ui.value;
+  const name = row.submitter_name?.trim();
+  if (name) return name;
+  const t = row.submitter_type;
+  if (t === "agent") return labels.feedbackSubmitterAgent;
+  if (t === "human") return labels.feedbackSubmitterHuman;
+  if (t === "anonymous") return labels.feedbackSubmitterAnonymous;
+  if (t === "system") return labels.feedbackSubmitterSystem;
+  return "—";
 }
 
 function formatDate(value: string) {
@@ -132,16 +150,17 @@ function resetSubmissionFields() {
 }
 
 function submissionEndpoint() {
-  if (mode.value === "mcp") return "/v2/public/submissions/mcp";
+  if (mode.value === "plugin") return "/v2/public/submissions/plugins";
   return "/v2/public/submissions/feedback";
 }
 
 function submissionPayload() {
-  if (mode.value === "mcp") {
+  if (mode.value === "plugin") {
     return {
       slug: slug.value.trim(),
       title: title.value.trim(),
       summary: summary.value.trim(),
+      plugin_kind: "mcp_server",
       manifest: parseManifest(),
       documentation_markdown: optionalString(documentationMarkdown.value),
       license: license.value.trim(),
@@ -317,8 +336,8 @@ onMounted(loadHistory);
             <span>{{ ui.feedbackTypeSkill }}</span>
           </label>
           <label class="submission-type">
-            <input v-model="mode" type="radio" value="mcp" />
-            <span>{{ ui.feedbackTypeMcp }}</span>
+            <input v-model="mode" type="radio" value="plugin" />
+            <span>{{ ui.feedbackTypePlugin }}</span>
           </label>
         </div>
 
@@ -444,7 +463,7 @@ onMounted(loadHistory);
           />
         </label>
 
-        <label v-if="mode === 'mcp'" class="field">
+        <label v-if="mode === 'plugin'" class="field">
           <span class="label">{{ ui.feedbackFieldManifest }}</span>
           <textarea
             v-model="manifest"
@@ -454,7 +473,7 @@ onMounted(loadHistory);
           />
         </label>
 
-        <label v-if="mode === 'mcp'" class="field">
+        <label v-if="mode === 'plugin'" class="field">
           <span class="label">{{ ui.feedbackFieldDocumentation }}</span>
           <textarea
             v-model="documentationMarkdown"
@@ -465,7 +484,7 @@ onMounted(loadHistory);
           />
         </label>
 
-        <div v-if="mode === 'mcp'" class="credential-grid">
+        <div v-if="mode === 'plugin'" class="credential-grid">
           <label class="field">
             <span class="label">{{ ui.feedbackFieldPermissions }}</span>
             <input
@@ -482,7 +501,7 @@ onMounted(loadHistory);
           </label>
         </div>
 
-        <label v-if="mode === 'mcp'" class="field">
+        <label v-if="mode === 'plugin'" class="field">
           <span class="label">{{ ui.feedbackFieldInstall }}</span>
           <textarea
             v-model="installInstructions"
@@ -495,7 +514,7 @@ onMounted(loadHistory);
           />
         </label>
 
-        <div v-if="mode === 'mcp'" class="credential-grid">
+        <div v-if="mode === 'plugin'" class="credential-grid">
           <label class="field">
             <span class="label">{{ ui.feedbackFieldRepository }}</span>
             <input
@@ -509,7 +528,7 @@ onMounted(loadHistory);
 
         </div>
 
-        <label v-if="mode === 'mcp'" class="field">
+        <label v-if="mode === 'plugin'" class="field">
           <span class="label">{{ ui.feedbackFieldSecurityNotes }}</span>
           <textarea
             v-model="securityNotes"
@@ -547,28 +566,46 @@ onMounted(loadHistory);
             {{ loading ? ui.feedbackLoading : ui.feedbackRefresh }}
           </button>
         </div>
-        <p class="feedback-history-note">{{ ui.feedbackHistoryNote }}</p>
         <p v-if="historyError" class="status err" role="alert">{{ historyError }}</p>
         <div v-if="!loading && submissions.length === 0" class="feedback-empty">
           {{ ui.feedbackHistoryEmpty }}
         </div>
-        <ul v-else class="feedback-list" role="list">
-          <li v-for="row in submissions" :key="row.id" class="feedback-item">
-            <div class="feedback-item-main">
-              <span class="feedback-item-title">{{ row.title }}</span>
-              <span class="feedback-doc">{{ displayType(row) }} · {{ row.source || "submission" }}</span>
-              <span v-if="row.target_slug || row.target_path" class="feedback-target">
-                {{ displayTarget(row) }}
-              </span>
-            </div>
-            <div class="feedback-item-meta">
-              <span class="feedback-status" :data-status="row.status">
-                {{ displayStatus(row.status) }}
-              </span>
-              <span>{{ formatDate(row.updated_at || row.created_at) }}</span>
-            </div>
-          </li>
-        </ul>
+        <div v-else class="submission-feed-wrap">
+          <table class="submission-feed-table" :aria-label="ui.feedbackHistoryTitle">
+            <thead>
+              <tr>
+                <th scope="col">{{ ui.feedbackHistoryColTitle }}</th>
+                <th scope="col">{{ ui.feedbackHistoryColSummary }}</th>
+                <th scope="col">{{ ui.feedbackHistoryColType }}</th>
+                <th scope="col">{{ ui.feedbackHistoryColSubmitter }}</th>
+                <th scope="col">{{ ui.feedbackHistoryColTime }}</th>
+                <th scope="col">{{ ui.feedbackHistoryColStatus }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in submissions" :key="row.id">
+                <td :data-label="ui.feedbackHistoryColTitle" class="col-title">{{ row.title }}</td>
+                <td :data-label="ui.feedbackHistoryColSummary" class="col-summary">
+                  {{ row.body_preview?.trim() || "—" }}
+                </td>
+                <td :data-label="ui.feedbackHistoryColType" class="col-type">
+                  {{ displaySubmissionType(row) }}
+                </td>
+                <td :data-label="ui.feedbackHistoryColSubmitter" class="col-submitter">
+                  {{ displaySubmitter(row) }}
+                </td>
+                <td :data-label="ui.feedbackHistoryColTime" class="col-time">
+                  {{ formatDate(row.created_at) }}
+                </td>
+                <td :data-label="ui.feedbackHistoryColStatus" class="col-status">
+                  <span class="feedback-status" :data-status="row.status">
+                    {{ displayStatus(row.status) }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </section>
@@ -597,13 +634,36 @@ onMounted(loadHistory);
 .feedback-history-title { margin: 0; font-size: var(--text-emphasis); font-weight: 600; }
 .feedback-history-note { margin: 0 0 0.75rem; color: var(--muted, #5c5c5c); font-size: var(--text-compact); line-height: 1.5; }
 .feedback-empty { padding: 1.25rem 0.5rem; color: var(--muted, #5c5c5c); font-size: var(--text-ui); }
-.feedback-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
-.feedback-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; padding: 0.7rem 0.75rem; border: 1px solid var(--border, rgba(0, 0, 0, 0.08)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg) 94%, var(--fg) 6%); }
-.feedback-item-main { min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
-.feedback-item-title { font-weight: 600; font-size: var(--text-ui); overflow: hidden; text-overflow: ellipsis; }
-.feedback-doc { align-self: flex-start; font-family: "SF Mono", ui-monospace, Consolas, monospace; font-size: var(--text-meta); color: var(--muted, #5c5c5c); }
-.feedback-target { align-self: flex-start; font-size: var(--text-meta); color: var(--muted, #5c5c5c); overflow-wrap: anywhere; }
-.feedback-item-meta { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 0.25rem; font-size: var(--text-meta); color: var(--muted, #5c5c5c); }
+.submission-feed-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.submission-feed-table { width: 100%; border-collapse: collapse; font-size: var(--text-ui); }
+.submission-feed-table th {
+  text-align: left;
+  padding: 0.45rem 0.5rem;
+  font-size: var(--text-meta);
+  font-weight: 600;
+  color: var(--muted, #5c5c5c);
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  white-space: nowrap;
+}
+.submission-feed-table td {
+  padding: 0.55rem 0.5rem;
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  vertical-align: top;
+}
+.submission-feed-table .col-title { font-weight: 600; max-width: 11rem; word-break: break-word; }
+.submission-feed-table .col-summary {
+  color: var(--muted, #5c5c5c);
+  max-width: 22rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.submission-feed-table .col-type,
+.submission-feed-table .col-submitter,
+.submission-feed-table .col-time {
+  font-size: var(--text-meta);
+  white-space: nowrap;
+}
+.submission-feed-table .col-status { white-space: nowrap; }
 .feedback-status { padding: 0.12rem 0.45rem; border-radius: var(--radius-pill); border: 1px solid var(--border, rgba(0, 0, 0, 0.1)); color: var(--fg); background: rgba(0, 0, 0, 0.035); }
 .feedback-status[data-status="accepted"],
 .feedback-status[data-status="published"] { color: #15803d; border-color: rgba(21, 128, 61, 0.35); background: rgba(21, 128, 61, 0.08); }
@@ -613,7 +673,33 @@ onMounted(loadHistory);
 .action-btn:disabled { opacity: 0.6; cursor: default; }
 @media (max-width: 860px) {
   .credential-grid { grid-template-columns: 1fr; }
-  .feedback-item { flex-direction: column; }
-  .feedback-item-meta { align-items: flex-start; }
+  .submission-feed-table thead { display: none; }
+  .submission-feed-table tbody tr {
+    display: block;
+    border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+    border-radius: var(--radius-md);
+    margin-bottom: 0.55rem;
+    padding: 0.25rem 0;
+    background: color-mix(in srgb, var(--bg) 94%, var(--fg) 6%);
+  }
+  .submission-feed-table td {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    gap: 0.25rem 0.6rem;
+    border: none;
+    padding: 0.4rem 0.65rem;
+  }
+  .submission-feed-table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    font-size: var(--text-meta);
+    color: var(--muted, #5c5c5c);
+  }
+  .submission-feed-table .col-title,
+  .submission-feed-table .col-summary { max-width: none; }
+  .submission-feed-table .col-type,
+  .submission-feed-table .col-submitter,
+  .submission-feed-table .col-time,
+  .submission-feed-table .col-status { white-space: normal; }
 }
 </style>

@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.model_defs import Agent
+from app.services.perception import cross_space_perception
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -217,7 +218,15 @@ def build_message_notify(
     }
     if reply_to_message_id:
         ws_body["reply_to_message_id"] = reply_to_message_id
-    return ws_body, dict(ws_body)
+    webhook_payload = dict(ws_body)
+    cross_space_perception(
+        ws_body,
+        anchor_id=f"social:{room_id}",
+        perception_kind="attention",
+        refresh_surface="room",
+        refresh_path=f"/v2/social/rooms/{room_id}/messages",
+    )
+    return ws_body, webhook_payload
 
 
 def build_member_joined_notify(
@@ -237,7 +246,15 @@ def build_member_joined_notify(
         "agent_name": joiner_agent_name,
         "joined_at": joined_at,
     }
-    return ws_body, dict(ws_body)
+    webhook_payload = dict(ws_body)
+    cross_space_perception(
+        ws_body,
+        anchor_id=f"social:{room_id}",
+        perception_kind="attention",
+        refresh_surface="room",
+        refresh_path=f"/v2/social/rooms/{room_id}/messages",
+    )
+    return ws_body, webhook_payload
 
 
 def build_member_left_notify(
@@ -257,7 +274,15 @@ def build_member_left_notify(
         "agent_name": leaver_agent_name,
         "left_at": left_at,
     }
-    return ws_body, dict(ws_body)
+    webhook_payload = dict(ws_body)
+    cross_space_perception(
+        ws_body,
+        anchor_id=f"social:{room_id}",
+        perception_kind="attention",
+        refresh_surface="room",
+        refresh_path=f"/v2/social/rooms/{room_id}/messages",
+    )
+    return ws_body, webhook_payload
 
 
 def build_room_dissolved_notify(
@@ -273,4 +298,12 @@ def build_room_dissolved_notify(
         "room_name": room_name,
         "reason": reason,
     }
-    return ws_body, dict(ws_body)
+    webhook_payload = dict(ws_body)
+    cross_space_perception(
+        ws_body,
+        anchor_id=f"social:{room_id}",
+        perception_kind="attention",
+        refresh_surface="social_rooms",
+        refresh_path="/v2/social/rooms",
+    )
+    return ws_body, webhook_payload

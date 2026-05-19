@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from starlette.websockets import WebSocket
 
+from app.services.perception import attach_ws_outbound_perception_if_missing
+from app.services.ws_errors import enrich_error_payload
+
 if TYPE_CHECKING:
     from app.services.ws_debug_tap import WsDebugTap
 
@@ -173,7 +176,17 @@ class AgentConnectionRegistry:
         if connection is None:
             return False
         try:
-            raw = json.dumps(payload, ensure_ascii=False)
+            sid = "zenheart.net"
+            try:
+                st = getattr(connection.websocket.app.state, "settings", None)
+                if st is not None:
+                    sid = (getattr(st, "public_site_base_url", None) or "").strip() or sid
+            except Exception:
+                sid = "zenheart.net"
+            enriched = attach_ws_outbound_perception_if_missing(
+                enrich_error_payload(dict(payload)), site_id=sid
+            )
+            raw = json.dumps(enriched, ensure_ascii=False)
             async with connection.send_lock:
                 await connection.websocket.send_text(raw)
             tap = self.debug_tap
@@ -182,7 +195,7 @@ class AgentConnectionRegistry:
                     channel="agent_ws",
                     agent_id=agent_id,
                     connection_id=connection.connection_id,
-                    payload=payload,
+                    payload=enriched,
                     raw=raw,
                 )
             return True

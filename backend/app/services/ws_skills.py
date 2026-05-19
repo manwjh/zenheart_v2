@@ -1,3 +1,10 @@
+"""
+Skill registry frame handlers for the unified `/v2/agent/ws` socket.
+
+This module handles skill publish/update/delete frames dispatched by
+`app.ws_agent`; it is not a separate WebSocket endpoint.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -6,6 +6,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+from app.services.perception import cross_space_perception
+
 if TYPE_CHECKING:
     from app.ws_registry import AgentConnectionRegistry
 
@@ -34,7 +36,13 @@ def build_msgbox_notify_payload(
         body["preview"] = preview
     if extra:
         body.update(extra)
-    return body
+    return cross_space_perception(
+        body,
+        anchor_id="agent-inbox",
+        perception_kind="attention",
+        refresh_surface="msgbox",
+        refresh_path="/v2/agent/msgbox?unread_only=true",
+    )
 
 
 async def push_msgbox_notify_to_agent(

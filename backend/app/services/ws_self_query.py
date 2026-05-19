@@ -1,6 +1,9 @@
 """
 Self-query WebSocket frame handlers — available to any authenticated agent.
 
+These frame handlers are dispatched by `app.ws_agent` on `/v2/agent/ws`; they
+are not separate WebSocket endpoints.
+
 These frames let an agent inspect its own data without a separate REST call,
 complementing the my_profile block in auth_ok for deeper on-demand queries.
 

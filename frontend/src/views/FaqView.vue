@@ -26,33 +26,16 @@ const userAgentHandbookSlug = computed(() =>
   siteLocale.value === "zh" ? "user-agent-handbook" : "user-agent-handbook-en",
 );
 
-/** Matches `v2/docs/protocol/B01_zenlink-mcp-reference-design.md` after FAQ slug rules (strip `B01_`). */
-const zenlinkMcpReferenceDocSlug = "zenlink-mcp-reference-design";
-
-/** When FAQ lists Zenlink URLs, use this host (third parties need real HTTPS origins, not /path-only). */
-const ZENLINK_FALLBACK_ORIGIN = "https://zenheart.net";
+/** Public origin for Docs card outbound links (shareable; avoid bare localhost). */
+const FAQ_SITE_FALLBACK = "https://zenheart.net";
 
 function isLocalDevHostname(hostname: string): boolean {
   const h = hostname.toLowerCase();
   return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]";
 }
 
-/** Public Zenlink artifact base (installers, manifest). Never use Vite loopback for these — agents must fetch a real host. */
-const zenlinkHttpsOrigin = computed(() => {
-  const fromEnv = (import.meta.env.VITE_ZENLINK_SOURCE_ORIGIN as string | undefined)?.trim();
-  if (fromEnv) return fromEnv.replace(/\/$/, "");
-  if (typeof window !== "undefined" && window.location?.origin) {
-    const host = window.location.hostname;
-    if (host && !isLocalDevHostname(host)) {
-      return window.location.origin.replace(/\/$/, "");
-    }
-  }
-  return ZENLINK_FALLBACK_ORIGIN;
-});
-
-/** Public base for Docs card prose and outbound Site link ({origin}); never localhost so copy is shareable. Fetches still use window origin in `useFaqDocs`. */
 const faqDocsSiteOrigin = computed(() => {
-  const fromEnv = (import.meta.env.VITE_ZENLINK_SOURCE_ORIGIN as string | undefined)?.trim();
+  const fromEnv = (import.meta.env.VITE_PUBLIC_SITE_ORIGIN as string | undefined)?.trim();
   if (fromEnv) return fromEnv.replace(/\/$/, "");
   if (typeof window !== "undefined" && window.location?.origin) {
     const host = window.location.hostname;
@@ -60,62 +43,7 @@ const faqDocsSiteOrigin = computed(() => {
       return window.location.origin.replace(/\/$/, "");
     }
   }
-  return ZENLINK_FALLBACK_ORIGIN;
-});
-
-const zenlinkPublicBase = computed(() => `${zenlinkHttpsOrigin.value}/zenlink`);
-
-interface ZenlinkOpenclawBundleEntry {
-  tarball?: string;
-  tarball_present?: boolean;
-  installer?: string;
-  installer_present?: boolean;
-}
-
-interface ZenlinkReleaseManifest {
-  openclaw_bundles?: {
-    "openclaw-macos"?: ZenlinkOpenclawBundleEntry;
-    "openclaw-linux"?: ZenlinkOpenclawBundleEntry;
-  };
-  openclaw_bundles_complete?: boolean;
-  versions?: { zenlink_mcp?: string; zenlink_sdk?: string };
-}
-const zenlinkReleaseManifest = ref<ZenlinkReleaseManifest | null>(null);
-
-const ZENLINK_MCP_VERSION_FALLBACK = "0.13.25";
-
-const openclawInstallerVersionTag = computed(() => {
-  const v = zenlinkReleaseManifest.value?.versions?.zenlink_mcp?.trim();
-  return v ? `v${v}` : `v${ZENLINK_MCP_VERSION_FALLBACK}`;
-});
-
-const openBundle = (id: "openclaw-macos" | "openclaw-linux") =>
-  zenlinkReleaseManifest.value?.openclaw_bundles?.[id];
-
-const openclawInstallMacUrl = computed(() => {
-  const base = zenlinkPublicBase.value;
-  const name = openBundle("openclaw-macos")?.installer;
-  if (name) return `${base}/${name}`;
-  return `${base}/install-zenlink-mcp-openclaw-macos-${openclawInstallerVersionTag.value}.sh`;
-});
-
-const openclawInstallLinuxUrl = computed(() => {
-  const base = zenlinkPublicBase.value;
-  const name = openBundle("openclaw-linux")?.installer;
-  if (name) return `${base}/${name}`;
-  return `${base}/install-zenlink-mcp-openclaw-linux-${openclawInstallerVersionTag.value}.sh`;
-});
-
-const zenlinkOpenclawTarMacUrl = computed(() => {
-  const fn = openBundle("openclaw-macos")?.tarball;
-  if (fn) return `${zenlinkPublicBase.value}/${fn}`;
-  return `${zenlinkPublicBase.value}/zenlink-mcp-openclaw-macos-${openclawInstallerVersionTag.value}.tar.gz`;
-});
-
-const zenlinkOpenclawTarLinuxUrl = computed(() => {
-  const fn = openBundle("openclaw-linux")?.tarball;
-  if (fn) return `${zenlinkPublicBase.value}/${fn}`;
-  return `${zenlinkPublicBase.value}/zenlink-mcp-openclaw-linux-${openclawInstallerVersionTag.value}.tar.gz`;
+  return FAQ_SITE_FALLBACK;
 });
 
 function scrollTo(id: string) {
@@ -126,25 +54,30 @@ function scrollTo(id: string) {
   });
 }
 
-/** Main Docs card: show / hide the document list (right column only). Sidebar outline follows this. */
+/** Main Docs card: expand/collapse protocol catalog only (handbooks → Handbook card). */
 const {
   docsListExpanded,
   docs,
-  expandedSlug,
-  docContent,
-  docLoading,
-  docError,
-  copiedSlug,
   toggleDocsList,
   docRawUrl,
   loadDocLists,
-  toggleDoc,
-  copyDocLink,
-} = useFaqDocs(async (raw) => DOMPurify.sanitize(await marked.parse(raw)));
+} = useFaqDocs();
+
+const _handbookDocSlugs = new Set([
+  "welcome",
+  "welcome-zh",
+  "user-agent-handbook",
+  "user-agent-handbook-en",
+  "admin-agent-handbook",
+]);
 
 function scrollToDocRow(slug: string) {
-  docsListExpanded.value = true;
-  scrollTo("docs");
+  if (_handbookDocSlugs.has(slug)) {
+    scrollTo("handbook");
+  } else {
+    docsListExpanded.value = true;
+    scrollTo("docs");
+  }
   setTimeout(() => {
     document
       .getElementById(`doc-${slug}`)
@@ -190,14 +123,6 @@ onMounted(async () => {
   const [skillsResult] = await Promise.allSettled([
     fetch("/v2/faq/skills"),
   ]);
-  try {
-    const manifestRes = await fetch(`${zenlinkPublicBase.value}/release-manifest.json`);
-    if (manifestRes.ok) {
-      zenlinkReleaseManifest.value = (await manifestRes.json()) as ZenlinkReleaseManifest;
-    }
-  } catch {
-    // ignore manifest fetch failures; fallback to env
-  }
   await loadDocLists();
   if (skillsResult.status === "fulfilled" && skillsResult.value.ok) {
     const rawSkills = (await skillsResult.value.json()) as SkillItem[];
@@ -317,10 +242,9 @@ async function copySkillLink(slug: string) {
             <span><b>1</b> {{ faq.navManifesto }}</span>
             <span><b>2</b> {{ faq.navRegister }}</span>
             <span><b>3</b> {{ faq.navHandbook }}</span>
-            <span><b>4</b> {{ faq.navZenlink }}</span>
-            <span><b>5</b> {{ faq.navDocs }}</span>
-            <span><b>6</b> {{ faq.navSkills }}</span>
-            <span><b>7</b> {{ faq.navFeedback }}</span>
+            <span><b>4</b> {{ faq.navDocs }}</span>
+            <span><b>5</b> {{ faq.navSkills }}</span>
+            <span><b>6</b> {{ faq.navFeedback }}</span>
           </div>
           <p class="zh-hero__note">
             {{ faq.heroNote }}
@@ -345,10 +269,6 @@ async function copySkillLink(slug: string) {
           <a class="sidebar-link" href="#/faq#handbook" @click.prevent="scrollTo('handbook')">
             <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 3h8a2 2 0 012 2v8H5a2 2 0 00-2-2V3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M3 3v10a2 2 0 002 2h8" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
             {{ faq.navHandbook }}
-          </a>
-          <a class="sidebar-link" href="#/faq#zenlink" @click.prevent="scrollTo('zenlink')">
-            <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M5 3.5L1.5 8 5 12.5M11 3.5L14.5 8 11 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            {{ faq.navZenlink }}
           </a>
           <a class="sidebar-link" href="#/faq#docs" @click.prevent="scrollTo('docs')">
             <svg class="icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M10 2v4h3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
@@ -472,13 +392,13 @@ Content-Type: application/json
         </header>
         <div class="card-body">
           <ul class="handbook-list" role="list">
-            <li>
+            <li :id="'doc-' + welcomeDocSlug">
               <button type="button" class="handbook-doc-link" @click="openFaqDocModal(welcomeDocSlug)">
                 <code>{{ welcomeDocSlug }}</code>
               </button>
               {{ faq.handbookLi1 }}
             </li>
-            <li>
+            <li :id="'doc-' + userAgentHandbookSlug">
               <a
                 :href="`/v2/faq/docs/${userAgentHandbookSlug}`"
                 target="_blank"
@@ -487,7 +407,7 @@ Content-Type: application/json
               >
               {{ faq.handbookLi2 }}
             </li>
-            <li>
+            <li id="doc-admin-agent-handbook">
               <a href="/v2/faq/docs/admin-agent-handbook" target="_blank" rel="noopener noreferrer"
                 ><code>admin-agent-handbook</code></a
               >
@@ -498,93 +418,12 @@ Content-Type: application/json
         </div>
       </section>
 
-      <!-- ── Zenlink ── -->
-      <section id="zenlink" class="card">
-        <header class="card-header">
-          <h2 class="card-title">{{ faq.zenlinkTitle }}</h2>
-          <p class="card-desc">
-            {{ faq.zenlinkDesc }}
-          </p>
-        </header>
-        <div class="card-body faq-zenlink">
-          <h3 class="faq-zenlink-subtitle">{{ faq.zenlinkBlockOpenClawTitle }}</h3>
-          <p class="reg-option-note">
-            {{ faq.zenlinkBlockOpenClawIntro }}<code>{{ openclawInstallerVersionTag }}</code>{{ faq.zenlinkBlockOpenClawAfterVersion }}
-          </p>
-          <table class="faq-zenlink-table" :aria-label="faq.zenlinkOpenClawTableAria">
-            <thead>
-              <tr>
-                <th scope="col"></th>
-                <th scope="col">{{ faq.zenlinkOpenClawColInstaller }}</th>
-                <th scope="col">{{ faq.zenlinkOpenClawColTarball }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <th scope="row">macOS</th>
-                <td :data-label="faq.zenlinkOpenClawColInstaller">
-                  <a :href="openclawInstallMacUrl" target="_blank" rel="noopener noreferrer" class="faq-zenlink-url">{{
-                    openclawInstallMacUrl
-                  }}</a>
-                </td>
-                <td :data-label="faq.zenlinkOpenClawColTarball">
-                  <a :href="zenlinkOpenclawTarMacUrl" target="_blank" rel="noopener noreferrer" class="faq-zenlink-url">{{
-                    zenlinkOpenclawTarMacUrl
-                  }}</a>
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Linux</th>
-                <td :data-label="faq.zenlinkOpenClawColInstaller">
-                  <a
-                    :href="openclawInstallLinuxUrl"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="faq-zenlink-url"
-                    >{{ openclawInstallLinuxUrl }}</a
-                  >
-                </td>
-                <td :data-label="faq.zenlinkOpenClawColTarball">
-                  <a
-                    :href="zenlinkOpenclawTarLinuxUrl"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="faq-zenlink-url"
-                    >{{ zenlinkOpenclawTarLinuxUrl }}</a
-                  >
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h3 class="faq-zenlink-subtitle">{{ faq.zenlinkBlockDevTitle }}</h3>
-          <p class="reg-option-note">
-            {{ faq.zenlinkBlockDevDescBefore }}
-            <a
-              :href="`/v2/faq/docs/${zenlinkMcpReferenceDocSlug}`"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="faq-zenlink-doc-ref"
-              ><code>{{ zenlinkMcpReferenceDocSlug }}</code></a
-            >
-            {{ faq.zenlinkBlockDevDescAfter }}
-          </p>
-        </div>
-      </section>
-
       <FaqDocsSection
         :docs="docs"
         :docs-list-expanded="docsListExpanded"
-        :expanded-slug="expandedSlug"
-        :doc-content="docContent"
-        :doc-loading="docLoading"
-        :doc-error="docError"
-        :copied-slug="copiedSlug"
         :doc-raw-url="docRawUrl"
         :site-https-origin="faqDocsSiteOrigin"
         @toggle-docs-list="toggleDocsList"
-        @copy-doc-link="copyDocLink"
-        @toggle-doc="toggleDoc"
       />
 
       <FaqSkillsSection
@@ -733,95 +572,6 @@ Content-Type: application/json
 .card-body {
   padding: 1.25rem 1.35rem;
   min-width: 0;
-}
-
-.faq-zenlink-subtitle {
-  margin: 1.25rem 0 0.5rem;
-  font-size: var(--text-emphasis);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.faq-zenlink-subtitle:first-of-type {
-  margin-top: 0;
-}
-
-.faq-zenlink-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-compact);
-  margin: 0.35rem 0 0;
-}
-
-.faq-zenlink-table th,
-.faq-zenlink-table td {
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
-  padding: 0.45rem 0.55rem;
-  vertical-align: top;
-  text-align: left;
-}
-
-.faq-zenlink-table thead th {
-  font-weight: 600;
-  background: color-mix(in srgb, var(--bg) 92%, rgba(var(--brand-rgb), 0.12) 8%);
-}
-
-.faq-zenlink-table tbody th[scope="row"] {
-  font-weight: 600;
-  white-space: nowrap;
-  width: 4.5rem;
-  color: var(--muted, #5c5c5c);
-}
-
-.faq-zenlink-url {
-  word-break: break-all;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.88em;
-}
-
-.faq-zenlink-doc-ref {
-  color: inherit;
-  font-weight: 600;
-  text-underline-offset: 2px;
-}
-
-.faq-zenlink-doc-ref code {
-  font-size: 0.95em;
-}
-
-@media (max-width: 720px) {
-  .faq-zenlink-table thead {
-    display: none;
-  }
-
-  .faq-zenlink-table tr {
-    display: block;
-    border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
-    border-radius: var(--radius-md);
-    margin-bottom: 0.65rem;
-    overflow: hidden;
-  }
-
-  .faq-zenlink-table tbody th[scope="row"] {
-    display: block;
-    width: auto;
-    border-bottom: 0;
-  }
-
-  .faq-zenlink-table td {
-    display: block;
-    border: 0;
-    border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.12));
-  }
-
-  .faq-zenlink-table td::before {
-    display: block;
-    font-weight: 600;
-    font-size: var(--text-meta);
-    margin-bottom: 0.2rem;
-    color: var(--muted, #5c5c5c);
-    content: attr(data-label);
-  }
 }
 
 /* ── Registration options ────────────────────────────────────── */

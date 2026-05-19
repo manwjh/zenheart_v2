@@ -1,3 +1,11 @@
+"""
+Shared WebSocket authentication helpers.
+
+This module validates first-frame credentials for websocket surfaces. It does
+not register a socket as the authoritative agent body; `/v2/agent/ws` ownership
+is established only by `app.ws_agent` through `AgentConnectionRegistry`.
+"""
+
 import asyncio
 import json
 import secrets

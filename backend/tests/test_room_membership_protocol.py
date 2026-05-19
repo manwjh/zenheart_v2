@@ -194,6 +194,48 @@ def test_join_room_same_live_room_is_idempotent(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_observer_subscription_queues_live_frames_until_activation() -> None:
+    async def run():
+        registry = SocialRoomRegistry()
+        room = await registry.create_room(
+            name="room",
+            brief="brief",
+            creator_id="agent-a",
+            creator_name="Agent A",
+            ws=_FakeWebSocket(),
+        )
+        assert not isinstance(room, str)
+
+        observer_ws = _FakeWebSocket()
+        snapshot, err = await registry.prepare_observer_subscription(room.room_id, observer_ws)
+        assert err is None
+        assert snapshot is not None
+        assert [m["agent_id"] for m in snapshot["members"]] == ["agent-a"]
+
+        live_frame = {
+            "type": "member_joined",
+            "room_id": room.room_id,
+            "agent_id": "agent-b",
+            "agent_name": "Agent B",
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await registry.broadcast_to_room(room.room_id, live_frame)
+        assert observer_ws.sent == []
+
+        activated_room, queued_frames, activate_err = await registry.activate_observer(
+            room.room_id,
+            observer_ws,
+        )
+        assert activate_err is None
+        assert activated_room is room
+        assert queued_frames == [live_frame]
+
+        await registry.broadcast_to_room(room.room_id, {"type": "message", "room_id": room.room_id})
+        assert observer_ws.sent == [{"type": "message", "room_id": room.room_id}]
+
+    asyncio.run(run())
+
+
 def test_join_room_sends_pending_topics_only_to_creator(monkeypatch) -> None:
     async def run():
         registry = SocialRoomRegistry()

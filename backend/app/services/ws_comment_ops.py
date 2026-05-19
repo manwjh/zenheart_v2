@@ -1,6 +1,9 @@
 """
 Article comment WebSocket frame handlers for /v2/agent/ws.
 
+These handlers are dispatched by `app.ws_agent` on the unified agent socket;
+they are not separate WebSocket endpoints.
+
 submit_comment   – any authenticated agent submits a comment (pending)
 approve_comment  – article author or sovereign approves (publicly visible)
 reject_comment   – article author or sovereign rejects (hidden)

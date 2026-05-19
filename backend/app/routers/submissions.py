@@ -49,6 +49,7 @@ _PUBLIC_PAYLOAD_MAX_BYTES = 262_144
 _PUBLIC_SKILL_BUNDLE_MAX_BYTES = 1_048_576
 _PUBLIC_SKILL_PAYLOAD_MAX_BYTES = 1_500_000
 _PUBLIC_SKILL_BUNDLE_MAX_FILES = 64
+_PUBLIC_FEED_BODY_PREVIEW_MAX = 280
 _RATE_WINDOW = 60.0
 _timestamps: dict[str, list[float]] = defaultdict(list)
 
@@ -79,7 +80,7 @@ def _reviewer_id_from_request(request: Request) -> str:
 
 
 def _validate_artifact_provenance(artifact_type: str | None, payload: dict[str, Any]) -> None:
-    if artifact_type not in {"skill", "mcp"}:
+    if artifact_type not in {"skill", "plugin"}:
         return
     required = ("license", "permissions_requested", "secrets_required", "install_instructions")
     missing = [name for name in required if name not in payload]
@@ -184,7 +185,16 @@ def _idempotent_response(
     )
 
 
+def _public_body_preview(body: str) -> str:
+    """Short plain-text preview for public list views (not full submission body)."""
+    text = (body or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(text) <= _PUBLIC_FEED_BODY_PREVIEW_MAX:
+        return text
+    return text[: _PUBLIC_FEED_BODY_PREVIEW_MAX - 1] + "…"
+
+
 def _public_submission_feed_row(row: Submission) -> dict[str, Any]:
+    submitter_name = (row.submitter_name or "").strip() or None
     return {
         "id": str(row.id),
         "kind": row.kind,
@@ -192,8 +202,11 @@ def _public_submission_feed_row(row: Submission) -> dict[str, Any]:
         "source": row.source,
         "artifact_type": row.artifact_type,
         "title": row.title,
+        "body_preview": _public_body_preview(row.body),
         "target_slug": row.target_slug,
         "target_path": row.target_path,
+        "submitter_type": row.submitter_type,
+        "submitter_name": submitter_name,
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
         "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
@@ -257,10 +270,11 @@ class PublicFeedbackRequest(BaseModel):
     contact: Optional[str] = Field(default=None, max_length=320)
 
 
-class PublicMcpSubmissionRequest(BaseModel):
+class PublicPluginSubmissionRequest(BaseModel):
     slug: str = Field(min_length=1, max_length=120)
     title: str = Field(min_length=3, max_length=200)
     summary: str = Field(min_length=10, max_length=20000)
+    plugin_kind: str = Field(default="mcp_server", min_length=1, max_length=60)
     manifest: Optional[dict[str, Any]] = None
     documentation_markdown: Optional[str] = Field(default=None, max_length=200000)
     license: str = Field(min_length=1, max_length=120)
@@ -478,11 +492,11 @@ def _validate_public_skill_license(*, license_value: str, license_agreed: bool) 
         )
 
 
-def _validate_mcp_request(body: PublicMcpSubmissionRequest) -> None:
+def _validate_plugin_request(body: PublicPluginSubmissionRequest) -> None:
     if body.manifest is None and not (body.repository_url or "").strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="MCP submissions require either manifest or repository_url.",
+            detail="Plugin submissions require either manifest or repository_url.",
         )
 
 
@@ -737,25 +751,25 @@ async def submit_public_skill(
 
 
 @public_integration_router.post(
-    "/mcp",
+    "/plugins",
     response_model=SubmissionCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def submit_public_mcp(
-    body: PublicMcpSubmissionRequest,
+async def submit_public_plugin(
+    body: PublicPluginSubmissionRequest,
     request: Request,
     response: Response,
     session: DbSession,
     agent: AgentDep,
 ) -> SubmissionCreateResponse:
-    _check_rate_limit(f"public-mcp:{agent.agent_id}")
+    _check_rate_limit(f"public-plugin:{agent.agent_id}")
     _validate_public_slug(body.slug)
-    _validate_mcp_request(body)
+    _validate_plugin_request(body)
     idempotency_key = _idempotency_key(request)
     if idempotency_key is not None:
         existing = await _load_idempotent_submission(
             session,
-            source="public_mcp_submission",
+            source="public_plugin_submission",
             idempotency_key=idempotency_key,
             agent_id=agent.agent_id,
         )
@@ -767,6 +781,7 @@ async def submit_public_mcp(
         "permissions_requested": body.permissions_requested,
         "secrets_required": body.secrets_required,
         "install_instructions": body.install_instructions,
+        "plugin_kind": body.plugin_kind,
         "manifest": body.manifest,
         "documentation_markdown": body.documentation_markdown,
         "repository_url": body.repository_url,
@@ -774,13 +789,13 @@ async def submit_public_mcp(
     }
     if idempotency_key is not None:
         payload["idempotency_key"] = idempotency_key
-    _validate_artifact_provenance("mcp", payload)
+    _validate_artifact_provenance("plugin", payload)
     _validate_public_payload_size(payload)
     submission = await create_submission(
         session,
         kind="proposal",
-        source="public_mcp_submission",
-        artifact_type="mcp",
+        source="public_plugin_submission",
+        artifact_type="plugin",
         title=body.title,
         body=body.summary,
         target_slug=body.slug,
@@ -796,15 +811,15 @@ async def submit_public_mcp(
     )
     await record_submission_event(
         request.app.state.session_factory,
-        event="public_submission_mcp_created",
+        event="public_submission_plugin_created",
         agent_id=agent.agent_id,
         submission_id=str(submission.id),
-        detail={"artifact_type": "mcp", "message_id": message_id},
+        detail={"artifact_type": "plugin", "message_id": message_id},
     )
     return SubmissionCreateResponse(
         id=str(submission.id),
         status=submission.status,
-        message="MCP proposal queued for review.",
+        message="Plugin proposal queued for review.",
         submission=submission_to_dict(submission),
     )
 

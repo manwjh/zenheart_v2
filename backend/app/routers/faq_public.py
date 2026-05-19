@@ -39,6 +39,7 @@ from app.schemas import (
 from app.services.agent_event_log import record_agent_event
 from app.services.msgbox import push_message as msgbox_push
 from app.services.points_service import award_points
+from app.services.perception import cross_space_perception
 from app.services.sovereign_notify import push_msgbox_notify_to_sovereigns
 from app.services.skills_storage import (
     SKILLS_DIR,
@@ -83,7 +84,9 @@ _LEGACY_FAQ_DOC_SLUGS: dict[str, str] = {
     "agent-registration": "registration",
     "agent-points": "registration",
     "display-name-snapshots": "registration",
-    "zenlink-overview": "zenlink-mcp-reference-design",
+    "msgbox": "zenlink-world-protocol",
+    "zenlink-overview": "zenlink-world-protocol",
+    "zenlink-semantic-protocol": "zenlink-world-protocol",
 }
 
 
@@ -94,11 +97,10 @@ class DocItem(BaseModel):
     rel_path: str = ""
 
 
-# FAQ Markdown under `v2/docs/{protocol,handbook,community-skills}/`.
+# FAQ Markdown under `v2/docs/{protocol,handbook}/`.
 _DOC_CATEGORY_ORDER: tuple[str, ...] = (
     "protocol",
     "handbook",
-    "community-skills",
 )
 
 
@@ -783,7 +785,14 @@ async def agent_token_reset(
     if registry:
         await registry.force_disconnect(
             agent.agent_id,
-            {"type": "session_closed", "reason": "token_rotated"},
+            cross_space_perception(
+                {"type": "session_closed", "reason": "token_rotated"},
+                anchor_id="session",
+                perception_kind="session",
+                attention_level="critical",
+                durability="ephemeral",
+                suggested_action="reconnect",
+            ),
             4001,
             "token_rotated",
         )

@@ -3,8 +3,8 @@
 # Defaults match aws/AWS_ACCESS_GUIDE.md; override with env vars.
 # New routes (e.g. /#/wall) are included automatically in dist/; no extra deploy steps.
 #
-# zenlink/ under the web root is NOT shipped by this script (--exclude=zenlink/), same idea as news/.
-# OpenClaw bundles + release-manifest.json: ./deploy-zenlink-public.sh (repository root)
+# zenlink/ under the web root is NOT touched by this script (--exclude=zenlink/), same idea as news/.
+# Any legacy or operator-managed static tree there stays until removed on the host manually.
 set -euo pipefail
 
 V2_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -102,7 +102,7 @@ echo "[v2] npm run build → $FRONTEND"
   npm run build
 )
 
-echo "[v2] rsync dist/ → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$STAGING_DIR/ (exclude zenlink/: published separately)"
+echo "[v2] rsync dist/ → $ZENHEART_EC2_USER@$ZENHEART_EC2_HOST:~/$STAGING_DIR/ (exclude zenlink/: not part of SPA dist)"
 rsync -avz --delete --exclude=zenlink/ \
   -e "$RSYNC_RSH" \
   "$FRONTEND/dist/" \
@@ -126,7 +126,7 @@ elif id www-data >/dev/null 2>&1; then U=www-data
 else U=root
 fi
 # Exclude news/ so the persistent news/images symlink survives --delete.
-# Exclude zenlink/ so OpenClaw artifact drops from repo-root deploy-zenlink-public.sh are not wiped.
+# Exclude zenlink/ so an existing nginx-docroot zenlink/ tree (if any) is not wiped by SPA --delete.
 sudo rsync -a --delete --exclude=news/ --exclude=zenlink/ "$STG/" "$WEB_DIR/"
 sudo chown -R "$U:$U" "$WEB_DIR"
 rm -rf "$STG"

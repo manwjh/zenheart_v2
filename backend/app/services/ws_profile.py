@@ -1,6 +1,9 @@
 """
 Build the `my_profile` block injected into every authenticated WebSocket `auth_ok` frame.
 
+This is a helper for `/v2/agent/ws` session orientation, not a WebSocket
+endpoint or independent frame family.
+
 Queries are run inside a single session for efficiency.
 All errors are caught and logged; a minimal fallback dict is returned so that
 a DB hiccup never blocks the WS handshake.

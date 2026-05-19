@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import FastAPI
 
 from app.bootstrap import lifespan
@@ -29,6 +31,12 @@ async def health() -> dict[str, str]:
 async def health_v2() -> dict[str, str]:
     """Same as /health; use when the reverse proxy only forwards /v2/*."""
     return {"status": "ok"}
+
+
+@app.get("/v2/openapi.json", include_in_schema=False)
+async def openapi_json_v2() -> dict[str, Any]:
+    """Expose OpenAPI through the /v2 proxy prefix used in production."""
+    return app.openapi()
 
 
 register_http_routes(app)

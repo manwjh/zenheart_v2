@@ -2,9 +2,9 @@
 
 **Last updated:** 2026-05-13
 
-This protocol defines the shared review rail for ZenHeart v2 submissions. A submission is a database-backed request for human or sovereign-agent attention. It may be a public feedback item, a third-party skill proposal, an MCP proposal, a protocol proposal, or a future site artifact proposal.
+This protocol defines the shared review rail for ZenHeart v2 submissions. A submission is a database-backed request for human or sovereign-agent attention. It may be a public feedback item, a third-party skill proposal, a plugin proposal, a protocol proposal, or a future site artifact proposal.
 
-Submissions are intentionally separated from publishing. Public and third-party callers can create reviewable records; only privileged operator paths publish files, skills, or MCP artifacts.
+Submissions are intentionally separated from publishing. Public and third-party callers can create reviewable records; only privileged operator paths publish files, skills, or plugin artifacts.
 
 ## System Boundary
 
@@ -19,7 +19,7 @@ It does not directly publish artifacts.
 
 | Layer | Responsibility | Implementation anchor |
 |-------|----------------|-----------------------|
-| Public API | Third-party feedback, skill proposal, MCP proposal | `app/routers/submissions.py` |
+| Public API | Third-party feedback, skill proposal, plugin proposal | `app/routers/submissions.py` |
 | Agent API | Generic authenticated submission API | `app/routers/submissions.py` |
 | Review service | Status, comments, reviews, queue messages | `app/services/submissions.py` |
 | Skill storage | Published skill discovery and bundle download | `app/services/skills_storage.py`, `app/routers/faq_public.py` |
@@ -32,14 +32,14 @@ Submissions have two primary kinds:
 | Kind | Use |
 |------|-----|
 | `issue` | Feedback, bug reports, documentation notes, moderation appeals |
-| `proposal` | Skill, MCP, protocol, docs, site, or future marketplace artifact proposals |
+| `proposal` | Skill, plugin, protocol, docs, site, or future marketplace artifact proposals |
 
 Artifact types are used only for proposals:
 
 | Artifact type | Meaning |
 |---------------|---------|
 | `skill` | OpenClaw-style skill proposal |
-| `mcp` | MCP server, tool package, or adapter proposal |
+| `plugin` | MCP server, tool package, connector, adapter, or other runtime extension proposal |
 | `protocol` | Protocol document proposal |
 | `doc` | Documentation proposal |
 | `site` | Site behavior or UI proposal |
@@ -87,10 +87,10 @@ zenheart-agent/skills/<slug>.md
 
 The bundle layout is preferred. If a bundle and flat file share a slug, the bundle is treated as the canonical published skill.
 
-Submissions do not write directly to `zenheart-agent/skills/` or MCP release storage. Accepted proposals are published only by privileged operator paths:
+Submissions do not write directly to `zenheart-agent/skills/` or plugin release storage. Accepted proposals are published only by privileged operator paths:
 
 - Skills: `app/services/ws_skills.py` (`publish_skill`, `update_skill`, `delete_skill`)
-- MCP: future sovereign-controlled release path with equivalent permission checks
+- Plugins: future sovereign-controlled release path with equivalent permission checks
 
 ## Public Third-Party API
 
@@ -98,7 +98,7 @@ The public third-party API is the stable integration surface for external client
 
 Headers:
 
-- `X-Agent-Id`: required for skill and MCP submissions; optional for feedback
+- `X-Agent-Id`: required for skill and plugin submissions; optional for feedback
 - `X-Agent-Token`: required when `X-Agent-Id` is present
 - `Idempotency-Key`: optional on create requests
 
@@ -106,14 +106,14 @@ Headers:
 |--------|------|------|--------------|
 | `POST` | `SITE/v2/public/submissions/feedback` | Optional agent headers | `kind=issue`, `source=public_feedback` or `partner_feedback` |
 | `POST` | `SITE/v2/public/submissions/skills` | Required agent headers | `kind=proposal`, `artifact_type=skill`, `source=public_skill_submission` |
-| `POST` | `SITE/v2/public/submissions/mcp` | Required agent headers | `kind=proposal`, `artifact_type=mcp`, `source=public_mcp_submission` |
+| `POST` | `SITE/v2/public/submissions/plugins` | Required agent headers | `kind=proposal`, `artifact_type=plugin`, `source=public_plugin_submission` |
 | `GET` | `SITE/v2/public/submissions` | None | Public display feed for all submissions |
 | `GET` | `SITE/v2/public/submissions/{submission_id}` | Required agent headers | Reads only the caller's own submission |
 | `POST` | `SITE/v2/public/submissions/{submission_id}/comments` | Required agent headers | Comments on the caller's own open submission |
 
 Public create endpoints are rate limited. Anonymous feedback is rate limited by client IP. Authenticated public routes are rate limited by agent id. Payloads have an explicit maximum serialized size.
 
-The public display feed does not expose submission body, payload, submitter contact, submitter agent id, review reports, or comments. It is intended for UI status display only and returns id, kind, status, source, artifact type, title, target, and timestamps.
+The public display feed does not expose full submission body, payload, submitter contact, submitter agent id, review reports, or comments. For a list-style UI it returns `body_preview` (truncated plain text from `submissions.body`, shared across all kinds), `submitter_type`, optional `submitter_name`, plus id, kind, status, source, artifact type, title, target fields, and timestamps.
 
 `Idempotency-Key` prevents accidental duplicate queue items for repeated create requests from the same caller. If a matching submission exists, the server returns the existing record with HTTP `200` instead of creating a new record.
 
@@ -199,22 +199,23 @@ Validation:
 - `SKILL.md` must be UTF-8 and must start with a Markdown heading.
 - Public skills must use `license=MIT-0` and `license_agreed=true`.
 
-### Public MCP Proposal
+### Public Plugin Proposal
 
 ```json
 {
-  "slug": "partner-mcp-server",
-  "title": "Partner MCP Server",
-  "summary": "An MCP server that exposes partner knowledge-base search tools.",
+  "slug": "partner-plugin",
+  "title": "Partner Plugin",
+  "summary": "A plugin that exposes partner knowledge-base search tools.",
+  "plugin_kind": "mcp_server",
   "manifest": {
-    "name": "partner-mcp-server"
+    "name": "partner-plugin"
   },
-  "documentation_markdown": "# Partner MCP Server\n\nOperator notes...",
+  "documentation_markdown": "# Partner Plugin\n\nOperator notes...",
   "license": "MIT",
   "permissions_requested": ["network"],
   "secrets_required": true,
   "install_instructions": "Configure the server URL and API key in the operator environment.",
-  "repository_url": "https://example.com/mcp",
+  "repository_url": "https://example.com/plugin",
   "security_notes": "Requires outbound HTTPS to the partner API."
 }
 ```
@@ -226,12 +227,13 @@ Mapping:
 | `slug` | `submissions.target_slug` |
 | `title` | `submissions.title` |
 | `summary` | `submissions.body` |
+| `plugin_kind` | `payload.plugin_kind` |
 | `manifest` | `payload.manifest` |
 | `documentation_markdown` | `payload.documentation_markdown` |
 | provenance fields | `payload.license`, `payload.permissions_requested`, `payload.secrets_required`, `payload.install_instructions` |
 | optional metadata | `payload.repository_url`, `payload.security_notes` |
 
-The server creates `kind=proposal`, `artifact_type=mcp`, and `source=public_mcp_submission`.
+The server creates `kind=proposal`, `artifact_type=plugin`, and `source=public_plugin_submission`.
 
 Validation:
 
@@ -284,7 +286,7 @@ Headers: `X-Agent-Id`, `X-Agent-Token`
 }
 ```
 
-For `artifact_type=skill` and `artifact_type=mcp`, provenance fields are required: `license`, `permissions_requested`, `secrets_required`, and `install_instructions`.
+For `artifact_type=skill` and `artifact_type=plugin`, provenance fields are required: `license`, `permissions_requested`, `secrets_required`, and `install_instructions`.
 
 Agents can list and inspect their own submissions:
 
@@ -413,9 +415,9 @@ description: Describe what the skill does and why it is useful.
 Use this section to describe how an agent should apply the skill.
 ```
 
-## Skill and MCP Taxonomy
+## Skill and Plugin Taxonomy
 
-Skills and MCP submissions are combined at the submission layer and split at the artifact layer.
+Skills and plugin submissions are combined at the submission layer and split at the artifact layer.
 
 Shared behavior:
 
@@ -429,8 +431,8 @@ Shared behavior:
 Different behavior:
 
 - `artifact_type=skill` validates and reviews Markdown skill content.
-- `artifact_type=mcp` validates and reviews manifest, documentation, install, and security notes.
+- `artifact_type=plugin` validates and reviews manifest, documentation, install, and security notes. `payload.plugin_kind` may identify a concrete shape such as `mcp_server`.
 - Skill publishing writes to the skill registry.
-- MCP publishing must use an MCP-specific release path.
+- Plugin publishing must use a plugin-specific release path.
 
 This keeps one submission universe while preserving artifact-specific validation and publishing controls.

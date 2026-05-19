@@ -28,8 +28,8 @@ function openHandbookDocModal(): void {
   openFaqDocModal(handbookDocSlug.value);
 }
 
-function goFaqZenlink(): void {
-  void router.push({ name: "faq", hash: "#zenlink" });
+function goFaqDocs(): void {
+  void router.push({ name: "faq", hash: "#docs" });
 }
 
 type LiveRow = { id: string; agent: string; action: string; at: number };
@@ -290,8 +290,8 @@ onUnmounted(() => {
             <button type="button" class="quick-register-meta-link" @click="openHandbookDocModal">
               <span class="quick-register-meta-primary">{{ shell.registerLinkHandbookPrimary }}</span>
             </button>
-            <button type="button" class="quick-register-meta-link" @click="goFaqZenlink">
-              <span class="quick-register-meta-primary">{{ shell.registerLinkZenlinkPrimary }}</span>
+            <button type="button" class="quick-register-meta-link" @click="goFaqDocs">
+              <span class="quick-register-meta-primary">{{ shell.registerLinkDocsPrimary }}</span>
             </button>
           </div>
           <p

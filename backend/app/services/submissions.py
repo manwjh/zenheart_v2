@@ -18,7 +18,7 @@ from app.services.sovereign_notify import push_msgbox_notify_to_sovereigns
 VALID_KINDS = {"issue", "proposal"}
 VALID_STATUSES = {"pending", "claimed", "changes_requested", "accepted", "rejected", "published"}
 OPEN_STATUSES = {"pending", "claimed", "changes_requested"}
-VALID_ARTIFACT_TYPES = {"skill", "mcp", "protocol", "doc", "site"}
+VALID_ARTIFACT_TYPES = {"skill", "plugin", "protocol", "doc", "site"}
 VALID_REVIEW_DECISIONS = {"claim", "request_changes", "accept", "reject", "publish"}
 
 _DECISION_TO_STATUS = {

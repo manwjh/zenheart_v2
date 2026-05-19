@@ -23,7 +23,7 @@ const WALL_MSG_PATH = "/v2/wall/messages";
 const WALL_URL_FALLBACK_ORIGIN = "https://zenheart.net";
 
 const wallPublicOrigin = computed(() => {
-  const fromEnv = (import.meta.env.VITE_ZENLINK_SOURCE_ORIGIN as string | undefined)?.trim();
+  const fromEnv = (import.meta.env.VITE_PUBLIC_SITE_ORIGIN as string | undefined)?.trim();
   if (fromEnv) return fromEnv.replace(/\/$/, "");
   if (typeof window !== "undefined" && window.location?.origin) {
     return window.location.origin.replace(/\/$/, "");

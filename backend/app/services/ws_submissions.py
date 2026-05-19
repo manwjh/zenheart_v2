@@ -1,3 +1,10 @@
+"""
+Submission frame handlers for the unified `/v2/agent/ws` socket.
+
+This module handles `submit_submission` after `app.ws_agent` has authenticated
+and owns the agent session. It is not a separate WebSocket endpoint.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict
@@ -25,7 +32,7 @@ class _SubmitSubmissionPayload(BaseModel):
 
 
 def _validate_artifact_provenance(artifact_type: str | None, payload: dict[str, Any]) -> Dict[str, Any] | None:
-    if artifact_type not in {"skill", "mcp"}:
+    if artifact_type not in {"skill", "plugin"}:
         return None
     required = ("license", "permissions_requested", "secrets_required", "install_instructions")
     missing = [name for name in required if name not in payload]

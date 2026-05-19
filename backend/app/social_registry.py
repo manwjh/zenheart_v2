@@ -30,6 +30,7 @@ from app.config import (
     SOCIAL_ROOM_MAX_CONCURRENT_AGENTS_DEFAULT,
 )
 from app.model_defs import SocialRoom
+from app.services.perception import room_perception
 
 # ------------------------------------------------------------------ well-known check-in room metadata
 
@@ -166,6 +167,10 @@ class ChatRoom:
     rules: str = ""
     members: dict[str, RoomMember] = field(default_factory=dict)
     observers: set[WebSocket] = field(default_factory=set)
+    observer_pending_frames: dict[WebSocket, list[dict[str, Any]]] = field(
+        default_factory=dict,
+        repr=False,
+    )
     message_count: int = 0
     is_permanent: bool = False
     last_message_at: Optional[datetime] = None
@@ -251,6 +256,7 @@ def _chat_room_from_social_row(
         max_concurrent_agents=max_agents,
         members={},
         observers=set(),
+        observer_pending_frames={},
         message_count=int(row.total_messages),
         is_permanent=False,
         last_message_at=row.last_message_at,
@@ -744,6 +750,57 @@ class SocialRoomRegistry:
 
     # ---------------------------------------------------------------- observer management
 
+    async def prepare_observer_subscription(
+        self, room_id: str, ws: WebSocket
+    ) -> tuple[dict[str, Any] | None, Optional[str]]:
+        """Reserve an observer slot and return a point-in-time subscribe snapshot.
+
+        While reserved, realtime frames are queued for this WebSocket instead of
+        being sent live. The caller must send ``subscribe_ok`` and then call
+        ``activate_observer`` so queued deltas are flushed after the snapshot.
+        """
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return None, "room_not_found"
+            if not room.observable:
+                return None, "not_observable"
+            reserved = len(room.observers) + len(room.observer_pending_frames)
+            if ws not in room.observers and ws not in room.observer_pending_frames:
+                if reserved >= self._max_concurrent_observers:
+                    return None, "observer_room_full"
+                room.observer_pending_frames[ws] = []
+            snapshot = {
+                "room_id": room.room_id,
+                "name": room.name,
+                "brief": room.brief,
+                "rules": room.rules,
+                "members": room.member_list(),
+                "max_concurrent_agents": room.max_concurrent_agents,
+                "idle_anchor_at": room.idle_anchor(),
+                "is_private": room.is_private,
+                "is_permanent": room.is_permanent,
+                "observable": room.observable,
+                "door_state": "closed" if room.door_closed else "open",
+            }
+            return snapshot, None
+
+    async def activate_observer(
+        self, room_id: str, ws: WebSocket
+    ) -> tuple[ChatRoom | None, list[dict[str, Any]], Optional[str]]:
+        """Mark a reserved observer live and return frames queued during setup."""
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if room is None:
+                return None, [], "room_not_found"
+            pending = room.observer_pending_frames.pop(ws, None)
+            if pending is None and ws not in room.observers:
+                return None, [], "observer_not_reserved"
+            if ws not in room.observers and len(room.observers) >= self._max_concurrent_observers:
+                return None, [], "observer_room_full"
+            room.observers.add(ws)
+            return room, pending or [], None
+
     async def add_observer(
         self, room_id: str, ws: WebSocket
     ) -> tuple[ChatRoom | None, Optional[str]]:
@@ -764,11 +821,13 @@ class SocialRoomRegistry:
             room = self._rooms.get(room_id)
             if room:
                 room.observers.discard(ws)
+                room.observer_pending_frames.pop(ws, None)
 
     async def remove_observer_from_all(self, ws: WebSocket) -> None:
         async with self._lock:
             for room in self._rooms.values():
                 room.observers.discard(ws)
+                room.observer_pending_frames.pop(ws, None)
 
     # ---------------------------------------------------------------- message helpers
 
@@ -812,6 +871,8 @@ class SocialRoomRegistry:
                 if m.ws is not None and m.agent_id != exclude_agent
             ]
             observer_targets = list(room.observers)
+            for pending_frames in room.observer_pending_frames.values():
+                pending_frames.append(dict(frame))
 
         text = json.dumps(frame)
         for ws in member_targets + observer_targets:
@@ -831,6 +892,8 @@ class SocialRoomRegistry:
             if room is None:
                 return
             observer_targets = list(room.observers)
+            for pending_frames in room.observer_pending_frames.values():
+                pending_frames.append(dict(frame))
         text = json.dumps(frame, ensure_ascii=False)
         for ws in observer_targets:
             try:
@@ -895,6 +958,7 @@ class SocialRoomRegistry:
             "room_id": room_id,
             "topics": topics,
         }
+        room_perception(frame, room_id=room_id, perception_kind="attention")
         await self.broadcast_to_observers_only(room_id, frame)
         await self.send_to_room_creator_only(room_id, frame)
 
@@ -910,6 +974,13 @@ class SocialRoomRegistry:
             "name": room.name,
             "reason": reason,
         }
+        room_perception(
+            frame,
+            room_id=room.room_id,
+            perception_kind="live_delta",
+            refresh_surface="social_rooms",
+            refresh_path="/v2/social/rooms",
+        )
         text = json.dumps(frame)
 
         member_targets = [m.ws for m in room.members.values() if m.ws is not None]

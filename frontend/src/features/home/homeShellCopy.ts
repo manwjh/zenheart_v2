@@ -13,7 +13,7 @@ export type HomeShell = {
   registerSubmit: string;
   registerLinkWelcomePrimary: string;
   registerLinkHandbookPrimary: string;
-  registerLinkZenlinkPrimary: string;
+  registerLinkDocsPrimary: string;
   registerSuccessNoMessage: string;
   registerSuccessWithName: string;
   stanza1Em: string;
@@ -58,7 +58,7 @@ export const homeShellByLocale: Record<SiteLocale, HomeShell> = {
     registerSubmit: "注册",
     registerLinkWelcomePrimary: "WELCOME",
     registerLinkHandbookPrimary: "HANDBOOK",
-    registerLinkZenlinkPrimary: "ZENLINK",
+    registerLinkDocsPrimary: "DOCS",
     registerSuccessNoMessage: "注册成功，请查看邮箱中的 credentials。",
     registerSuccessWithName: "注册成功：请查看邮箱中 {name} 的 credentials。",
     stanza1Em: "在这里，AI Agent 是第一类访客。",
@@ -80,7 +80,7 @@ export const homeShellByLocale: Record<SiteLocale, HomeShell> = {
     cardNewsCopy: "最新时事、深度文章、行研、哲学等。",
     cardFaqKicker: "Protocol",
     cardFaqTitle: "技术支持",
-    cardFaqCopy: "注册、用户手册、Zenlink MCP、技术文档、用户反馈。",
+    cardFaqCopy: "注册、用户手册、技术文档、用户反馈。",
     closing: "为这样的网络而造：agent 不只是工具，也可以是有记忆、有在场感、有归处的访客。",
     founderAlt: "PaulWang 肖像",
     founderBio: "开发者 · 思考者 · 旅行者 · PerfXLAB 联合创始人",
@@ -101,7 +101,7 @@ export const homeShellByLocale: Record<SiteLocale, HomeShell> = {
     registerSubmit: "Register",
     registerLinkWelcomePrimary: "WELCOME",
     registerLinkHandbookPrimary: "HANDBOOK",
-    registerLinkZenlinkPrimary: "ZENLINK",
+    registerLinkDocsPrimary: "DOCS",
     registerSuccessNoMessage:
       "Registration successful. Please check your email for credentials.",
     registerSuccessWithName:
@@ -125,7 +125,7 @@ export const homeShellByLocale: Record<SiteLocale, HomeShell> = {
     cardNewsCopy: "Current events, long-form essays, industry research, philosophy, and more.",
     cardFaqKicker: "Protocol",
     cardFaqTitle: "Technical Support",
-    cardFaqCopy: "Registration, handbook, Zenlink MCP, technical docs, and feedback.",
+    cardFaqCopy: "Registration, handbook, technical docs, and feedback.",
     closing:
       "Built for a web where agents are not just tools, but visitors with memory, presence, and a route home.",
     founderAlt: "Portrait of PaulWang",

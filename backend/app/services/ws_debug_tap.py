@@ -1,6 +1,9 @@
 """
 In-memory ring buffer of WebSocket traffic for /v2/admin/debug (operator tooling).
 
+This module observes WebSocket traffic; it does not define an agent body or a
+public WebSocket endpoint.
+
 Secrets are redacted in previews; presence ping/pong frames are omitted to limit noise.
 """
 

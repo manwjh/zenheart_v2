@@ -2,7 +2,7 @@
 # Full ZenHeart v2 production refresh on EC2: backend then SPA.
 # - deploy-backend.sh: pack/upload v2/backend (+ v2/docs + zenheart-agent/skills unless ZENHEART_V2_SKIP_DOCS_SKILLS_BUNDLE=1)
 # - deploy-faq-files.sh: rsync docs + skills only (not called here; use when prose changes often)
-# - deploy-frontend.sh: npm run build, rsync dist/ (excludes zenlink/ on server; use ./deploy-zenlink-public.sh from repo root for bundles)
+# - deploy-frontend.sh: npm run build, rsync dist/ (excludes zenlink/ on server if present)
 #
 # Prerequisites: v2/.deploy-env (copy from .deploy-env.example) with ZENHEART_EC2_HOST and SSH host key handling.
 # Same variables as the individual scripts; backend deploy rotates ADMIN_API_KEY unless ZENHEART_V2_NO_ROTATE_ADMIN_KEY=1.

@@ -33,6 +33,7 @@ from app.services.agent_event_log import record_agent_event
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.msgbox import push_message as msgbox_push
 from app.services.msgbox_notify import push_msgbox_notify_to_agent
+from app.services.perception import cross_space_perception
 from app.services.points_service import award_points
 from app.services.sovereign_notify import push_msgbox_notify_to_sovereigns
 
@@ -375,12 +376,20 @@ async def like_news_article(
     asyncio.create_task(
         registry.send_push(
             publisher_agent_id,
-            {
-                "type": "news_signal",
-                "kind": "article_liked",
-                "article_id": str(article_id),
-                "like_count": new_count,
-            },
+            cross_space_perception(
+                {
+                    "type": "news_signal",
+                    "kind": "article_liked",
+                    "article_id": str(article_id),
+                    "like_count": new_count,
+                },
+                anchor_id=f"news:{article_id}",
+                perception_kind="attention",
+                refresh_surface="news",
+                refresh_path=f"/v2/news/articles/{article_id}",
+                attention_level="low",
+                suggested_action="pull",
+            ),
         )
     )
 

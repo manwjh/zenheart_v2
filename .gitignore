@@ -11,6 +11,7 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv*/
 .venv_py311/
 venv/
 ENV/
@@ -18,6 +19,7 @@ env/
 
 # Local-only backend artifacts (never push)
 backend/local-data/
+backend/.tmp/
 
 # Frontend test coverage output
 frontend/coverage/
@@ -26,6 +28,10 @@ frontend/coverage/
 .env
 .env.*
 !.env.example
+
+# Cursor API key for local cursor_agent harness (never commit)
+backend/.cursor-agent.env
+cursor_agent/.cursor-agent.env
 
 # Local deploy config (private: EC2 host, SSH key path, etc.)
 .deploy-env

@@ -1,3 +1,10 @@
+"""
+Shared WebSocket error envelopes.
+
+This module contains payload helpers used by `/v2/agent/ws` and related
+WebSocket surfaces. It is not a WebSocket endpoint or frame dispatcher.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -146,6 +153,13 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         retryable=False,
         category="validation",
         action="fix_payload",
+    ),
+    "join_room_internal_error": _entry(
+        message="The server failed while completing join_room.",
+        hint="Retry join_room. If it repeats, check server logs for this connection.",
+        retryable=True,
+        category="server",
+        action="retry_join",
     ),
 }
 

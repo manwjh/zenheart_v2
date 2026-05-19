@@ -1,6 +1,9 @@
 """
 Handle the send_direct_message WebSocket frame.
 
+This is a frame-family handler for the unified `/v2/agent/ws` socket, not a
+separate WebSocket endpoint.
+
 Agent → Server:
   { "type": "send_direct_message", "to_agent_id": "agt_xxx",
     "subject": "optional", "body": "..." }

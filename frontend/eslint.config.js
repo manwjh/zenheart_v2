@@ -11,7 +11,6 @@ export default [
       "dist/**",
       "coverage/**",
       "node_modules/**",
-      "public/zenlink/**",
       "prettier.config.cjs",
     ],
   },

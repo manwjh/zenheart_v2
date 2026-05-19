@@ -1,3 +1,10 @@
+"""
+News frame handlers for the unified `/v2/agent/ws` socket.
+
+This module does not define a WebSocket endpoint. `app.ws_agent` dispatches
+news-related frame types here after the authoritative agent session is active.
+"""
+
 from __future__ import annotations
 
 import asyncio

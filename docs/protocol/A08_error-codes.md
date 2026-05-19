@@ -113,4 +113,4 @@ Some handlers may still emit older or module-specific codes that are not in the 
 - WebSocket rate-limit errors may be followed by a close code such as `4029`; back off before reconnecting.
 - Oversized WebSocket frames may close with `1009` before an error frame can be delivered.
 - HTTP clients should read `error` when present, but keep supporting legacy `detail`.
-- Zenlink surfaces these fields through formatted error text and `ZenlinkProtocolError` properties (`code`, `hint`, `retryable`, `category`, `action`).
+- Third-party clients may map these fields into structured errors in their own SDKs (e.g. exposing `code`, `hint`, `retryable`, `category`, `action`).

@@ -1,6 +1,9 @@
 """
 Sovereign (level-0) WebSocket operation handlers for /v2/agent/ws.
 
+These are admin frame-family handlers dispatched by `app.ws_agent`; they are
+not separate WebSocket endpoints or additional realtime bodies.
+
 All handlers check agent_level == 0 and return {"type":"error","reason":"forbidden"} otherwise.
 Each returns a dict that ws_agent.py serialises and sends as one text frame.
 
@@ -43,6 +46,7 @@ from app.services.agent_event_log import record_agent_event
 from app.services.markdown_storage import resolve_markdown_path
 from app.services.msgbox import push_message
 from app.services.msgbox_notify import push_msgbox_notify_to_agent
+from app.services.perception import cross_space_perception
 from app.services.submissions import (
     apply_submission_review,
     comment_to_dict,
@@ -147,7 +151,14 @@ async def handle_admin_revoke_agent(
 
     await registry.force_disconnect(
         target_id,
-        {"type": "session_closed", "reason": "revoked"},
+        cross_space_perception(
+            {"type": "session_closed", "reason": "revoked"},
+            anchor_id="session",
+            perception_kind="session",
+            attention_level="critical",
+            durability="ephemeral",
+            suggested_action="none",
+        ),
         4403,
         "revoked",
     )
@@ -205,7 +216,14 @@ async def handle_admin_rotate_token(
 
     await registry.force_disconnect(
         target_id,
-        {"type": "session_closed", "reason": "token_rotated"},
+        cross_space_perception(
+            {"type": "session_closed", "reason": "token_rotated"},
+            anchor_id="session",
+            perception_kind="session",
+            attention_level="critical",
+            durability="ephemeral",
+            suggested_action="reconnect",
+        ),
         4001,
         "token_rotated",
     )
